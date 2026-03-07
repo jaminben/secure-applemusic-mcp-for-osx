@@ -530,13 +530,14 @@ def track_exists_in_playlist(playlist_name: str, track_name: str, artist: Option
     return True, False  # NOT_FOUND
 
 
-def add_track_to_playlist(playlist_name: str, track_name: str, artist: Optional[str] = None) -> tuple[bool, str]:
+def add_track_to_playlist(playlist_name: str, track_name: str, artist: Optional[str] = None, album: Optional[str] = None) -> tuple[bool, str]:
     """Add a track from library to a playlist.
 
     Args:
         playlist_name: Target playlist name
         track_name: Name of the track to add (partial match supported)
-        artist: Optional artist name to disambiguate (partial match supported)
+        artist: Optional artist name to disambiguate (prefers exact match, falls back to contains)
+        album: Optional album name to disambiguate (partial match supported)
 
     Returns:
         Tuple of (success, message or error)
@@ -544,13 +545,46 @@ def add_track_to_playlist(playlist_name: str, track_name: str, artist: Optional[
     safe_playlist = _escape_for_applescript(playlist_name)
     safe_track = _escape_for_applescript(track_name)
 
+    # Build filter conditions
+    conditions = [f'name contains "{safe_track}"']
     if artist:
         safe_artist = _escape_for_applescript(artist)
-        track_query = f'first track of library playlist 1 whose name contains "{safe_track}" and artist contains "{safe_artist}"'
-    else:
-        track_query = f'first track of library playlist 1 whose name contains "{safe_track}"'
+        conditions.append(f'artist is "{safe_artist}"')
+    if album:
+        safe_album = _escape_for_applescript(album)
+        conditions.append(f'album contains "{safe_album}"')
 
-    script = f'''
+    track_query = f'first track of library playlist 1 whose {" and ".join(conditions)}'
+
+    # If artist provided, try exact match first, then fall back to contains
+    if artist and not album:
+        fallback_conditions = [f'name contains "{safe_track}"', f'artist contains "{safe_artist}"']
+        fallback_query = f'first track of library playlist 1 whose {" and ".join(fallback_conditions)}'
+    elif artist and album:
+        fallback_conditions = [f'name contains "{safe_track}"', f'artist contains "{safe_artist}"', f'album contains "{safe_album}"']
+        fallback_query = f'first track of library playlist 1 whose {" and ".join(fallback_conditions)}'
+    else:
+        fallback_query = None
+
+    if fallback_query:
+        script = f'''
+    tell application "Music"
+{_find_playlist_applescript(safe_playlist)}
+        try
+            set targetTrack to {track_query}
+        on error
+            try
+                set targetTrack to {fallback_query}
+            on error
+                return "ERROR:Track not found: {safe_track}"
+            end try
+        end try
+        duplicate targetTrack to targetPlaylist
+        return "Added " & name of targetTrack & " (" & album of targetTrack & ") by " & artist of targetTrack & " to " & name of targetPlaylist
+    end tell
+    '''
+    else:
+        script = f'''
     tell application "Music"
 {_find_playlist_applescript(safe_playlist)}
         try
@@ -559,7 +593,7 @@ def add_track_to_playlist(playlist_name: str, track_name: str, artist: Optional[
             return "ERROR:Track not found: {safe_track}"
         end try
         duplicate targetTrack to targetPlaylist
-        return "Added " & name of targetTrack & " to " & name of targetPlaylist
+        return "Added " & name of targetTrack & " (" & album of targetTrack & ") by " & artist of targetTrack & " to " & name of targetPlaylist
     end tell
     '''
     success, output = run_applescript(script)

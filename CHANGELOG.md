@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-03-06
+
+### Fixed
+
+- **Album param dumps entire album into playlist** — When both `track` and `album` are provided to `playlist(action="add")`, the `album` param now acts as a disambiguation filter instead of adding all tracks from the album. Album-only adds (no `track`) still work as before.
+- **Artist disambiguation picks wrong version** — `add_track_to_playlist` now uses exact artist match (`artist is`) first, falling back to partial match (`artist contains`) only if exact fails. Prevents "The Wiggles" from matching "Dorothy the Dinosaur & The Wiggles".
+- **Library IDs fail with 403 on non-API playlists** — Library IDs (e.g., `i.abc123`) now correctly route through AppleScript for playlists not created via the API, instead of falling through to the API endpoint which rejects them.
+
+### Improved
+
+- `add_track_to_playlist` now accepts an optional `album` parameter for disambiguation when multiple versions of a track exist in the library.
+- AppleScript add responses now include album and artist info for better feedback (e.g., "Added Hot Potato (Ready, Steady, Wiggle!) by The Wiggles").
+
 ## [0.6.0] - 2026-01-06
 
 ### Breaking Changes

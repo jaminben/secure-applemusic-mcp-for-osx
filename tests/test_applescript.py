@@ -317,3 +317,65 @@ class TestOpenCatalogSong:
         if not success:
             assert "invalid url format" not in result.lower()
             assert "not an apple music url" not in result.lower()
+
+
+class TestAddTrackDisambiguation:
+    """Test artist exact match and album disambiguation in add_track_to_playlist.
+
+    These tests require specific tracks in the library:
+    - Hot Potato by The Wiggles (Ready, Steady, Wiggle!)
+    - Hot Potato by Dorothy the Dinosaur & The Wiggles (Dorothy The Dinosaur's Travelling Show)
+    """
+
+    TEST_PLAYLIST = "🧪 Integration Test Playlist"
+
+    def test_artist_exact_match_preferred_over_contains(self):
+        """Should prefer exact artist match over partial contains match.
+
+        'artist is "The Wiggles"' should match solo Wiggles,
+        not 'Dorothy the Dinosaur & The Wiggles'.
+        """
+        success, result = asc.add_track_to_playlist(
+            self.TEST_PLAYLIST, "Hot Potato", "The Wiggles"
+        )
+        assert success is True
+        # Should be the solo Wiggles version, not Dorothy collab
+        assert "Dorothy" not in result
+        assert "Ready, Steady, Wiggle!" in result
+
+        # Cleanup
+        asc.remove_track_from_playlist(self.TEST_PLAYLIST, "Hot Potato")
+
+    def test_album_disambiguation_selects_correct_version(self):
+        """Should use album param to disambiguate between track versions."""
+        success, result = asc.add_track_to_playlist(
+            self.TEST_PLAYLIST, "Hot Potato", "The Wiggles", "Ready, Steady"
+        )
+        assert success is True
+        assert "Ready, Steady, Wiggle!" in result
+
+        # Cleanup
+        asc.remove_track_from_playlist(self.TEST_PLAYLIST, "Hot Potato")
+
+    def test_album_param_accepted_without_artist(self):
+        """Should accept album param even without artist for disambiguation."""
+        success, result = asc.add_track_to_playlist(
+            self.TEST_PLAYLIST, "Hot Potato", album="Ready, Steady"
+        )
+        assert success is True
+        assert "Ready, Steady, Wiggle!" in result
+
+        # Cleanup
+        asc.remove_track_from_playlist(self.TEST_PLAYLIST, "Hot Potato")
+
+    def test_fallback_to_contains_when_exact_fails(self):
+        """Should fall back to contains if exact artist match finds nothing."""
+        # "Dorothy the Dinosaur & The Wiggles" - only matches via contains
+        success, result = asc.add_track_to_playlist(
+            self.TEST_PLAYLIST, "Hot Potato", "Dorothy the Dinosaur"
+        )
+        assert success is True
+        assert "Dorothy" in result
+
+        # Cleanup
+        asc.remove_track_from_playlist(self.TEST_PLAYLIST, "Hot Potato")

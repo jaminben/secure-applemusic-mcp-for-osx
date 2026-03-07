@@ -2313,9 +2313,9 @@ def _playlist_add(
         if resolved.error:
             return resolved.error
 
-        # If we have track names and AppleScript is available, prefer AppleScript mode
+        # If we have tracks (names or IDs) and AppleScript is available, prefer AppleScript mode
         # But use the fuzzy-matched applescript_name, not the raw input!
-        if APPLESCRIPT_AVAILABLE and names_list and resolved.applescript_name:
+        if APPLESCRIPT_AVAILABLE and (names_list or ids_list) and resolved.applescript_name:
             # Clear api_id to force AppleScript mode (searches library directly)
             resolved = ResolvedPlaylist(
                 raw_input=resolved.raw_input,
@@ -2325,7 +2325,8 @@ def _playlist_add(
             )
 
     # Resolve album input - get all tracks from album(s)
-    if album:
+    # When track is also provided, album acts as disambiguation filter (not "add whole album")
+    if album and not track:
         resolved_albums = _resolve_album(album, artist)
         for r in resolved_albums:
             if r.error:
@@ -2400,6 +2401,10 @@ def _playlist_add(
 
             except Exception as e:
                 steps.append(f"Album '{r.value}': {e}")
+    elif album and track:
+        # Album is used as disambiguation filter — pass album name through to names_list
+        for item in names_list:
+            item["album"] = album
 
     # === AppleScript mode (playlist by name, only if no API ID) ===
     if resolved.applescript_name and not resolved.api_id:
@@ -2418,6 +2423,7 @@ def _playlist_add(
         for track_obj in names_list:
             name = track_obj["name"]
             track_artist = track_obj["artist"]
+            track_album = track_obj.get("album")
 
             # Check for duplicates
             if not allow_duplicates:
@@ -2430,7 +2436,7 @@ def _playlist_add(
 
             # Add track
             success, result = asc.add_track_to_playlist(
-                resolved.applescript_name, name, track_artist or None
+                resolved.applescript_name, name, track_artist or None, track_album or None
             )
             if success:
                 added.append(f"{name} - {track_artist}" if track_artist else name)

@@ -1792,6 +1792,141 @@ class TestUserJourneyMacOSOnly:
             json.dump({"music_user_token": mock_user_token}, f)
 
 
+class TestAlbumDisambiguation:
+    """Tests for album param behavior: disambiguation filter when track is present, whole-album add when alone."""
+
+    def test_album_without_track_calls_resolve_album(self, monkeypatch):
+        """album param alone should call _resolve_album (whole-album add path)."""
+        resolve_album_called = False
+        original_resolve = server._resolve_album
+
+        def tracking_resolve(*args, **kwargs):
+            nonlocal resolve_album_called
+            resolve_album_called = True
+            return original_resolve(*args, **kwargs)
+
+        monkeypatch.setattr(server, "_resolve_album", tracking_resolve)
+        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
+
+        mock_asc = MagicMock()
+        mock_asc.get_playlists.return_value = (True, [
+            {"name": "Test Playlist", "id": "test123", "count": 0}
+        ])
+        monkeypatch.setattr(server, "asc", mock_asc)
+
+        # Will fail at API call, but that's fine — we're just checking _resolve_album was entered
+        try:
+            server._playlist_add(playlist="Test Playlist", album="Some Album", artist="Some Artist")
+        except Exception:
+            pass
+
+        assert resolve_album_called, "_resolve_album should be called when only album (no track) is provided"
+
+    def test_album_with_track_skips_resolve_album(self, monkeypatch):
+        """album + track together should NOT call _resolve_album (disambiguation path instead)."""
+        resolve_album_called = False
+        original_resolve = server._resolve_album
+
+        def tracking_resolve(*args, **kwargs):
+            nonlocal resolve_album_called
+            resolve_album_called = True
+            return original_resolve(*args, **kwargs)
+
+        monkeypatch.setattr(server, "_resolve_album", tracking_resolve)
+        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
+
+        mock_asc = MagicMock()
+        mock_asc.get_playlists.return_value = (True, [
+            {"name": "Test Playlist", "id": "test123", "count": 0}
+        ])
+        mock_asc.track_exists_in_playlist.return_value = (True, False)
+        mock_asc.add_track_to_playlist.return_value = (True, "Added Hot Potato")
+        monkeypatch.setattr(server, "asc", mock_asc)
+
+        server._playlist_add(
+            playlist="Test Playlist", track="Hot Potato", album="Ready, Steady, Wiggle!", artist="The Wiggles"
+        )
+
+        assert not resolve_album_called, "_resolve_album should NOT be called when both track and album are provided"
+
+    @responses.activate
+    def test_album_with_track_uses_album_as_filter(
+        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+    ):
+        """album + track together should use album as disambiguation, NOT add whole album."""
+        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
+        self._setup_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+
+        mock_asc = MagicMock()
+        mock_asc.get_playlists.return_value = (True, [
+            {"name": "Test Playlist", "id": "test123", "count": 0}
+        ])
+        mock_asc.track_exists_in_playlist.return_value = (True, False)
+        mock_asc.add_track_to_playlist.return_value = (True, "Added Hot Potato (Ready, Steady, Wiggle!) by The Wiggles")
+        monkeypatch.setattr(server, "asc", mock_asc)
+
+        result = server._playlist_add(
+            playlist="Test Playlist",
+            track="Hot Potato",
+            album="Ready, Steady, Wiggle!",
+            artist="The Wiggles",
+        )
+
+        # Should add exactly 1 track, not the whole album
+        assert "Added 1 track" in result
+        assert "Hot Potato" in result
+
+        # AppleScript should have been called with album param for disambiguation
+        mock_asc.add_track_to_playlist.assert_called_once()
+        call_args = mock_asc.add_track_to_playlist.call_args
+        # 4th arg (album) should be "Ready, Steady, Wiggle!"
+        assert call_args[0][3] == "Ready, Steady, Wiggle!" or call_args.kwargs.get("album") == "Ready, Steady, Wiggle!"
+
+    @responses.activate
+    def test_library_ids_route_to_applescript_for_non_api_playlists(
+        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+    ):
+        """Library IDs should use AppleScript mode for non-API playlists, not fail with 403."""
+        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
+        self._setup_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+
+        mock_asc = MagicMock()
+        mock_asc.get_playlists.return_value = (True, [
+            {"name": "My Playlist", "id": "abc123", "count": 10}
+        ])
+        mock_asc.track_exists_in_playlist.return_value = (True, False)
+        mock_asc.add_track_to_playlist.return_value = (True, "Added Hot Potato by The Wiggles")
+        monkeypatch.setattr(server, "asc", mock_asc)
+
+        # Mock library song lookup for the ID
+        responses.add(
+            responses.GET,
+            "https://api.music.apple.com/v1/me/library/songs/i.abc123",
+            json={"data": [{"id": "i.abc123", "attributes": {"name": "Hot Potato", "artistName": "The Wiggles"}}]},
+            status=200,
+        )
+
+        result = server._playlist_add(
+            playlist="My Playlist",
+            track="i.abc123",
+        )
+
+        # Should NOT get "Cannot edit this playlist" error
+        assert "Cannot edit" not in result
+        # AppleScript should have been used
+        mock_asc.add_track_to_playlist.assert_called_once()
+
+    def _setup_tokens(self, mock_config_dir, mock_developer_token, mock_user_token):
+        """Helper to setup authentication tokens."""
+        dev_token_file = mock_config_dir / "developer_token.json"
+        with open(dev_token_file, "w") as f:
+            json.dump({"token": mock_developer_token, "expires": time.time() + 86400 * 60}, f)
+
+        user_token_file = mock_config_dir / "music_user_token.json"
+        with open(user_token_file, "w") as f:
+            json.dump({"music_user_token": mock_user_token}, f)
+
+
 class TestUserJourneyCombinedMode:
     """Integration tests for combined mode (both API and AppleScript available)."""
 
