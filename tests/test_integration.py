@@ -292,31 +292,37 @@ def test_search_library_parameter():
 
 
 def test_copy_playlist_with_name():
-    """Test that copy_playlist supports unified 'source' parameter (auto-detects ID vs name)."""
+    """Test that playlist(action='copy') supports unified 'source' parameter (auto-detects ID vs name)."""
     print("\n" + "="*80)
-    print("TEST 7: copy_playlist Unified Source Parameter")
+    print("TEST 7: playlist copy action — Unified Source Parameter")
     print("="*80)
 
-    # Check function signature
+    # v0.6.0 consolidated tools: copy_playlist → playlist(action="copy", source=..., new_name=...)
     import inspect
     from applemusic_mcp import server
 
-    # Find copy_playlist tool definition
-    sig = inspect.signature(server.copy_playlist)
+    sig = inspect.signature(server.playlist)
     params = list(sig.parameters.keys())
 
-    print(f"copy_playlist parameters: {params}")
+    print(f"playlist parameters: {params}")
 
-    # v0.2.10+ uses unified 'source' parameter that auto-detects ID (p.XXX) vs name
     if "source" in params:
-        print(f"✓ PASS: copy_playlist uses unified 'source' parameter (auto-detects ID vs name)")
-        return True
-    elif "source_playlist_name" in params:
-        print(f"⚠ WARNING: copy_playlist still uses old source_playlist_name parameter")
-        return True  # Still works, just old API
+        print(f"✓ PASS: playlist() has 'source' parameter for copy action")
     else:
-        print(f"✗ FAIL: copy_playlist missing source parameter")
-        return False
+        print(f"✗ FAIL: playlist() missing 'source' parameter")
+        assert False, "playlist() should have 'source' parameter for copy action"
+
+    # Verify _playlist_copy internal function exists and accepts source
+    assert hasattr(server, "_playlist_copy"), "_playlist_copy should exist"
+    copy_sig = inspect.signature(server._playlist_copy)
+    copy_params = list(copy_sig.parameters.keys())
+    print(f"_playlist_copy parameters: {copy_params}")
+
+    if "source" in copy_params:
+        print(f"✓ PASS: _playlist_copy uses unified 'source' parameter")
+    else:
+        print(f"✗ FAIL: _playlist_copy missing 'source' parameter")
+        assert False, "_playlist_copy should have 'source' parameter"
 
 
 def review_tool_outputs():
