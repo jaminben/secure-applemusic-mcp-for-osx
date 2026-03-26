@@ -1,12 +1,12 @@
 ---
 name: apple-music
-version: 0.7.0
-description: Apple Music integration via AppleScript (macOS) or MusicKit API
+version: 0.8.0
+description: Apple Music integration via AppleScript, UI automation, or MusicKit API
 ---
 
 # Apple Music Integration
 
-Guide for integrating with Apple Music. Covers AppleScript (macOS), MusicKit API (cross-platform), and the critical library-first requirement.
+Guide for integrating with Apple Music. Three approaches: AppleScript (direct control), UI automation (catalog without API), and MusicKit API (cross-platform).
 
 ## When to Use
 
@@ -29,18 +29,6 @@ Songs must be in the user's library first:
 **Why:** Playlists use library IDs (`i.abc123`), not catalog IDs (`1234567890`).
 
 This applies to both AppleScript and API approaches.
-
-## Platform Comparison
-
-| Feature | AppleScript (macOS) | MusicKit API |
-|---------|:-------------------:|:------------:|
-| Setup required | None | Dev account + tokens |
-| Playlist management | Full | API-created only |
-| Playback control | Full | None |
-| Play by URL | Yes (UI scripting) | None |
-| Catalog search | No | Yes |
-| Library access | Instant | With tokens |
-| Cross-platform | No | Yes |
 
 ---
 
@@ -168,11 +156,6 @@ tell application "Music"
     play (first track of library playlist 1 whose name contains "Hey Jude")
     play user playlist "Road Trip"
 
-    -- Play by URL (via mcp-applemusic, not raw AppleScript)
-    -- playback(action="play", url="https://music.apple.com/us/album/ok-computer/1097861387")
-    -- playback(action="play", url="https://music.apple.com/us/album/name/id?i=songId")
-    -- Supports albums, playlists (including personal), and specific songs via ?i=
-
     -- Settings
     set player position to 60     -- seek to 1:00
     set sound volume to 50        -- 0-100
@@ -297,9 +280,72 @@ script = f'tell application "Music" to play user playlist "{safe_name}"'
 
 ## Limitations
 
-- **No catalog search** - only library content (catalog search requires API)
-- **macOS only** - no Windows/Linux
-- **URL playback requires display** - uses UI scripting, won't work headless
+- **macOS only** — no Windows/Linux
+- **UI features require display** — UI automation won't work headless or with Music.app minimized
+
+---
+
+# UI Automation (macOS)
+
+For catalog features without an API token. Controls Music.app through System Events (Accessibility API) and CoreGraphics (mouse events).
+
+**Requirements:** Display attached, Music.app visible, Accessibility permissions for System Events (System Settings → Privacy & Security → Accessibility).
+
+## Key Concepts
+
+**System Events** reads and clicks UI elements by their accessibility hierarchy:
+```applescript
+tell application "System Events" to tell process "Music"
+    -- Main content area
+    scroll area 2 of splitter group 1 of window "Music"
+    -- Search field
+    text field 1 of UI element 1 of row 1 of outline 1 of scroll area 1 of splitter group 1 of window "Music"
+end tell
+```
+
+**CoreGraphics mouse events** (via JXA) trigger hover effects that reveal hidden UI controls:
+```javascript
+// osascript -l JavaScript
+ObjC.import("CoreGraphics");
+var point = $.CGPointMake(x, y);
+var event = $.CGEventCreateMouseEvent($(), $.kCGEventMouseMoved, point, 0);
+$.CGEventPost($.kCGHIDEventTap, event);
+```
+
+## The Hover Trick
+
+Music.app hides per-track Play and "Add to Library" buttons until the mouse hovers over a track row. To interact with them programmatically:
+
+1. Find the track's UI element position via System Events
+2. Move the mouse there via CoreGraphics (generates real hover events)
+3. The hidden `checkbox` (play) and `button` (Add to Library) appear in the accessibility tree
+4. Click them via System Events
+
+## Search via UI
+
+1. Set the search field value: `set value of searchField to "query"`
+2. Press Return: `key code 36`
+3. Wait for results to load (~4 seconds)
+4. Parse the "Top Results" list from `scroll area 2`
+5. Each result is a `UI element` with `description` = name, static texts for type/artist
+
+**Note:** The type separator in results uses Unicode three-per-em space (U+2004) + middle dot (U+00B7): `Song꘎·꘎Radiohead`
+
+## Window Recovery
+
+Music.app can run without a window. To ensure a window exists:
+```applescript
+tell application "Music" to activate
+tell application "System Events" to tell process "Music"
+    if (count of windows) is 0 then
+        click menu item "Music" of menu "Window" of menu bar 1
+    end if
+end tell
+```
+
+## Fragility
+
+UI paths break when Apple updates Music.app's layout. Centralize paths as constants and test after macOS updates. Use Accessibility Inspector.app to explore the current hierarchy.
 
 ---
 
@@ -589,5 +635,7 @@ On macOS, most features work immediately. For catalog features or Windows/Linux,
 |--------|----------------|
 | 4 API calls to add song | `playlist(action="add", auto_search=True)` |
 | Copy URL + open in Music | `playback(action="play", url="...")` |
+| UI hover + click to add to library | `library(action="add")` with UI fallback |
+| Track library changes manually | `library(action="snapshot")` |
 | AppleScript escaping | Automatic |
 | Token management | Automatic with warnings |
