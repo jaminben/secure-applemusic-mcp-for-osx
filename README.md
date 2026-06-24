@@ -7,35 +7,44 @@
 [![macOS](https://img.shields.io/badge/macOS-15%20%7C%2026-blue.svg)]()
 [![MCP](https://img.shields.io/badge/MCP-server-purple.svg)](https://modelcontextprotocol.io/)
 
-[MCP](https://modelcontextprotocol.io/) server for Apple Music — lets your AI assistant (Claude, Cursor, Cline, Windsurf, or any [MCP client](https://modelcontextprotocol.io/clients)) manage playlists, control playback, and browse your library.
+[MCP](https://modelcontextprotocol.io/) server for Apple Music — lets your AI assistant (Claude, Cursor, Cline, Windsurf, or any [MCP client](https://modelcontextprotocol.io/clients)) manage playlists, add music, control playback, and browse your library.
+
+**Works on macOS, Windows, and Linux.**
+
+### Access
+
+| Access | What it does | Platforms |
+|---|---|---|
+| **Developer token** — recommended | Full Apple Music API: library, playlists, catalog add, recommendations | macOS · Windows · Linux |
+| Web token | Same | macOS · Windows · Linux |
+| No token | Control the local Music app — play, browse, edit local playlists | macOS |
+
+<sub>**Developer token** is included with Apple Developer membership (free for App Store developers), valid 6 months — [setup](#appendix-developer-token-setup). **Web token** is a free fallback captured by `applemusic-mcp signin`; it uses Apple's web-player API the same way open-source clients such as [Cider](https://github.com/ciderapp/Cider-2) and [Sidra](https://github.com/wimpysworld/sidra) do.</sub>
 
 ## Features
 
-| Feature | macOS | API |
-|---------|:-----:|:---:|
+| Feature | macOS | Cross-platform |
+|---------|:-----:|:--------------:|
 | List playlists | ✓ | ✓ |
-| Browse library songs | ✓ | ✓ |
+| Browse / search library | ✓ | ✓ |
 | Create playlists | ✓ | ✓ |
-| Search library | ✓ | ✓ |
 | Love/dislike tracks | ✓ | ✓ |
 | CSV/JSON export | ✓ | ✓ |
-| Add tracks to playlists | ✓ | API-created |
-| Search catalog | UI* | ✓ |
-| Add songs to library | UI* | ✓ |
-| Recommendations, charts, radio |   | ✓ |
-| Play tracks | ✓ / UI* |   |
-| Play by URL (album, playlist, song) | UI* |   |
-| Playback control (pause/skip/seek) | ✓ |   |
-| Volume, shuffle, repeat | ✓ |   |
+| Search catalog | ✓ | ✓ |
+| **Add songs to library** | ✓ | ✓ |
+| **Add tracks to playlists** | ✓ | ✓ |
+| Recommendations, charts, radio | ✓ | ✓ |
+| Play tracks | ✓ |   |
+| Play by URL (album, playlist, song) | ✓ |   |
+| Playback control (pause/skip/seek/volume) | ✓ |   |
 | Star ratings (1-5) | ✓ |   |
-| Remove tracks from playlists | ✓ |   |
-| Delete playlists/folders | ✓ |   |
-| Create folders | ✓ | top-level |
-| Rename playlists/folders | ✓ |   |
-| Move playlists/folders | ✓ |   |
-| Folder hierarchy/paths | ✓ |   |
+| Remove tracks / delete playlists / folders | ✓ |   |
+| Rename / move playlists & folders | ✓ |   |
 
-**macOS** uses AppleScript for full local control. **API** mode enables catalog features and works cross-platform. **UI*** = UI automation fallback (requires the screen to be unlocked, display attached, and Accessibility permissions; Top Results only for search).
+**Catalog, library, and playlist features run over the Apple Music API** — same on every
+platform (sign in once). **Playback** is macOS-only for now (native AppleScript control of
+Music.app); cross-platform browser playback is in progress. Play-from-URL on macOS uses a
+small AppleScript UI step and needs the screen unlocked + Accessibility permission.
 
 ---
 
@@ -43,7 +52,7 @@
 
 **Requirements:** Python 3.10+, Apple Music app with subscription.
 
-**No Apple Developer account needed on macOS!** Most features work instantly via AppleScript. Catalog features use the API when available, with UI automation fallback on macOS (requires display + Accessibility permissions). On other platforms and for more features a $99/yr Apple Developer Program membership is required for the API.
+**No Apple Developer account needed.** On macOS, playback and local library features work instantly via AppleScript. To add catalog music to your library/playlists (any platform), sign in once — see [Enable catalog features](#enable-catalog-features-sign-in-once) below.
 
 ```bash
 git clone https://github.com/epheterson/applemusic-mcp.git
@@ -67,48 +76,27 @@ Add to your MCP client config. **Claude Desktop** (`~/Library/Application Suppor
 
 **That's it!** Restart your client and try: "List my Apple Music playlists" or "Play my favorites playlist"
 
-> **Windows/Linux users:** Skip to [API Setup](#api-setup-optional-on-macos-required-on-windowslinux) - AppleScript features require macOS, but API mode works cross-platform.
+> **Windows/Linux users:** AppleScript playback requires macOS, but catalog/library/playlist
+> features work cross-platform — just [sign in](#enable-catalog-features-sign-in-once).
 
 ---
 
-## API Setup (Optional on macOS, Required on Windows/Linux)
+## Enable Catalog Features (sign in once)
 
-**Requirements:** Python 3.10+, Apple Music app with subscription, active [Apple Developer Program](https://developer.apple.com/programs/) membership ($99/yr USD).
-
-Want catalog search, recommendations, and Windows/Linux support? Set up API access.
-
-### 1. Get MusicKit Key
-
-1. [Apple Developer Portal → Keys](https://developer.apple.com/account/resources/authkeys/list) → Click **+**
-2. Name it anything, check **MusicKit**, click Continue → Register
-3. **Download the .p8 file** (one-time download!)
-4. Note your **Key ID** (10 chars) and **Team ID** (from [Membership](https://developer.apple.com/account/#!/membership))
-
-### 2. Configure
+Adding catalog music to your library and playlists runs over the Apple Music API. Sign in once:
 
 ```bash
-mkdir -p ~/.config/applemusic-mcp
-cp ~/Downloads/AuthKey_XXXXXXXXXX.p8 ~/.config/applemusic-mcp/
+applemusic-mcp signin     # opens Chrome to music.apple.com; sign in once
+applemusic-mcp status     # verify
 ```
 
-Create `~/.config/applemusic-mcp/config.json`:
-```json
-{
-  "team_id": "YOUR_TEAM_ID",
-  "key_id": "YOUR_KEY_ID",
-  "private_key_path": "~/.config/applemusic-mcp/AuthKey_XXXXXXXXXX.p8"
-}
-```
+Captures your `media-user-token` from a local, signed-in Chrome profile (your password never
+touches this tool); uses your installed Chrome when present. The sign-in persists.
 
-### 3. Generate Tokens
+Have an Apple Developer membership? A generated token (6-month, sanctioned) is preferred — see
+[Appendix: Developer token setup](#appendix-developer-token-setup).
 
-```bash
-applemusic-mcp generate-token   # Creates developer token (180 days)
-applemusic-mcp authorize        # Opens browser for Apple Music auth
-applemusic-mcp status           # Verify everything works
-```
-
-### 4. Add to Your MCP Client (Windows/Linux)
+### Add to Your MCP Client (Windows/Linux)
 
 Same `mcpServers` shape works across clients (Claude Desktop, Cursor, Cline, Windsurf, etc.) — only the config file path differs.
 
@@ -370,14 +358,20 @@ Exported files are accessible via MCP resources (any MCP client that supports re
 ### Windows/Linux
 | Limitation | Workaround |
 |------------|------------|
-| Only API-created playlists editable | `copy_playlist` makes editable copy |
-| Can't delete playlists or remove tracks | Create new playlist instead |
-| No playback control | Use Music app directly |
+| No playback control | Use Music app/web directly (cross-platform browser playback is in progress) |
+| Deleting playlists / removing tracks is macOS-only | Done via AppleScript; not yet exposed cross-platform |
+
+Adding songs to your library and to existing playlists works cross-platform (after `signin`).
 
 ### Both Platforms
-- **Tokens expire:** Developer token lasts 180 days. You'll see warnings starting 30 days before expiration. Run `applemusic-mcp generate-token` to renew.
-- **Screen must be unlocked for UI flows:** The catalog search / hover-to-add / play UI paths drive Music.app via System Events; a locked screen blocks them. The MCP detects this and returns a clear error.
-- **A few playlists silently revert AppleScript edits** ([known Music.app/AppleScript bug](https://www.macscripter.net/t/add-current-track-from-apple-music-to-playlist/72058)). The MCP detects the rollback automatically and returns an actionable error suggesting Music.app's right-click → Add to Playlist as a workaround.
+- **Brand-new playlists take a moment to be addable:** a just-created playlist needs to
+  propagate to the cloud library before tracks can be added over the API; existing playlists
+  are immediate.
+- **Sign-in persists, but can expire:** if catalog actions start failing, re-run
+  `applemusic-mcp signin` (or `applemusic-mcp generate-token` for the developer-token path).
+- **Screen must be unlocked for macOS playback/play-from-URL:** those drive Music.app via
+  System Events; a locked screen blocks them. The MCP detects this and returns a clear error.
+- **A few playlists silently revert AppleScript edits** ([known Music.app/AppleScript bug](https://www.macscripter.net/t/add-current-track-from-apple-music-to-playlist/72058)). The MCP detects the rollback automatically and returns an actionable error.
 
 ---
 
@@ -402,6 +396,41 @@ applemusic-mcp serve           # Run MCP server (auto-launched by your MCP clien
 ```
 
 **Config:** `~/.config/applemusic-mcp/` (config.json, .p8 key, tokens)
+
+---
+
+## Appendix: Developer token setup
+
+The preferred path if you have an [Apple Developer Program](https://developer.apple.com/programs/) membership — a sanctioned, 6-month token.
+
+**1. Get a MusicKit key** — [Apple Developer Portal → Keys](https://developer.apple.com/account/resources/authkeys/list) → **+** → name it, check **MusicKit**, Register → **download the .p8** (one-time). Note your **Key ID** and **Team ID** (from [Membership](https://developer.apple.com/account/#!/membership)).
+
+**2. Configure:**
+```bash
+mkdir -p ~/.config/applemusic-mcp
+cp ~/Downloads/AuthKey_XXXXXXXXXX.p8 ~/.config/applemusic-mcp/
+```
+Create `~/.config/applemusic-mcp/config.json`:
+```json
+{
+  "team_id": "YOUR_TEAM_ID",
+  "key_id": "YOUR_KEY_ID",
+  "private_key_path": "~/.config/applemusic-mcp/AuthKey_XXXXXXXXXX.p8"
+}
+```
+
+**3. Generate + authorize:**
+```bash
+applemusic-mcp generate-token   # developer token (180 days)
+applemusic-mcp authorize        # capture your user token
+applemusic-mcp status           # verify
+```
+
+---
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=epheterson/applemusic-mcp&type=Date)](https://star-history.com/#epheterson/applemusic-mcp&Date)
 
 ---
 
