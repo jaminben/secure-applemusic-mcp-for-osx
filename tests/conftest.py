@@ -1,12 +1,117 @@
 """Shared test fixtures."""
 
 import json
+import os
+import socket
 from unittest.mock import patch
 
 import pytest
 
+_real_socket_connect = socket.socket.connect
+_LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "0.0.0.0"}
+
+
+@pytest.fixture(autouse=True)
+def _block_external_network(request):
+    """Hard guarantee: no test outside the explicit live gates (`ui` / `ui_live`)
+    may open a real external socket. Apple's API is external, so this proves the
+    mocked suite never touches the real account — a stray un-mocked amp-api call
+    raises instead of silently hammering the library. Localhost is allowed (the
+    auth server tests bind a real loopback socket)."""
+    if request.node.get_closest_marker("ui") or request.node.get_closest_marker("ui_live"):
+        yield
+        return
+
+    def _guard(self, address, *args, **kwargs):
+        host = address[0] if isinstance(address, tuple) else address
+        if host not in _LOCAL_HOSTS:
+            raise RuntimeError(
+                f"Blocked a real network connection to {host!r} in a non-live test "
+                "— mock the boundary (responses / monkeypatch). Real API calls only "
+                "belong in the TEST_API / TEST_UI live gates."
+            )
+        return _real_socket_connect(self, address, *args, **kwargs)
+
+    with patch.object(socket.socket, "connect", _guard):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _block_live_applescript(request, monkeypatch):
+    """Hard guarantee: no non-live test runs real AppleScript against the user's
+    Music.app. Every AppleScript call funnels through ``asc.run_applescript``;
+    replace it with a guard that raises, so an un-mocked ``asc.*`` call (e.g.
+    ``create_folder``) fails loudly in the test instead of silently mutating the
+    live library. This is the AppleScript analogue of ``_block_external_network``
+    and closes the leak that filled the library with ``My Folder`` / ``Summer
+    Folder`` debris (un-prefixed names the session sweep never matched).
+
+    Tests that exercise AppleScript must mock ``asc.run_applescript`` (or the
+    higher-level ``asc.*`` function) — a per-test ``monkeypatch.setattr`` overrides
+    this guard. Genuine live AppleScript belongs in the ``ui`` / ``ui_live`` gates.
+    The session-scoped debris sweep runs outside this function-scoped guard, so it
+    still cleans up."""
+    if request.node.get_closest_marker("ui") or request.node.get_closest_marker("ui_live"):
+        return
+
+    def _guard(script, *args, **kwargs):
+        raise RuntimeError(
+            "Blocked real AppleScript in a non-live test — mock asc.run_applescript "
+            "(or the asc.* helper) instead of hitting Music.app. Live AppleScript "
+            "belongs in the ui / ui_live gates."
+        )
+
+    monkeypatch.setattr(asc, "run_applescript", _guard)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_browser_profile(request, tmp_path, monkeypatch):
+    """Never let a non-live test touch the real Chrome profile. `clear_session`
+    (hit by logout/reset on both the CLI and the `config` tool) rmtree's
+    PROFILE_DIR — point it at a throwaway dir so a test can't wipe the user's
+    signed-in browser session. The live gates need the real profile, so they're
+    exempt."""
+    if request.node.get_closest_marker("ui") or request.node.get_closest_marker("ui_live"):
+        yield
+        return
+    try:
+        from applemusic_mcp import browser
+
+        monkeypatch.setattr(browser, "PROFILE_DIR", tmp_path / "chrome-profile")
+    except Exception:
+        pass
+    yield
+
+
+# Tests use file-based token storage (not the OS keychain) for determinism and so
+# the fixtures that write token JSON files keep working. The keychain path is
+# exercised explicitly in test_auth.py.
+os.environ.setdefault("APPLEMUSIC_NO_KEYRING", "1")
+
+# Redirect ALL persistent state (config / Chrome profile / cache / exports) to a
+# throwaway home for the whole session, BEFORE importing any applemusic_mcp module
+# (the path roots are read at import). This is the filesystem analogue of the
+# network/AppleScript guards: a test can never touch the user's real ~/.config,
+# ~/.applemusic-mcp, or ~/.cache, no matter what it forgets to mock.
+import tempfile as _tempfile
+
+os.environ.setdefault("APPLEMUSIC_MCP_HOME", _tempfile.mkdtemp(prefix="amc-test-home-"))
+
 from applemusic_mcp import applescript as asc
 from applemusic_mcp import audit_log
+
+
+# Never hit Apple's network to harvest a web token during tests. amp-api's
+# resolve_web_token() harvests when nothing is cached; stub the harvest (the
+# network boundary) so the real resolver logic still runs but offline. Tests that
+# need the real harvest (test_harvest) restore it; tests that control harvesting
+# monkeypatch it per-test, which overrides this.
+@pytest.fixture(autouse=True)
+def _stub_web_token_harvest():
+    from applemusic_mcp import auth
+
+    with patch.object(auth, "harvest_developer_token", return_value="TEST_WEB_TOKEN"):
+        yield
 
 
 # Mock audit log for all tests to avoid polluting real audit log
@@ -50,7 +155,8 @@ def _sweep_test_debris():
 
     # Prefix-match sweep over folders then user playlists, in one shell-out.
     conds = " or ".join(f'(pn starts with "{p}")' for p in _TEST_NAME_PREFIXES)
-    asc.run_applescript(f"""
+    asc.run_applescript(
+        f"""
 tell application "Music"
     repeat with p in (every folder playlist)
         try
@@ -72,7 +178,8 @@ tell application "Music"
             end if
         end try
     end repeat
-end tell""")
+end tell"""
+    )
 
 
 # Clean up test playlists/folders before AND after the test session.

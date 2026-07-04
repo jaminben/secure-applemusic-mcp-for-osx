@@ -34,8 +34,10 @@ _log_lock = threading.Lock()
 
 
 def get_audit_log_path() -> Path:
-    """Get the audit log file path."""
-    log_dir = Path.home() / ".cache" / "applemusic-mcp"
+    """Get the audit log file path (env-overridable; see paths.cache_dir)."""
+    from . import paths
+
+    log_dir = paths.cache_dir()
     log_dir.mkdir(parents=True, exist_ok=True)
     return log_dir / "audit_log.jsonl"
 
@@ -171,7 +173,9 @@ def format_entries_for_display(entries: list[dict], limit: int = 20) -> str:
         elif action == "remove_from_playlist":
             playlist = details.get("playlist", "unknown")
             tracks = details.get("tracks", [])
-            lines.append(f"[{ts_display}] REMOVE FROM PLAYLIST '{playlist}': {len(tracks)} track(s)")
+            lines.append(
+                f"[{ts_display}] REMOVE FROM PLAYLIST '{playlist}': {len(tracks)} track(s)"
+            )
             for t in tracks[:5]:
                 lines.append(f"    - {t}")
             if len(tracks) > 5:
@@ -191,7 +195,9 @@ def format_entries_for_display(entries: list[dict], limit: int = 20) -> str:
             source = details.get("source", "unknown")
             dest = details.get("destination", "unknown")
             track_count = details.get("track_count", 0)
-            lines.append(f"[{ts_display}] COPY PLAYLIST: '{source}' -> '{dest}' ({track_count} tracks)")
+            lines.append(
+                f"[{ts_display}] COPY PLAYLIST: '{source}' -> '{dest}' ({track_count} tracks)"
+            )
 
         elif action == "rating":
             track = details.get("track", "unknown")
@@ -235,7 +241,9 @@ def format_entries_for_display(entries: list[dict], limit: int = 20) -> str:
             cache_misses = details.get("cache_misses", 0)
             api_calls = details.get("api_calls", 0)
             lines.append(f"[{ts_display}] PLAYLIST QUERY: '{playlist}' ({track_count} tracks)")
-            lines.append(f"    {duration}s | Cache: {cache_hits} hits, {cache_misses} misses | API: {api_calls} calls")
+            lines.append(
+                f"    {duration}s | Cache: {cache_hits} hits, {cache_misses} misses | API: {api_calls} calls"
+            )
 
         else:
             lines.append(f"[{ts_display}] {action.upper()}: {json.dumps(details)}")
@@ -243,7 +251,9 @@ def format_entries_for_display(entries: list[dict], limit: int = 20) -> str:
         lines.append("")
 
     if len(entries) > limit:
-        lines.append(f"... {len(entries) - limit} more entries (use config(action='audit-log', limit=N) for more)")
+        lines.append(
+            f"... {len(entries) - limit} more entries (use config(action='audit-log', limit=N) for more)"
+        )
 
     return "\n".join(lines)
 

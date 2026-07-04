@@ -5,14 +5,292 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0] - 2026-07-02
+
+Cross-platform playback and hardening: library, playlists, *and playback* on macOS,
+Windows, and Linux, plus a Safari playback engine and data-safety fixes.
+
+### Added
+
+- **Transactional playlist swaps — never silently lose a track.** `playlist(action=
+  "add", …, replace="<old track>")` adds the new track, CONFIRMS it actually persisted,
+  and only then removes the old one. On macOS it verifies against native AppleScript
+  truth; on Windows/Linux it re-reads the playlist over the API. If the add can't be
+  confirmed — e.g. Music.app's silent server-side revert — the old track is KEPT. Fixes
+  a real data-loss case (a swap where the remove stuck but the add reverted).
+- **`now_playing` shows position/progress** (e.g. `1:12/5:05`) on the Safari and Chrome
+  engines, matching native.
+- **System-aware guidance.** Error/setup messages now name only the engines that exist
+  on the current OS (native/safari are macOS-only; Chrome is cross-platform), instead
+  of listing every platform's steps to everyone.
+
+### Fixed (Windows/Linux hardening)
+
+- **The Chrome web player stays signed in across launches.** Playwright's persistent
+  profile doesn't reliably persist session cookies and can corrupt on an ungraceful
+  exit; the saved `media-user-token` is now re-asserted as the authoritative cookie on
+  every launch, and the browser context is closed gracefully on shutdown (atexit +
+  SIGTERM). No more "signed-out every launch."
+- **First-run no longer looks hung.** The one-time ~150 MB browser download used to
+  block the first play for minutes with no output; under the server it now fails fast
+  with "run `applemusic-mcp login` once in a terminal" (where the download shows
+  progress). The CLI still auto-installs.
+- **Honest off-mac messaging.** Preview-only playback is labeled "preview only ~90s"
+  (not the contradictory "no audio"); `move`/`remove`/`delete`/`rename` are no longer
+  mislabeled "(macOS)" (they work off-mac via the API); the add-by-name error states
+  the real cause instead of a wrong "requires macOS."
+
+- **Safari is now a full playback + queue engine on macOS — not just sign-in.** The
+  same Apple-Events `do JavaScript` channel drives your signed-in Safari's MusicKit
+  to play songs/albums/playlists/URLs and manage the Up Next queue — DRM-native, no
+  Chrome, no Playwright. The engine model is one `mode` knob with five values:
+  `auto` (best of each — native Music.app playback, Safari queue, API data on macOS;
+  Chrome off-mac), `native`, `safari`, `chrome`, `api`, plus a per-call `engine=`
+  override (`native`/`safari`/`chrome`/`web`). Using the queue makes its engine the
+  active one, so transport controls follow it (queue in Safari → pause/next reach
+  Safari). The shared MusicKit JS (`musickit_js.py`) drives the Safari and Chrome
+  engines identically. Net: one macOS `login` powers the API, native playback, *and*
+  the Safari web player/queue — Chrome stays an option (`mode=chrome`) and the only
+  web engine off-mac.
+- **macOS: sign in via Safari — no Chrome, no ~1 GB Playwright download.**
+  `applemusic-mcp login --safari` reads your `media-user-token` directly from a
+  signed-in Safari (it's not httpOnly) via one AppleScript `do JavaScript
+  "document.cookie"`, and the developer token is already a tokenless fetch — so a
+  Mac user signed into Apple Music in Safari needs no Chrome, no Playwright, and no
+  fresh sign-in (playback uses Music.app). Opt-in; Chrome stays the default and the
+  cross-platform path. Requires the one-time Safari setting "Allow JavaScript from
+  Apple Events" (Develop menu); if it's off or Safari isn't signed in, the tool
+  says exactly what to fix and you can fall back to the Chrome flow.
+- **Drift-proof queue jump.** The web Up Next auto-advances in real time, so an
+  index captured a moment ago lands on the wrong track. `queue jump` now accepts
+  `track` (name or catalog id) and targets that track regardless of drift; the
+  `▶` marker in `queue list` now follows the *actual* now-playing item (it read
+  the queue pointer, which lags), so the marker and `now_playing` agree.
+- **Mutating playback/queue commands now return the resulting state** — no more
+  blind "ok" that forces a follow-up `now_playing`/`list` call. `playback
+  control` (play/pause/next/seek) returns the now-playing line; queue
+  `set`/`jump`/`play_next`/`play_last`/`remove`/`clear` return the affected item
+  plus the resulting Up Next (windowed around the current item), e.g. a jump
+  replies `Jumped to: Roxanne — The Police` followed by the queue with `▶` on it.
+- **Clearer `now_playing` engine-split message.** It now labels the active engine
+  on the primary line (`Now playing — web player [playing]: …`), reports the
+  *other* engine's real state instead of assuming "playing" (it's usually
+  paused), names which engine your transport controls reach, and shows the exact
+  `engine='web'`/`engine='native'` override to target the other one.
+- **Managed Chrome uses your real Keychain now.** The sign-in/playback browser
+  was launched with Playwright's automation defaults (`--use-mock-keychain`,
+  `--password-store=basic`, `--disable-extensions`), which locked users out of
+  Touch ID, passkeys, saved/iCloud passwords, and extensions — making sign-in
+  needlessly painful. Those are dropped (like the Widevine flag already is), so
+  the dedicated profile behaves like normal Chrome: sign in with Touch ID /
+  passkey / your password manager. (First Keychain use shows a one-time macOS
+  permission prompt.) The Chrome **sandbox is also kept on** (Playwright defaults
+  it off via `--no-sandbox`, which downgrades security and shows a scary warning
+  banner) — the window now runs sandboxed like real Chrome.
+- **Sanctioned-first write routing.** Writes (create / add / remove / delete /
+  rename / move / rate) now choose their path by *credential and capability*,
+  independent of the playback `mode`: the official Apple Music API when you hold a
+  developer token, the web player only for the operations the public API can't do
+  (delete, add-to-a-Music.app-made-playlist, move) or when you have no developer
+  token, and local Music.app on macOS. Choosing web *playback* no longer forces
+  your writes onto the web path. Each write reports the path it took, e.g.
+  `(via Apple Music API)` / `(via web player)` / `(via Music.app)`. Star ratings
+  now work on macOS regardless of the playback mode (they need AppleScript, not a
+  particular mode). See the README "What's sanctioned vs web" section.
+- **`now_playing` surfaces an engine split.** When the active engine is playing
+  one track and the OTHER engine is also live with a different track (the classic
+  "queued in the web player but transport drove the native app" confusion),
+  now_playing reports both instead of silently showing only one. The other engine
+  is only peeked when already running, never launched just to check.
+- **`queue` warns when it can't be reached.** The Up Next lives in the web player;
+  if the active engine is native, queue build/jump operations now prepend a notice
+  that transport controls won't reach this queue unless you play via the web
+  engine. Stops you building an unreachable queue.
+- **`queue(action="set", track="id1,id2,...")`** replaces the whole Up Next in
+  order in one atomic call, instead of N sequential `play_last` calls.
+- **Per-call playback engine override.** `playback(action=..., engine="web")` or
+  `engine="native"` picks the engine for one call without touching the `mode`
+  preference. Lets you queue tracks in the web player and then
+  `playback(action="play", engine="web")` so transport reaches that queue,
+  instead of flipping a global pref (and accidentally driving the native app,
+  which has its own separate playback state).
+- **Find a playlist by name** with `playlist(action="list", filter="jack")`, a
+  loose name match that returns just the matching playlists with their IDs
+  (instead of dumping the whole library). `action="search"` stays what it was:
+  searching the tracks inside a given playlist.
+- **Single engine `mode`** that governs both data and playback: `auto` (native
+  Music.app on macOS, web everywhere else), `native` (local Music.app), or `web`
+  (Apple Music web API + Chrome web player on any OS, even a Mac not signed into
+  the Music app). Set it from the tool: `config(action="set-pref",
+  preference="mode", string_value="web")`. Playback always follows the engine,
+  so there is no separate playback preference. (`api` is accepted as a
+  back-compat alias for `web`.)
+- **Cross-platform playback** via the music.apple.com web player (MusicKit in a
+  local Chrome window): play, play-by-URL (song/album/playlist), pause, skip,
+  seek, volume, shuffle, repeat, now-playing. DRM through Google Chrome.
+  Registered on every platform (was macOS-only). `reveal` now opens a track in
+  Chrome too. `auto` falls back native→browser when a native play can't start.
+- **Up Next queue** — a new `queue` tool driving the web player's MusicKit:
+  list, play-next, play-last, remove, jump, clear, autoplay. Cross-platform
+  (browser); the queue has no REST endpoint and AppleScript can't reach it.
+- **Full API routing of library/playlist mutations** in api mode (any OS):
+  create/rename/delete playlists, add/remove tracks, single-level folders and
+  moving playlists between folders (beyond the web UI, which only drags),
+  love/dislike ratings, catalog→library add, and **remove-from-library** (the
+  verified `DELETE /me/library/songs/{id}`). Library search/browse read via the
+  API in api mode. (macOS-only: 1–5 star ratings, favorites, snapshots, genre
+  search, nested folder paths, AirPlay.)
+- **Conversational auth** through `config` — `status`, `signin` (opens a browser,
+  any OS), `logout` (switch accounts), `reset` (clean slate / drop a dev token
+  for the web path). No terminal needed.
+- **Self-renewing tokens**: the Apple Developer token auto-renews from your `.p8`
+  when ≤30 days from expiry; the harvested web token re-fetches itself ≤15 days
+  out. Clear, escalating expiry messaging for the keyless case.
+- **MCP tool annotations** (read-only / destructive / open-world hints) on all
+  tools, so clients can auto-approve reads and warn before destructive ops.
+
+### Fixed
+
+- **Review pass (correctness + honest errors).** A multi-reviewer pass over the
+  release caught several issues, now fixed: (1) a web-rail add/remove that 401s no
+  longer always blames "playlist created in Music.app" — it probes the session
+  first and says "re-run login" when the session actually expired; (2) on macOS,
+  `auth-status` no longer reports writes as broken when only the *web* session is
+  stale — the verdict follows the real write rail (Music.app locally), with web
+  health shown as informational; (3) `_playlist_remove_api` surfaces the real
+  error instead of a flat "remove failed"; (4) `queue set` flags tracks MusicKit
+  dropped (unplayable/region-locked) instead of implying all landed; (5) the
+  FORCE_TOKENLESS message no longer overclaims (macOS local edits/ratings still
+  work); (6) `applemusic-mcp status` now has a request timeout so it can't hang.
+- **Smoother re-auth.** Three sign-in papercuts fixed: (1) error/status messages
+  now consistently point to `applemusic-mcp login` (the documented command;
+  `signin` stays as a hidden alias) instead of a mix of both; (2) a standalone
+  `applemusic-mcp login` now **fails fast** when the MCP server is already running
+  and holding the Chrome profile — it tells you to sign in through the server
+  rather than fighting for the profile lock (which orphaned windows and killed the
+  server's browser context); (3) if Playwright's Chromium build is missing (common
+  right after a version bump), the engine **auto-installs it once and retries**
+  instead of dumping a raw stack trace — with a clear one-line fix if that fails.
+- **A stuck cloud/shared track reference (`-10006`) gets a clear message.** When a
+  specific library copy is an un-attachable shared/cloud reference, the AppleScript
+  attach fails with a raw `-10006`; the add now says "this library copy is a
+  cloud/shared reference Music.app can't add to a playlist — try a different
+  version of the track" instead of the stack trace. (A different catalog version of
+  the same song attaches fine.)
+- **`queue remove` on the currently-playing item gives a clear error** instead of
+  an opaque MusicKit `mk-007 INVALID_ARGUMENTS` — "can't remove the
+  currently-playing item — jump to another track first."
+- **Catalog adds to Music.app-made playlists now complete in one call.** Adding a
+  not-yet-owned track to a user-made playlist is inherently two-step (library-add
+  in the cloud → AppleScript attach locally), and Apple's passive iCloud sync
+  could take *minutes* in between. The tool now actively nudges the sync (File >
+  Library > Update Cloud Library, a single stable menu action — not the retired
+  result-row UI automation) and polls until the track lands locally, so it attaches
+  in one shot (~5s measured) instead of returning a half-done "added to library."
+  The nudge briefly focuses Music.app and restores your previous app afterward.
+  When the sync is unusually slow, the add self-heals — it re-nudges with backoff
+  for ~75s rather than handing a "re-run it" error back after one short try.
+- **Music.app-made playlists add via native AppleScript (macOS); the web API
+  can't write them at all.** Verified live (in-page MusicKit *and* external REST,
+  both id forms): adding a track to a `canEdit=False` playlist returns HTTP 500
+  "Unable to update tracks" — the web path genuinely cannot do it. So the tool now
+  classifies playlists by origin (`playlist_kind`: `api` / `user` / `apple`, via
+  the `pl.u-` globalId tell) and routes a catalog add to a user-made playlist
+  through native AppleScript on macOS, rejects Apple-curated playlists with a clear
+  message (no rail can add to them), and gives an honest "requires macOS" off-mac
+  instead of a raw 500.
+- **Catalog-add to a Music.app-made playlist (the path that actually runs on
+  macOS) is now origin-aware.** The first canEdit fix only taught the *new*
+  web-rail helpers; the legacy auto-search-add path still used a second resolver
+  (`_resolve_library_playlist_id`) that hard-skipped Music.app-made playlists and
+  then POSTed to the dev-token endpoint that can't write them — so adds to those
+  playlists still failed. That resolver is retired; the path now resolves via
+  `amp_api.resolve_playlist(api_created_only=False)` and attaches through the rail
+  that can write the playlist: the sanctioned dev-token API for API-created
+  playlists, the web session for Music.app-made ones (with a dev-token→web
+  fallback). Same cloud namespace as the library-add, so no cross-engine race.
+- **Adds to Music.app-made playlists failed with "could not find playlist."**
+  `resolve_playlist_id` silently skipped every playlist amp-api flags
+  `canEdit=False` — which is all playlists created in the Music app — so the web
+  rail couldn't even find them. That flag is about *origin* (API-created vs
+  Music.app-made), not editability: those playlists are perfectly editable via the
+  web session or AppleScript, just not via the generated developer token. Now the
+  web/native rails resolve them (`api_created_only=False`), macOS routes the
+  attach through AppleScript (which edits any playlist), and an off-macOS web
+  write that 401s explains it's a playlist-origin limitation instead of blaming
+  auth. `is_api_created()` names the distinction.
+- **`APPLEMUSIC_FORCE_TOKENLESS` was invisible and caused silent add failures.**
+  The test flag forces tokenless mode (disabling every API write), but
+  `auth-status` didn't check it, so it green-lit "add works" while every add was
+  blocked, and the add errors blamed missing auth and told you to sign in (which
+  doesn't help while the flag is set). Status now calls the flag out prominently
+  and reports writes as DISABLED, and the catalog/library add errors name the flag
+  and say to unset it. (This flag, left set in a host's environment, was the real
+  cause of adds silently failing.)
+- **`auth-status` could claim "add works" while adds failed.** Its API probe
+  tested the generated developer token against `api.music.apple.com`, but catalog
+  adds, playlist edits, and ratings run through `amp-api.music.apple.com` with the
+  harvested web token, a different credential against a different host. The two
+  could disagree (reads fine, writes 401). Status now probes the actual mutation
+  path and reports it on its own line, and the "Ready" verdict reflects whether
+  add/playlist/rate truly work, not just whether tokens are present.
+- **Stale `playback`-preference help text.** Error messages and the playback
+  docstring still told users to "set the `playback` preference to `browser`" — a
+  preference that was removed and an engine name (`browser`) that no longer
+  exists. They now point at the real knob (`mode=web`) and the `engine=` override.
+- **`playlist(action="list")` flaked intermittently on macOS.** A single cloud
+  playlist that couldn't return its `persistent ID` mid-sync (AppleScript -1728)
+  aborted the whole listing, so the call sometimes returned zero playlists and
+  sometimes the full set. Each property is now read defensively per playlist, so
+  one bad entry can't take down the listing.
+- **Browser playback was preview-only.** Playwright's default
+  `--disable-component-update` flag stopped Chrome from registering the Widevine
+  CDM, so MusicKit silently served ~30s previews and playlists errored "No DRM
+  KeySystem available." Restoring component updates unlocks full-track DRM
+  playback in the managed Chrome window — no CDP connection required.
+- **Native catalog playback didn't actually play.** AppleScript's AXPress
+  (`click button …`) returns success but never fires Music.app's custom Play
+  control or track rows, so "play this catalog song" opened the page and did
+  nothing. Now driven by real CoreGraphics mouse events: a click on the album /
+  playlist Play button, or a name-matched double-click on the specific `?i=`
+  track row. Needs Accessibility permission.
+- **No more catalog-play dead end.** In `auto`/`browser` playback, a failed
+  native UI play falls back to the Chrome web player; pinned `native` keeps it
+  Music-app-only and returns an actionable message (grant Accessibility, set
+  `playback="browser"`, or `signin`).
+- **Playback `repeat` accepts `none`/`off`** on both engines.
+
+### Security
+
+- **Token storage**: auto-decided by platform, no user knob. macOS and Linux use
+  `0600` files (reliable across the separate CLI and server processes, where the
+  keychain's per-process ACL is not); Windows uses the Credential Locker (POSIX
+  file bits are a no-op there). Token files and `auth.html` are created `0600`
+  atomically; the config dir and Chrome profile are `0700`.
+
+### Changed
+
+- Install is now the published PyPI package: `claude mcp add applemusic -- uvx
+  applemusic-mcp serve` or `pipx install applemusic-mcp` (git-clone is the
+  from-source path). Tokens self-heal, so re-auth is rare.
+
+### Requirements / notes
+
+- Browser playback needs a **desktop session and Google Chrome installed**; the
+  bundled Chromium has no DRM and stays silent. It does not run on headless
+  servers, and audio plays on the machine running the server.
+- macOS still uses native Music.app playback by default (and remains the only
+  platform for AirPlay, 1–5 star ratings, nested folders, and playlist/track
+  deletion).
+
 ## [0.15.1] - 2026-06-24
 
 ### Fixed
 
 - **Playlist delete works off-macOS / without Music.app.** It was gated
   macOS-only and the public API's `DELETE` returns 401 even with a paid token.
-  Deletion now routes through `amp-api` (the web player's host, which accepts it)
-  using the captured token. Folders remain macOS-only.
+  Deletion now routes through the web player's host (which accepts it) using the
+  captured token. Folders remain macOS-only.
 
 ### Changed
 
@@ -22,7 +300,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Tokenless API path — no $99 Apple Developer account required.** Catalog
+- **Tokenless API path — no Apple Developer account required.** Catalog
   add-to-library and auto_search→playlist run over the unified Apple Music API
   even without a generated developer token:
   - A **developer-token fallback** that sources the public `AMPWebPlay`
@@ -355,7 +633,7 @@ This release consolidates the macOS UI automation paths onto a small set of shar
 
 ### Added
 
-- **Verify-after-modify on every playlist + library data path** — `_playlist_add` (both names path and IDs path), `ui_add_to_playlist`'s final step, `_playlist_remove` (all 4 input-type branches), `_library_remove` (all 4 input-type branches), and `_library_add_track_via_ui` now confirm the change actually persisted before reporting success. On verify miss the call retries once with sync-lag delay; if still missing, the user sees a clear actionable error ("Some user-created playlists silently revert AppleScript edits server-side; adding manually via Music.app's right-click → Add to Playlist usually works") instead of a misleading "Added 1 track(s)" with nothing in the playlist. The previous behavior could return success three times in a row for the same track that never actually landed (caught during live testing — Lionel Richie "Hello" added to a `canEdit:false` user-created playlist).
+- **Verify-after-modify on every playlist + library data path** — `_playlist_add` (both names path and IDs path), `ui_add_to_playlist`'s final step, `_playlist_remove` (all 4 input-type branches), `_library_remove` (all 4 input-type branches), and `_library_add_track_via_ui` now confirm the change actually persisted before reporting success. On verify miss the call retries once with sync-lag delay; if still missing, the user sees a clear actionable error (Music.app silently reverted the edit server-side — an Apple bug where even a manual add fails; quit and reopen Music.app, then retry) instead of a misleading "Added 1 track(s)" with nothing in the playlist. The previous behavior could return success three times in a row for the same track that never actually landed (caught during live testing — Lionel Richie "Hello" added to a `canEdit:false` user-created playlist).
 - **`playlist_tracks` paginated header now shows true total on the API path** — when a `limit` is set on the API-optimized branch (used when both `api_id` and `applescript_name` resolve, or when only `api_id` is available), the header now reads `=== 1-200 of 436 tracks ===` rather than `=== 200 tracks ===`. Captured from `meta.total` on the first /tracks API response — no extra API call. The AppleScript-only branch (used in tokenless mode and for playlists with no API ID) was already correct: it fetches the full list, then `_apply_pagination` records the pre-slice count, so the header has always shown the true total there. This fix closes the API-path gap. Prevents callers (including AI agents) from treating a partial view as authoritative when surveying playlist contents. Same hard-rule lesson Eric called out: "don't define a limit, and even if a limit is defined the true count is returned."
 - **`_SEARCH_FIELD_TOOLBAR_FLAT` variant** — third toolbar layout for macOS 26 builds where the search text field sits directly under `toolbar 1` without a wrapping `group 1`. The dual-path probe in `_get_search_field()` now tries grouped → flat → sidebar in order, caches the first hit, and picks up future toolbar variants without code changes if needed.
 - **TestUIPrimitives** — 13 new mock-based unit tests covering each new internal primitive (`_focus_search_field`, `_wait_for_top_results`, `_parse_top_results`, `_find_top_result_position`, `_hover_then_click_subelement`, `_verify_track_playing`).

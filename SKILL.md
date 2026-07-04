@@ -1,7 +1,7 @@
 ---
 name: apple-music
-version: 0.14.0
-description: Apple Music integration via AppleScript, UI automation, or MusicKit API
+version: 0.16.0
+description: Apple Music integration — AppleScript (local Music.app) and the Apple Music API / web player (cross-platform library, playlists, playback, and queue)
 ---
 
 # Apple Music Integration
@@ -343,13 +343,25 @@ osascript stderr messages map to a small set of environmental states. When Apple
 # UI Automation (macOS)
 
 > **Add-to-library/playlist UI automation was removed in 0.15.0.** Catalog
-> add-to-library and auto_search→playlist run over the **unified Apple Music API**
+> add-to-library and auto_add→playlist run over the **unified Apple Music API**
 > (developer token generated **or** sourced from Apple's public web player, plus a
 > `media-user-token`). The old UI add path was version-fragile (it broke across
-> macOS/Music.app releases, #37). To enable the API path without an Apple Developer
-> account: `applemusic-mcp signin` (one-time browser login captures the
-> media-user-token). The UI primitives below remain only for **playback /
-> play-from-URL** and catalog *search*, not for adding.
+> macOS/Music.app releases, #37). To enable the API path: `applemusic-mcp login`
+> (or `login --dev` with a developer token). On **macOS** `login` defaults to reading the
+> media-user-token from a signed-in **Safari** — no Chrome/Playwright — provided
+> Safari → Settings → Advanced → Develop → "Allow JavaScript from Apple Events" is
+> enabled; `login --chrome` uses the Chrome web player instead (needs
+> `pip install 'applemusic-mcp[browser]'`). **Off macOS**, `login` opens Chrome
+> (Playwright ships by default there). The UI primitives below remain only for
+> **playback / play-from-URL** and catalog *search*, not for adding.
+>
+> **Engines (`mode` pref / per-call `engine=`):** `auto` (default — native Music.app
+> for playback, **Safari** for the Up Next queue, the API for data on macOS; Chrome
+> off-mac), `native`, `safari`, `chrome`, `api`. The **Safari** engine drives your
+> signed-in Safari's MusicKit through the same `do JavaScript` channel (DRM-native,
+> no Chrome) for play/control/now_playing/settings and the full queue — so on macOS
+> the whole web-player surface works without Playwright. Using the `queue` makes its
+> engine the active one, so `playback control` reaches it.
 
 The remaining UI automation controls Music.app through System Events (Accessibility API) and CoreGraphics (mouse events).
 
@@ -367,23 +379,40 @@ tell application "System Events" to tell process "Music"
 end tell
 ```
 
-**CoreGraphics mouse events** (via JXA) trigger hover effects that reveal hidden UI controls:
+**CoreGraphics mouse events** (via JXA) generate real mouse input — hover, click, and double-click:
 ```javascript
 // osascript -l JavaScript
 ObjC.import("CoreGraphics");
 var point = $.CGPointMake(x, y);
-var event = $.CGEventCreateMouseEvent($(), $.kCGEventMouseMoved, point, 0);
-$.CGEventPost($.kCGHIDEventTap, event);
+// hover (reveals hidden controls):
+$.CGEventPost($.kCGHIDEventTap, $.CGEventCreateMouseEvent($(), $.kCGEventMouseMoved, point, 0));
+// click: post LeftMouseDown then LeftMouseUp at the point.
+// double-click: post two down/up pairs with the click-state field (1) set to 1 then 2.
 ```
 
-## The Hover Trick
+> **Critical:** System Events `click` (AXPress) **does not fire** Music.app's
+> custom Play/Shuffle buttons or track rows — it returns success but nothing
+> plays. Read element rects with System Events, then click with **CoreGraphics**
+> mouse events at the element's screen coordinates. A single click only *selects*
+> a track row; **double-click** it to play.
 
-Music.app hides per-track Play and "Add to Library" buttons until the mouse hovers over a track row. To interact with them programmatically:
+## Playing a catalog (non-library) track natively
+
+AppleScript has no verb to play a non-library catalog track. Deep-link the page,
+then drive the UI with CoreGraphics:
+
+1. `open "music://…/album/<id>"` (album/playlist) or `…?i=<songId>` (one track)
+2. **Album/playlist:** locate the `Play` button, read its position+size, CoreGraphics-click its center.
+3. **Single track:** match the track row by name in the track list, CoreGraphics **double-click** it (so only that track plays, not the whole album).
+
+## The Hover Trick (per-row controls)
+
+Music.app hides per-track Play / "Add to Library" controls until the mouse hovers over a row:
 
 1. Find the track's UI element position via System Events
 2. Move the mouse there via CoreGraphics (generates real hover events)
 3. The hidden `checkbox` (play) and `button` (Add to Library) appear in the accessibility tree
-4. Click them via System Events
+4. Click them via **CoreGraphics** at their coordinates (not System Events AXPress)
 
 ## Search via UI
 
@@ -420,15 +449,16 @@ When a user asks for something, the right MCP tool depends on whether they're se
 | Goal | Use | Notes |
 |---|---|---|
 | Find a song the user already has | `library(action='search', query='...')` | Local library only. AppleScript on macOS, API otherwise. |
+| Find a playlist by name | `playlist(action='list', filter='jack')` | Loose name match, returns matching playlists with IDs. Do **not** use `action='search'` for this — that searches the *tracks inside* a given playlist and needs a `playlist` param. |
 | List the user's tracks in a genre | `library(action='search', query='Rock', types='genre')` | Filters on the track's genre field — **macOS-only**. Do NOT route a genre name through plain full-text search: it never looks at the genre field, so "Rock" would false-match a song titled *"Rock Your Body."* Zero matches returns "No tracks found"; off macOS it reports genre filtering isn't available via the API. |
 | Find a song in Apple Music's full catalog | `catalog(action='search', query='...')` | Tries API first, falls back to Music.app UI search on tokenless macOS. |
-| Add a catalog song to the user's library | `library(action='add', track='...')` | API path with token, UI automation path on tokenless macOS. |
-| Add a song (in library OR catalog) to a playlist | `playlist(action='add', track='...', auto_search=True)` | `auto_search=True` is required to reach the catalog when the song isn't already in the library. Default is False to avoid unwanted library writes — set it to True for "fill this playlist" workflows. |
+| Add a catalog song to the user's library | `library(action='add', track='...')` | API only — needs a developer token (generated or harvested) + a media-user-token (`signin`). The UI-automation fallback was removed in 0.15.0 (see note above). |
+| Add a song (in library OR catalog) to a playlist | `playlist(action='add', track='...', auto_add=True)` | `auto_add=True` is required to reach the catalog when the song isn't already in the library. Default is False to avoid unwanted library writes — set it to True for "fill this playlist" workflows. |
 | Browse charts / recommendations | `discover` | API only. No UI fallback for this one. |
 
 `library(action='search')` returns one page: `limit` (default 25) caps the results and `offset` pages through larger result sets. The text header shows `start-end of total`, so when `end < total` there are more results — bump `offset` by `limit` to fetch the next page (mirrors `action='browse'`).
 
-If `library(action='search')` returns "No songs found in library", it is **not** a hint to set up an API token — it's a hint to try `catalog(action='search')` or `playlist(action='add', auto_search=True)` instead. The tokenless macOS path covers all of these.
+If `library(action='search')` returns "No songs found in library", it is **not** a hint to set up an API token — it's a hint to try `catalog(action='search')` or `playlist(action='add', auto_add=True)` instead. The tokenless macOS path covers all of these.
 
 ## Compound flows (no API)
 
@@ -467,6 +497,16 @@ end tell
 ```
 
 **Don't** click "Add to Playlist" menu items via UI — the AppleScript `duplicate` path is more reliable. Even if you have a dev token, **don't** hit `POST /v1/me/library/playlists/{id}/tracks` — it returns HTTP 500 for any playlist not originally created via API (the default for playlists made in Music.app). `duplicate` works for any playlist.
+
+### Write routing (sanctioned-first)
+
+The server picks a write's path by **credential and capability, not the playback mode**:
+
+- **Sanctioned** — the official Apple Music API (`api.music.apple.com`) with a generated developer token. Preferred whenever a dev token is present and the op is supported.
+- **Web** — the web-player backend with a signed-in session token. Used only for the gaps the public API can't do (delete a playlist, add to a Music.app-created playlist, move out of a folder) or when there's no dev token.
+- **Native** — local Music.app via AppleScript on macOS (tokenless), the default writer on a Mac.
+
+So `mode=web` (a *playback* choice) does NOT force writes onto the web path — a dev-token holder still writes via the official API. Star ratings need AppleScript (macOS) regardless of mode. Each write reports the path it took (`via Apple Music API` / `via web player` / `via Music.app`); `config(action="status")` shows the resolved rail on its `Writes:` line.
 
 ### Post-add verification
 
@@ -768,9 +808,9 @@ On macOS, most features work immediately. For catalog features or Windows/Linux,
 
 | Manual | applemusic-mcp |
 |--------|----------------|
-| 4 API calls to add song | `playlist(action="add", auto_search=True)` |
+| 4 API calls to add song | `playlist(action="add", auto_add=True)` |
 | Copy URL + open in Music | `playback(action="play", url="...")` |
-| UI hover + click to add to library | `library(action="add")` with UI fallback |
+| Add a catalog song to your library | `library(action="add")` (unified API — dev or web token) |
 | Track library changes manually | `library(action="snapshot")` |
 | AppleScript escaping | Automatic |
 | Token management | Automatic with warnings |

@@ -10,6 +10,10 @@ import pytest
 
 from applemusic_mcp import auth
 
+# Captured before conftest's autouse stub replaces it, so these tests can
+# exercise the REAL resolve_web_token logic.
+_REAL_RESOLVE_WEB = auth.resolve_web_token
+
 
 class TestGetConfigDir:
     """Tests for get_config_dir function."""
@@ -142,6 +146,182 @@ class TestGetDeveloperToken:
         assert "expired" in str(exc_info.value).lower()
 
 
+def _write_signing_config(config_dir):
+    """Write a real ES256 .p8 + config.json so generate_developer_token works."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    key_path = config_dir / "AuthKey_TEST.p8"
+    key_path.write_text(pem)
+    (config_dir / "config.json").write_text(
+        json.dumps(
+            {"team_id": "TEAM123456", "key_id": "KEY1234567", "private_key_path": str(key_path)}
+        )
+    )
+
+
+class TestDeveloperTokenAutoRenew:
+    """The generated token self-renews when within 30 days AND the .p8 is present."""
+
+    def test_can_generate_true_with_key(self, mock_config_dir):
+        _write_signing_config(mock_config_dir)
+        assert auth.can_generate_developer_token() is True
+
+    def test_can_generate_false_without_key(self, mock_config_dir):
+        assert auth.can_generate_developer_token() is False
+
+    def test_auto_renews_when_within_30_days(self, mock_config_dir):
+        _write_signing_config(mock_config_dir)
+        token_file = mock_config_dir / "developer_token.json"
+        token_file.write_text(
+            json.dumps({"token": "old.stale.token", "expires": time.time() + 86400 * 10})
+        )
+
+        result = auth.get_developer_token()
+
+        assert result != "old.stale.token"  # minted fresh
+        data = json.loads(token_file.read_text())
+        assert (data["expires"] - time.time()) / 86400 > 150  # ~180-day token
+
+    def test_keeps_token_when_far_from_expiry(self, mock_config_dir):
+        _write_signing_config(mock_config_dir)
+        token_file = mock_config_dir / "developer_token.json"
+        token_file.write_text(
+            json.dumps({"token": "still.good.token", "expires": time.time() + 86400 * 90})
+        )
+
+        assert auth.get_developer_token() == "still.good.token"  # no needless renew
+
+    def test_generates_when_no_token_file_but_key_present(self, mock_config_dir):
+        _write_signing_config(mock_config_dir)
+        assert auth.get_developer_token()  # mints one instead of raising
+
+
+class _FakeKeyring:
+    """Minimal in-memory stand-in for the keyring module."""
+
+    def __init__(self):
+        self.d = {}
+
+    def get_keyring(self):
+        class _Backend:  # name isn't fail/null → treated as usable
+            pass
+
+        return _Backend()
+
+    def set_password(self, service, key, value):
+        self.d[(service, key)] = value
+
+    def get_password(self, service, key):
+        return self.d.get((service, key))
+
+    def delete_password(self, service, key):
+        self.d.pop((service, key), None)
+
+
+class TestSecretStoreKeychain:
+    """The keychain path of the secret store (file path is covered everywhere else)."""
+
+    def _enable(self, monkeypatch):
+        # Keychain is auto-selected on Windows only (0600 file bits are a no-op
+        # there). Simulate Windows + a working backend.
+        monkeypatch.delenv("APPLEMUSIC_NO_KEYRING", raising=False)
+        monkeypatch.setattr(auth.sys, "platform", "win32")
+        fake = _FakeKeyring()
+        monkeypatch.setattr(auth, "_keyring", fake)
+        return fake
+
+    def test_keychain_off_on_posix_even_with_backend(self, mock_config_dir, monkeypatch):
+        """On macOS/Linux a working backend is still NOT used (per-process ACL is
+        unreliable): the token must be written to a FILE, not the keychain."""
+        monkeypatch.delenv("APPLEMUSIC_NO_KEYRING", raising=False)
+        monkeypatch.setattr(auth.sys, "platform", "darwin")
+        fake = _FakeKeyring()
+        monkeypatch.setattr(auth, "_keyring", fake)
+        auth.secret_set("music_user_token", '{"music_user_token": "x"}')
+        assert auth._secret_file("music_user_token").exists()
+        assert ("applemusic-mcp", "music_user_token") not in fake.d
+
+    def test_round_trip_uses_keychain_not_file(self, mock_config_dir, monkeypatch):
+        fake = self._enable(monkeypatch)
+        auth.secret_set("music_user_token", '{"music_user_token": "tok"}')
+        assert ("applemusic-mcp", "music_user_token") in fake.d
+        # no plaintext file written when the keychain holds it
+        assert not auth._secret_file("music_user_token").exists()
+        assert auth.get_user_token() == "tok"
+        auth.secret_delete("music_user_token")
+        assert auth.secret_get("music_user_token") is None
+
+    def test_migrates_existing_file_into_keychain(self, mock_config_dir, monkeypatch):
+        # Pre-existing plaintext file (an upgrade from the old file-based storage).
+        auth._write_private(auth._secret_file("harvested_token"), '{"token": "h", "expires": 0}')
+        self._enable(monkeypatch)
+        # First read migrates it off disk and into the keychain.
+        assert auth.secret_get("harvested_token") is not None
+        assert not auth._secret_file("harvested_token").exists()
+
+    def test_disabled_by_env_uses_file(self, mock_config_dir, monkeypatch):
+        monkeypatch.setenv("APPLEMUSIC_NO_KEYRING", "1")
+        auth.secret_set("music_user_token", '{"music_user_token": "f"}')
+        assert auth._secret_file("music_user_token").exists()
+        assert auth.get_user_token() == "f"
+
+    def test_file_wins_over_stale_keychain(self, mock_config_dir, monkeypatch):
+        """The token-loss bug: keychain holds an OLD value (A) and a newer FILE
+        value (B) exists from a keychain-unavailable write. A file's existence
+        means it was the most recent write, so secret_get must return B, not A —
+        and migrate B back into the keychain."""
+        fake = self._enable(monkeypatch)
+        fake.d[("applemusic-mcp", "k")] = "A-stale"
+        auth._write_private(auth._secret_file("k"), "B-newer")
+        assert auth.secret_get("k") == "B-newer"
+        # B was migrated into the keychain and the file removed (single copy).
+        assert fake.d[("applemusic-mcp", "k")] == "B-newer"
+        assert not auth._secret_file("k").exists()
+
+    def test_secret_delete_reports_failure_when_backend_errors(self, mock_config_dir, monkeypatch):
+        """A locked keychain that can't delete must NOT report success."""
+
+        class _StuckKeyring(_FakeKeyring):
+            def delete_password(self, service, key):
+                pass  # pretend it succeeded but the value stays
+
+            def get_password(self, service, key):
+                return self.d.get((service, key))
+
+        monkeypatch.delenv("APPLEMUSIC_NO_KEYRING", raising=False)
+        monkeypatch.setattr(auth.sys, "platform", "win32")  # keychain path (Windows)
+        stuck = _StuckKeyring()
+        stuck.d[("applemusic-mcp", "k")] = "stuck"
+        monkeypatch.setattr(auth, "_keyring", stuck)
+        assert auth.secret_delete("k") is False  # still present → reports failure
+
+
+class TestResolveWebToken:
+    """amp-api needs the harvested web token, never the generated one (which it
+    401s). resolve_web_token must return harvested even when a generated token
+    exists."""
+
+    def test_returns_cached_harvested(self, mock_config_dir, monkeypatch):
+        monkeypatch.setattr(auth, "resolve_web_token", _REAL_RESOLVE_WEB)
+        auth._save_harvested_token("h.token")  # plenty of life left
+        monkeypatch.setattr(
+            auth, "harvest_developer_token", lambda: pytest.fail("should not harvest")
+        )
+        assert auth.resolve_web_token() == "h.token"
+
+    def test_harvests_when_no_cache(self, mock_config_dir, monkeypatch):
+        monkeypatch.setattr(auth, "resolve_web_token", _REAL_RESOLVE_WEB)
+        monkeypatch.setattr(auth, "harvest_developer_token", lambda: "fresh.harvest")
+        assert auth.resolve_web_token() == "fresh.harvest"
+
+
 class TestGetUserToken:
     """Tests for get_user_token function."""
 
@@ -247,11 +427,11 @@ class TestConfigExample:
     """The shipped config.example.json must not enable surprising behavior when
     copied verbatim (security issue #32)."""
 
-    def test_auto_search_defaults_off(self):
+    def test_auto_add_defaults_off(self):
         example = Path(__file__).resolve().parent.parent / "config.example.json"
         data = json.loads(example.read_text())
-        assert data.get("preferences", {}).get("auto_search") is False, (
-            "config.example.json must ship auto_search=false to match the safe " "code default"
+        assert data.get("preferences", {}).get("auto_add") is False, (
+            "config.example.json must ship auto_add=false to match the safe " "code default"
         )
 
 
@@ -286,7 +466,6 @@ class TestGetUserPreferences:
         prefs = auth.get_user_preferences()
 
         assert prefs["fetch_explicit"] is False
-        assert prefs["reveal_on_library_miss"] is False
         assert prefs["clean_only"] is False
 
     def test_returns_defaults_when_no_preferences_section(self, mock_config_dir, sample_config):
@@ -298,7 +477,6 @@ class TestGetUserPreferences:
         prefs = auth.get_user_preferences()
 
         assert prefs["fetch_explicit"] is False
-        assert prefs["reveal_on_library_miss"] is False
         assert prefs["clean_only"] is False
 
     def test_returns_configured_preferences(self, mock_config_dir, sample_config):
@@ -306,7 +484,6 @@ class TestGetUserPreferences:
         config = sample_config.copy()
         config["preferences"] = {
             "fetch_explicit": True,
-            "reveal_on_library_miss": True,
             "clean_only": False,
         }
         config_file = mock_config_dir / "config.json"
@@ -316,7 +493,6 @@ class TestGetUserPreferences:
         prefs = auth.get_user_preferences()
 
         assert prefs["fetch_explicit"] is True
-        assert prefs["reveal_on_library_miss"] is True
         assert prefs["clean_only"] is False
 
     def test_handles_partial_preferences(self, mock_config_dir, sample_config):
@@ -324,7 +500,6 @@ class TestGetUserPreferences:
         config = sample_config.copy()
         config["preferences"] = {
             "fetch_explicit": True,
-            # reveal_on_library_miss not set
             # clean_only not set
         }
         config_file = mock_config_dir / "config.json"
@@ -334,5 +509,4 @@ class TestGetUserPreferences:
         prefs = auth.get_user_preferences()
 
         assert prefs["fetch_explicit"] is True
-        assert prefs["reveal_on_library_miss"] is False  # default
         assert prefs["clean_only"] is False  # default

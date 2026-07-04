@@ -1,8 +1,10 @@
 """Authentication and token management for Apple Music API."""
 
 import json
+import logging
 import os
 import re
+import sys
 import time
 import webbrowser
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -13,14 +15,156 @@ from urllib.parse import parse_qs
 import jwt
 import requests
 
-DEFAULT_CONFIG_DIR = Path.home() / ".config" / "applemusic-mcp"
+from . import paths
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_CONFIG_DIR = paths.config_dir()
+
+
+def _write_private(path, text: str) -> None:
+    """Write ``text`` to ``path`` created 0600 from the start — no world-readable
+    window on POSIX. The old ``open(w)`` + ``chmod`` pattern left the secret
+    readable between create and chmod; ``os.open`` with the mode closes that
+    TOCTOU gap. NOTE: POSIX mode bits don't restrict access on Windows — that's
+    why Windows defaults ``secure_storage`` to the keychain (see
+    ``get_user_preferences``)."""
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
+# --- Secret store: OS keychain with a 0600-file fallback --------------------
+# Tokens live in the OS keychain (macOS Keychain / Windows Credential Locker /
+# Linux Secret Service) when a backend is available, else a 0600 JSON file (the
+# same filenames/format as before, so existing installs and headless servers
+# keep working). The stored VALUE is always the JSON blob the file used to hold,
+# so callers parse it identically regardless of backend.
+
+try:  # keyring is a dependency, but import defensively
+    import keyring as _keyring
+except Exception:  # pragma: no cover - keyring import failure
+    _keyring = None  # type: ignore
+
+_KEYRING_SERVICE = "applemusic-mcp"
+
+
+def _keyring_ok() -> bool:
+    """True when the OS keychain should be used. Auto-decided by platform, no
+    user knob: Windows uses the Credential Locker (POSIX 0600 file bits are a
+    no-op there, so a token file would be readable by other local accounts);
+    macOS and Linux use 0600 files, because the keychain's per-process ACL is
+    unreliable across this tool's separate CLI and server processes. The
+    APPLEMUSIC_NO_KEYRING=1 test guard forces files everywhere."""
+    if os.environ.get("APPLEMUSIC_NO_KEYRING") == "1" or _keyring is None:
+        return False
+    if sys.platform != "win32":
+        return False
+    try:
+        kr = _keyring.get_keyring()
+        name = f"{type(kr).__module__}.{type(kr).__name__}".lower()
+        return "fail" not in name and "null" not in name
+    except Exception:
+        return False
+
+
+def _secret_file(key: str) -> Path:
+    # Back-compat: same filenames the tokens have always used.
+    return get_config_dir() / f"{key}.json"
+
+
+def secret_set(key: str, value: str) -> None:
+    """Persist a secret blob under ``key``. Invariant: the secret lives in exactly
+    ONE place. Keychain write deletes the file; file write (keychain unavailable)
+    best-effort deletes any keychain copy. Combined with file-precedence in
+    ``secret_get``, this prevents a stale keychain value from shadowing a newer
+    file token (the SSH-writes-file / GUI-writes-keychain flap)."""
+    if _keyring_ok():
+        try:
+            _keyring.set_password(_KEYRING_SERVICE, key, value)
+            _secret_file(key).unlink(missing_ok=True)
+            return
+        except Exception:  # pragma: no cover - backend write failure → fall back
+            pass
+    # File path: drop any now-stale keychain copy so reads don't shadow this write.
+    if _keyring is not None:
+        try:
+            _keyring.delete_password(_KEYRING_SERVICE, key)
+        except Exception:  # pragma: no cover
+            pass
+    # On Windows the secret SHOULD live in the Credential Locker; if we're here, that
+    # backend was unavailable and we're writing a plain file — say so, don't hide it.
+    if sys.platform == "win32":
+        logger.warning(
+            "Windows Credential Locker unavailable — storing %r in a local file "
+            "(%s) instead of the OS keychain.",
+            key,
+            _secret_file(key),
+        )
+    _write_private(_secret_file(key), value)
+
+
+def secret_get(key: str) -> Optional[str]:
+    """Read a secret blob. A file's EXISTENCE means it was the most recent write
+    (keychain writes always delete the file), so the file wins and is migrated
+    back into the keychain when one is available; otherwise read the keychain."""
+    f = _secret_file(key)
+    if f.exists():
+        try:
+            data = f.read_text()
+        except OSError:
+            data = None
+        if data is not None:
+            if _keyring_ok():  # migrate the newer file value into the keychain
+                try:
+                    _keyring.set_password(_KEYRING_SERVICE, key, data)
+                    f.unlink(missing_ok=True)
+                except Exception:  # pragma: no cover
+                    pass
+            return data
+    if _keyring_ok():
+        try:
+            return _keyring.get_password(_KEYRING_SERVICE, key)
+        except Exception:  # pragma: no cover
+            pass
+    return None
+
+
+def secret_delete(key: str) -> bool:
+    """Forget a secret from both the keychain and the file. Returns True only if
+    the secret is actually gone afterward (so logout/reset can't report success
+    while a locked keychain still holds it)."""
+    if _keyring_ok():
+        try:
+            _keyring.delete_password(_KEYRING_SERVICE, key)
+        except Exception:  # not present, or a real backend error — verify below
+            pass
+    _secret_file(key).unlink(missing_ok=True)
+    return secret_get(key) is None
+
+
+def has_user_token() -> bool:
+    return (
+        bool(os.environ.get("APPLEMUSIC_USER_TOKEN")) or secret_get("music_user_token") is not None
+    )
+
+
+def developer_token_info() -> Optional[dict]:
+    """Parsed generated-developer-token record ({token, expires, ...}) or None."""
+    raw = secret_get("developer_token")
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return None
+
 
 # --- Harvested (fallback) developer token -----------------------------------
 # Apple ships a public developer token (issuer "AMPWebPlay") to every browser
 # that loads music.apple.com, embedded in the web player's JS bundle. It's the
 # fallback dev-token source for users WITHOUT a generated (paid) token — the
-# generated token always takes precedence (legit, 6-month). This is the
-# documented community technique; see docs/plans/browser-first-architecture.md.
+# generated token always takes precedence (legit, 6-month).
 _HARVEST_UA = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
 _HARVEST_BROWSE_URL = "https://music.apple.com/us/browse"
 _HARVEST_ORIGIN = "https://music.apple.com"
@@ -60,16 +204,24 @@ def _harvested_token_file() -> Path:
     return get_config_dir() / "harvested_token.json"
 
 
+# Re-harvest the web token once it's within this many days of expiry. Sparse
+# usage means we want plenty of runway, so a fresh token is fetched well before
+# the old one dies rather than at the last minute.
+_HARVEST_REFRESH_DAYS = 15
+
+
 def _load_harvested_token() -> Optional[str]:
-    """Return a cached harvested token if present and not expiring within a day."""
-    f = _harvested_token_file()
-    if not f.exists():
+    """Return the cached harvested token only if it has more than
+    ``_HARVEST_REFRESH_DAYS`` of life left; otherwise return None so
+    ``resolve_developer_token`` fetches a fresh one."""
+    raw = secret_get("harvested_token")
+    if not raw:
         return None
     try:
-        data = json.loads(f.read_text())
-        if data.get("expires", 0) > time.time() + 86400:
+        data = json.loads(raw)
+        if data.get("expires", 0) > time.time() + _HARVEST_REFRESH_DAYS * 86400:
             return data["token"]
-    except (json.JSONDecodeError, OSError, KeyError):
+    except (json.JSONDecodeError, ValueError, KeyError):
         return None
     return None
 
@@ -80,9 +232,9 @@ def _save_harvested_token(token: str) -> None:
         exp = int(claims.get("exp", time.time() + 30 * 86400))
     except Exception:
         exp = int(time.time() + 30 * 86400)
-    f = _harvested_token_file()
-    f.write_text(json.dumps({"token": token, "expires": exp, "source": "harvested"}, indent=2))
-    os.chmod(f, 0o600)
+    secret_set(
+        "harvested_token", json.dumps({"token": token, "expires": exp, "source": "harvested"})
+    )
 
 
 def resolve_developer_token() -> str:
@@ -96,6 +248,15 @@ def resolve_developer_token() -> str:
         return get_developer_token()  # generated (paid) — preferred
     except (FileNotFoundError, ValueError):
         pass
+    return resolve_web_token()
+
+
+def resolve_web_token() -> str:
+    """A developer token accepted by ``amp-api.music.apple.com`` (the web player's
+    host). This is ALWAYS the harvested ``AMPWebPlay`` token — amp-api rejects a
+    generated (Apple Developer) token with 401, even though it works on the public
+    ``api.music.apple.com``. So every amp-api call uses this, not
+    ``resolve_developer_token`` (which prefers the generated token)."""
     cached = _load_harvested_token()
     if cached:
         return cached
@@ -110,24 +271,54 @@ def has_any_developer_token() -> bool:
     try:
         resolve_developer_token()
         return True
-    except Exception:
+    except Exception as exc:
+        # Don't let a network blip during harvest look identical to "no credentials":
+        # log it so a silently-downgraded write rail is at least visible in the logs.
+        logger.warning("has_any_developer_token: couldn't obtain a developer token: %s", exc)
         return False
 
 
 def get_config_dir() -> Path:
-    """Get or create the config directory."""
+    """Get or create the config directory (0700 — it holds tokens and the .p8)."""
     config_dir = DEFAULT_CONFIG_DIR
-    config_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        config_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        # A clear, actionable message beats a raw traceback (e.g. an unwritable
+        # APPLEMUSIC_MCP_HOME, or a root-owned mount under a non-root user).
+        raise RuntimeError(
+            f"Can't create the config directory at {config_dir}: {exc}. "
+            "Check that the path is writable (or set APPLEMUSIC_MCP_HOME to one that is)."
+        ) from exc
+    try:
+        os.chmod(config_dir, 0o700)
+    except OSError:
+        pass
     return config_dir
 
 
+_config_cache: "Optional[tuple[float, dict]]" = None
+
+
 def load_config() -> dict:
-    """Load configuration from config.json, returning empty dict if not found."""
+    """Load config.json (empty dict if absent). Cached by file mtime — `_engine()`
+    reads prefs many times per tool call, so this avoids re-parsing on every read;
+    a `set-pref` write changes the mtime and invalidates the cache automatically."""
+    global _config_cache
     config_file = get_config_dir() / "config.json"
     if not config_file.exists():
+        _config_cache = None
         return {}
+    try:
+        mtime = config_file.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    if _config_cache is not None and _config_cache[0] == mtime:
+        return _config_cache[1]
     with open(config_file) as f:
-        return json.load(f)
+        data = json.load(f)
+    _config_cache = (mtime, data)
+    return data
 
 
 def get_user_preferences() -> dict:
@@ -136,9 +327,8 @@ def get_user_preferences() -> dict:
     Returns:
         dict with keys:
         - fetch_explicit: bool (default False)
-        - reveal_on_library_miss: bool (default False)
         - clean_only: bool (default False)
-        - auto_search: bool (default False)
+        - auto_add: bool (default False)
         - storefront: str (default "us")
     """
     try:
@@ -150,12 +340,22 @@ def get_user_preferences() -> dict:
     # Return with defaults
     return {
         "fetch_explicit": prefs.get("fetch_explicit", False),
-        "reveal_on_library_miss": prefs.get("reveal_on_library_miss", False),
         "clean_only": prefs.get("clean_only", False),
-        "auto_search": prefs.get(
-            "auto_search", False
-        ),  # Default FALSE (don't modify library without permission)
+        # Default FALSE (don't modify the library without permission). `auto_search`
+        # is the old name for this key and is still honored from existing configs.
+        "auto_add": prefs.get("auto_add", prefs.get("auto_search", False)),
         "storefront": prefs.get("storefront", "us"),  # Apple Music region (default: US)
+        # Single engine mode, governs BOTH data ops and playback: "auto"
+        # (native Music.app on macOS, web API + Chrome web player elsewhere),
+        # "native" (all-in on the local Music.app, macOS, no token), or "web"
+        # (all-in on the cross-platform Apple Music web API + web player, so a Mac
+        # not signed into Music.app, or on a different account, stays fully web).
+        # "api" is accepted as a back-compat alias for "web". Playback always
+        # follows the engine, so there is no separate playback preference.
+        "mode": prefs.get("mode", "auto"),
+        # Token storage location is auto-decided by platform (see _keyring_ok),
+        # not a user preference: Windows uses the Credential Locker, macOS/Linux
+        # use 0600 files.
     }
 
 
@@ -171,7 +371,7 @@ def generate_developer_token(expiry_days: int = 180) -> str:
     """Generate a developer token (JWT) valid for up to 180 days."""
     config = load_config()
     if not config:
-        raise FileNotFoundError("No config.json found. Run: applemusic-mcp init")
+        raise FileNotFoundError("No config.json found. Run: applemusic-mcp login --dev")
     key_path = get_private_key_path(config)
 
     with open(key_path) as f:
@@ -186,7 +386,6 @@ def generate_developer_token(expiry_days: int = 180) -> str:
     token = jwt.encode(payload, private_key, algorithm="ES256", headers=headers)
 
     # Save token
-    token_file = get_config_dir() / "developer_token.json"
     token_data = {
         "token": token,
         "created": now,
@@ -194,53 +393,82 @@ def generate_developer_token(expiry_days: int = 180) -> str:
         "team_id": config["team_id"],
         "key_id": config["key_id"],
     }
-    with open(token_file, "w") as f:
-        json.dump(token_data, f, indent=2)
-    os.chmod(token_file, 0o600)
+    secret_set("developer_token", json.dumps(token_data))
 
     return token
 
 
+# The MCP may be used only occasionally, so a passive "expiring soon" warning
+# can arrive after the token has already died. Whenever the generated token is
+# within this many days of expiry AND the signing key (.p8) is present, mint a
+# fresh one on use — the same self-healing the harvested web token already has.
+_DEV_TOKEN_RENEW_DAYS = 30
+
+
+def can_generate_developer_token() -> bool:
+    """True if we have everything needed to mint a fresh generated token (config
+    + a readable .p8). When True, the generated token self-renews and no manual
+    `generate-token` is needed."""
+    try:
+        config = load_config()
+        if not config.get("team_id") or not config.get("key_id"):
+            return False
+        get_private_key_path(config)  # raises if the .p8 is missing
+        return True
+    except Exception:
+        return False
+
+
 def get_developer_token() -> str:
-    """Get existing developer token or raise if not found/expired."""
-    token_file = get_config_dir() / "developer_token.json"
-    if not token_file.exists():
-        raise FileNotFoundError("Developer token not found. Run: applemusic-mcp generate-token")
+    """Get the generated developer token, auto-renewing it when it's within
+    ``_DEV_TOKEN_RENEW_DAYS`` of expiry and the signing key is available.
 
-    with open(token_file) as f:
-        data = json.load(f)
-
-    # Check if expired (with 1 day buffer)
-    if data["expires"] < time.time() + 86400:
+    Raises FileNotFoundError/ValueError when there's no usable token and none can
+    be minted — callers (``resolve_developer_token``) then fall back to the
+    harvested web token."""
+    data = developer_token_info()
+    if data is not None:
+        try:
+            days_left = (data["expires"] - time.time()) / 86400
+        except (KeyError, TypeError):
+            days_left = -1.0
+        if days_left > _DEV_TOKEN_RENEW_DAYS:
+            return data["token"]
+        # In the renewal window (or already expired): mint a fresh one if we can.
+        if can_generate_developer_token():
+            return generate_developer_token()
+        if days_left > 1:
+            return data["token"]  # still valid; no key to renew with, so keep using it
         raise ValueError(
-            "Developer token expired or expiring soon. Run: applemusic-mcp generate-token"
+            "Developer token expired or expiring soon and no signing key is available "
+            "to renew it. Run: applemusic-mcp login --dev (or `login` for the web path)."
         )
-
-    return data["token"]
+    # No stored token yet — generate if we have the key, else signal "not found".
+    if can_generate_developer_token():
+        return generate_developer_token()
+    raise FileNotFoundError("Developer token not found. Run: applemusic-mcp login --dev")
 
 
 def get_user_token() -> str:
-    """Get the music user token or raise if not found."""
-    token_file = get_config_dir() / "music_user_token.json"
-    if not token_file.exists():
-        raise FileNotFoundError("Music user token not found. Run: applemusic-mcp authorize")
+    """Get the music user token or raise if not found.
 
-    with open(token_file) as f:
-        data = json.load(f)
-
-    return data["music_user_token"]
+    Honors APPLEMUSIC_USER_TOKEN if set (for headless / CI runs), else the stored token."""
+    env_tok = os.environ.get("APPLEMUSIC_USER_TOKEN")
+    if env_tok:
+        return env_tok
+    raw = secret_get("music_user_token")
+    if not raw:
+        raise FileNotFoundError("Music user token not found. Run: applemusic-mcp login")
+    return json.loads(raw)["music_user_token"]
 
 
 def save_user_token(token: str) -> None:
     """Save the music user token."""
-    token_file = get_config_dir() / "music_user_token.json"
     data = {
         "music_user_token": token,
         "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
-    with open(token_file, "w") as f:
-        json.dump(data, f, indent=2)
-    os.chmod(token_file, 0o600)
+    secret_set("music_user_token", json.dumps(data))
 
 
 def create_auth_html(developer_token: str, port: int) -> str:
@@ -304,7 +532,7 @@ def create_auth_html(developer_token: str, port: int) -> str:
             try {{
                 await MusicKit.configure({{
                     developerToken: developerToken,
-                    app: {{ name: 'Apple Music MCP Server', build: '1.0.0' }}
+                    app: {{ name: 'Apple Music MCP Server', build: '0.16.0' }}
                 }});
                 document.getElementById('status').innerHTML = '<p class="success">MusicKit loaded. Click the button to authorize.</p>';
             }} catch (err) {{
@@ -410,12 +638,10 @@ def run_auth_server(port: int = 8765) -> Optional[str]:
     developer_token = get_developer_token()
     cors_origin = f"http://localhost:{port}"
 
-    # Write auth HTML with restricted permissions (contains developer token)
+    # Write auth HTML private from creation (it embeds the developer token).
     auth_html = create_auth_html(developer_token, port)
     auth_file = config_dir / "auth.html"
-    with open(auth_file, "w", encoding="utf-8") as f:
-        f.write(auth_html)
-    os.chmod(auth_file, 0o600)
+    _write_private(auth_file, auth_html)
 
     # Token storage for callback
     captured_token = {"value": None}
@@ -528,6 +754,8 @@ def run_auth_server(port: int = 8765) -> Optional[str]:
     if captured_token["value"]:
         print("✓ Token saved successfully!")
         return captured_token["value"]
-    else:
+    else:  # pragma: no cover - unreachable: the serve loop only exits via
+        # server_should_stop, which is set ONLY alongside capturing the token
+        # (do_POST), so reaching here would require a captured-but-falsy token.
         print("No token received.")
         return None

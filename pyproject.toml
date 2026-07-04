@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "applemusic-mcp"
-version = "0.15.1"
-description = "MCP server for Apple Music - playlist management, playback control (macOS), and library access"
+version = "0.16.0"
+description = "MCP server for Apple Music — cross-platform library, playlists, and playback; no Apple Developer account required"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
@@ -34,19 +34,35 @@ dependencies = [
     "pyjwt[crypto]>=2.8.0",
     "requests>=2.31.0",
     "cryptography>=41.0.0",
-    # Browser engine for the sign-in / token-capture flow (drives a local Chrome
-    # against music.apple.com). Included by default so the no-Apple-Developer-account
-    # path works out of the box — the sign-in is offered automatically when a token
-    # is needed and none is configured. Uses system Chrome when present.
-    "playwright>=1.44.0",
+    # Browser engine for sign-in / token capture / web playback (drives a local
+    # Chrome against music.apple.com). REQUIRED off macOS — it's the only path there
+    # (no Music.app, no Safari harvest). On macOS it's OPTIONAL: Safari sign-in
+    # (`login --safari`), native Music.app playback, and the API cover everything, so
+    # the default Mac install skips the ~500 MB Playwright download. Mac users who
+    # want the Chrome web player install the `browser` extra (see optional-deps).
+    "playwright>=1.44.0; sys_platform != 'darwin'",
+    # OS keychain for token storage (macOS Keychain / Windows Credential Locker /
+    # Linux Secret Service). Falls back to a 0600 file when no backend is available
+    # (e.g. headless servers), so this never blocks the API path.
+    "keyring>=24.0.0",
+    # macOS only: Quartz powers the canonical screen-locked / no-active-console
+    # detection (CGSessionCopyCurrentDictionary). Without it that check silently
+    # degrades to an AppleScript heuristic. macOS-gated so it never touches
+    # Windows/Linux installs.
+    "pyobjc-framework-Quartz>=10.0; sys_platform == 'darwin'",
 ]
 
 [project.optional-dependencies]
+# macOS users who want the Chrome web player (instead of Safari sign-in + native
+# Music.app playback) install this: `pip install 'applemusic-mcp[browser]'`.
+# Off macOS, Playwright is a hard dependency (above) and this extra is redundant.
+browser = ["playwright>=1.44.0"]
 dev = [
     "pytest>=7.0.0",
     "pytest-mock>=3.0.0",
     "pytest-xdist>=3.0.0",  # parallel test execution: pytest -n auto
     "responses>=0.23.0",
+    "pytest-cov>=4.1.0",
     "black>=23.0.0",
     "ruff>=0.1.0",
 ]
@@ -73,8 +89,31 @@ select = ["E", "F", "I", "W"]
 [tool.pytest.ini_options]
 markers = [
     "slow: marks tests as slow (live AppleScript / Music.app I/O); deselect with '-m \"not slow\"'",
-    "ui: marks tests that drive Music.app UI automation; require TEST_UI=1 + visible Music.app",
+    "ui: marks the live API pre-release gate (real account mutations); require TEST_API=1",
+    "ui_live: marks live Music.app UI-automation tests (native playback / catalog deep-link / UI search); require TEST_UI=1 + a signed-in, unlocked Mac with Accessibility granted",
 ]
-# Default: skip slow + ui tests unless explicitly opted in. Local pre-commit
+# Default: skip slow + live gates unless explicitly opted in. Local pre-commit
 # runs the fast subset; CI and `make test-all` run everything.
-addopts = "-m 'not slow and not ui'"
+addopts = "-m 'not slow and not ui and not ui_live'"
+
+[tool.coverage.run]
+source = ["applemusic_mcp"]
+branch = false
+
+[tool.coverage.report]
+# Lines that are genuinely impossible to exercise in a unit test (live Chrome
+# owner thread, raw network I/O, process entry points) carry an inline
+# `# pragma: no cover` and are validated by the live gates instead.
+exclude_also = [
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "@(abc\\.)?abstractmethod",
+]
+# Regression floor, not a vanity 100%. The mocked suite sits ~99% on macOS; a
+# handful of lines are real-account round-trips covered only by the live gates
+# (TEST_API/TEST_UI), and a few module-level branches are macOS-only so they
+# can't run on the Linux CI matrix. 90 catches real backsliding without the
+# brittleness (and the false-confidence) of a hard 100% gate across platforms.
+fail_under = 90
+show_missing = true

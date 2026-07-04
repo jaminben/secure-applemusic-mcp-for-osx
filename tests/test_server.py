@@ -39,7 +39,7 @@ class TestGetTokenExpirationWarning:
         result = server.get_token_expiration_warning()
         assert result is not None
         assert "days" in result  # Could be 14 or 15 depending on timing
-        assert "generate-token" in result
+        assert "login --dev" in result
 
 
 class TestGetHeaders:
@@ -156,6 +156,8 @@ class TestCreatePlaylist:
         with open(user_token_file, "w") as f:
             json.dump({"music_user_token": mock_user_token}, f)
 
+        # With a developer token, off-macOS create takes the SANCTIONED rail
+        # (api.music.apple.com), not the grey amp-api host.
         responses.add(
             responses.POST,
             "https://api.music.apple.com/v1/me/library/playlists",
@@ -169,6 +171,7 @@ class TestCreatePlaylist:
 
         assert "My New Playlist" in result
         assert "p.newplaylist123" in result
+        assert "Apple Music API" in result  # sanctioned-rail label
 
 
 @pytest.mark.skipif(
@@ -197,14 +200,16 @@ class TestRenamePlaylist:
         assert "Old Name" in result
         assert "New Name" in result
 
-    def test_requires_macos(self, monkeypatch):
-        """Should error when AppleScript not available."""
+    def test_off_macos_routes_to_web(self, monkeypatch):
+        """Off macOS, rename routes to the web rail (no longer a macOS-only error)."""
         monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
+        monkeypatch.setattr(server, "_write_rail", lambda *a, **k: "web")
+        monkeypatch.setattr(server.amp_api, "resolve_playlist_id", lambda name, **k: "p.r1")
+        monkeypatch.setattr(server.amp_api, "rename_playlist", lambda pid, new: (True, "ok"))
 
         result = server.playlist(action="rename", playlist="Old Name", new_name="New Name")
 
-        assert "Error" in result
-        assert "macOS" in result
+        assert "Renamed" in result and "macOS" not in result
 
     def test_requires_new_name(self, monkeypatch):
         """Should error when new_name not provided."""
@@ -232,14 +237,17 @@ class TestCreateFolder:
         assert "My Folder" in result
         assert "ABCD1234" in result
 
-    def test_requires_macos(self, monkeypatch):
-        """Should error when AppleScript not available."""
+    def test_off_macos_routes_to_web(self, monkeypatch):
+        """Off macOS, folder create routes to the web rail (no macOS-only error)."""
         monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
+        monkeypatch.setattr(server, "_write_rail", lambda *a, **k: "web")
+        monkeypatch.setattr(
+            server.amp_api, "create_folder", lambda name, parent_id=None: (True, "f.fld1")
+        )
 
         result = server.playlist(action="create_folder", name="My Folder")
 
-        assert "Error" in result
-        assert "macOS" in result
+        assert "My Folder" in result and "macOS" not in result
 
     def test_requires_name(self, monkeypatch):
         """Should error when name not provided."""
@@ -267,14 +275,19 @@ class TestMoveToFolder:
         assert "My Playlist" in result
         assert "My Folder" in result
 
-    def test_requires_macos(self, monkeypatch):
-        """Should error when AppleScript not available."""
+    def test_off_macos_routes_to_web(self, monkeypatch):
+        """Off macOS, move routes to the web rail (no longer a macOS-only error)."""
         monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
+        monkeypatch.setattr(server, "_write_rail", lambda *a, **k: "web")
+        monkeypatch.setattr(server.amp_api, "resolve_playlist_id", lambda name, **k: "p.abc")
+        monkeypatch.setattr(server.amp_api, "resolve_folder_id", lambda name: "f.fld1")
+        monkeypatch.setattr(
+            server.amp_api, "move_playlist_to_folder", lambda pid, fid: (True, "ok")
+        )
 
         result = server.playlist(action="move", playlist="My Playlist", name="My Folder")
 
-        assert "Error" in result
-        assert "macOS" in result
+        assert "Moved" in result and "macOS" not in result
 
     def test_requires_playlist_name(self, monkeypatch):
         """Should error when playlist name not provided."""
@@ -309,9 +322,16 @@ class TestAddToPlaylist:
         with open(user_token_file, "w") as f:
             json.dump({"music_user_token": mock_user_token}, f)
 
+        # macOS native posts to api.music.apple.com; non-mac (api engine) posts to
+        # amp-api. Mock both so the test passes on every platform.
         responses.add(
             responses.POST,
             "https://api.music.apple.com/v1/me/library/playlists/p.test123/tracks",
+            status=204,
+        )
+        responses.add(
+            responses.POST,
+            "https://amp-api.music.apple.com/v1/me/library/playlists/p.test123/tracks",
             status=204,
         )
 
@@ -536,7 +556,199 @@ class TestCheckAuthStatus:
 
         result = server.config(action="auth-status")
 
-        assert "EXPIRES IN" in result or "10" in result
+        # Keyless generated token (no .p8 to auto-renew) → escalating nudge.
+        assert "expires in" in result.lower()
+        assert "login --dev" in result
+
+
+class TestAuthTool:
+    """The conversational `auth` tool: status / signin / logout / reset."""
+
+    def _tokens(self, d, dev, user):
+        (d / "developer_token.json").write_text(
+            json.dumps({"token": dev, "expires": time.time() + 86400 * 60})
+        )
+        (d / "music_user_token.json").write_text(json.dumps({"music_user_token": user}))
+
+    def test_status_ready(
+        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+    ):
+        self._tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        # The verdict now hinges on the real mutation path (amp-api), so control it.
+        monkeypatch.setattr(server.amp_api, "session_status", lambda: "ok")
+        with patch.object(server, "get_headers", return_value={}):
+            with patch("requests.get") as mg:
+                mg.return_value.status_code = 200
+                out = server.config(action="status")
+        assert "Mode:" in out and "Ready" in out
+        assert "Web fallback writes" in out and "OK" in out
+        assert "Writes:" in out  # resolved write rail is surfaced
+
+    def test_status_flags_forced_tokenless(
+        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+    ):
+        # The flag that silently blocked every add must be surfaced, not green-lit.
+        self._tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        monkeypatch.setenv("APPLEMUSIC_FORCE_TOKENLESS", "1")
+        out = server.config(action="status")
+        assert "Ready" not in out
+        assert "FORCE_TOKENLESS" in out and "DISABLED" in out
+
+    def test_library_add_names_the_flag_when_forced(self, monkeypatch):
+        # The add error must name the flag, not tell the user to log in (which
+        # wouldn't help while it's set).
+        monkeypatch.setenv("APPLEMUSIC_FORCE_TOKENLESS", "1")
+        out = server.library(action="add", track="Some Song")
+        assert "FORCE_TOKENLESS" in out and "Unset it" in out
+
+    def test_status_tokens_present_but_mutations_unauthorized(
+        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+    ):
+        # The exact trap on the WEB rail: tokens look fine, reads work, but the
+        # write path 401s. Status must NOT claim add works. Force the web rail
+        # (off macOS, no generated dev token) so the verdict hinges on the session.
+        self._tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
+        monkeypatch.setattr(server, "_has_developer_token", lambda: False)
+        monkeypatch.setattr(server.amp_api, "session_status", lambda: "expired")
+        with patch.object(server, "get_headers", return_value={}):
+            with patch("requests.get") as mg:
+                mg.return_value.status_code = 200
+                out = server.config(action="status")
+        assert "Ready" not in out
+        assert "unauthorized" in out.lower() and "signin" in out.lower()
+
+    def test_status_not_signed_in(self, mock_config_dir):
+        out = server.config(action="status")
+        assert "signin" in out.lower()
+
+    def test_signin_success(self, monkeypatch):
+        import applemusic_mcp.browser as browser
+
+        monkeypatch.setattr(
+            browser,
+            "signin_interactive",
+            lambda *a, **k: (True, "Signed in — session captured and saved."),
+        )
+        out = server.config(action="signin")
+        assert "✓" in out and "Signed in" in out
+
+    def test_signin_still_waiting(self, monkeypatch):
+        import applemusic_mcp.browser as browser
+        from applemusic_mcp import safari
+
+        # Force the Chrome path: Safari harvest fails + Playwright present (signin now
+        # tries Safari first on macOS).
+        monkeypatch.setattr(safari, "media_user_token", lambda: (False, "no safari session"))
+        monkeypatch.setattr(browser, "is_available", lambda: True)
+        monkeypatch.setattr(browser, "signin_interactive", lambda *a, **k: (False, "still-waiting"))
+        out = server.config(action="signin")
+        assert "finish signing in" in out.lower()
+
+    def test_logout_requires_confirm(self, mock_config_dir, mock_developer_token, mock_user_token):
+        self._tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        out = server.config(action="logout")
+        assert "confirm=True" in out
+        # nothing deleted without confirm
+        assert (mock_config_dir / "music_user_token.json").exists()
+
+    def test_logout_clears_user_session(
+        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+    ):
+        self._tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        (mock_config_dir / "harvested_token.json").write_text("{}")
+        import applemusic_mcp.browser as browser
+
+        cleared = {}
+        monkeypatch.setattr(browser, "clear_session", lambda: cleared.update(done=True))
+        out = server.config(action="logout", confirm=True)
+        assert "Signed out" in out
+        assert not (mock_config_dir / "music_user_token.json").exists()
+        assert not (mock_config_dir / "harvested_token.json").exists()
+        # dev token is preserved on logout
+        assert (mock_config_dir / "developer_token.json").exists()
+        assert cleared.get("done") is True
+
+    def test_reset_requires_confirm(self, mock_config_dir, mock_developer_token, mock_user_token):
+        self._tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        out = server.config(action="reset")
+        assert "confirm=True" in out
+        assert (mock_config_dir / "developer_token.json").exists()
+
+    def test_reset_wipes_everything(
+        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+    ):
+        self._tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        (mock_config_dir / "config.json").write_text("{}")
+        import applemusic_mcp.browser as browser
+
+        monkeypatch.setattr(browser, "clear_session", lambda: None)
+        out = server.config(action="reset", confirm=True)
+        assert "Reset complete" in out
+        assert not (mock_config_dir / "developer_token.json").exists()
+        assert not (mock_config_dir / "config.json").exists()
+        assert not (mock_config_dir / "music_user_token.json").exists()
+
+    def test_unknown_action(self):
+        assert "Unknown action" in server.config(action="bogus")
+
+
+class TestModePreference:
+    """The single engine mode (playback follows it) must be switchable via the
+    tool, not just by hand-editing config.json."""
+
+    def test_set_mode_web(self, mock_config_dir):
+        out = server.config(action="set-pref", preference="mode", string_value="web")
+        assert "mode = web" in out
+        from applemusic_mcp.auth import get_user_preferences
+
+        assert get_user_preferences()["mode"] == "web"
+
+    def test_set_mode_api_alias_accepted(self, mock_config_dir):
+        # `api` stays accepted as a back-compat alias for `web`.
+        out = server.config(action="set-pref", preference="mode", string_value="api")
+        assert "mode = api" in out
+
+    def test_playback_pref_removed(self, mock_config_dir):
+        # The separate playback knob is gone; setting it is rejected.
+        out = server.config(action="set-pref", preference="playback", string_value="browser")
+        assert "must be one of" in out.lower() or "preference must be" in out.lower()
+
+    def test_invalid_mode_rejected(self, mock_config_dir):
+        out = server.config(action="set-pref", preference="mode", string_value="bogus")
+        assert "must be one of" in out
+        assert "native" in out and "web" in out
+
+    def test_mode_missing_value_lists_choices(self, mock_config_dir):
+        out = server.config(action="set-pref", preference="mode")
+        assert "native" in out and "auto" in out
+
+
+class TestToolAnnotations:
+    """Tools carry behavioral hints (readOnly/destructive/openWorld) so clients
+    can auto-approve reads and warn on destructive ops."""
+
+    def _annotations(self):
+        import asyncio
+
+        tools = asyncio.run(server.mcp.list_tools())
+        return {t.name: t.annotations for t in tools}
+
+    def test_reads_are_readonly(self):
+        ann = self._annotations()
+        for name in ("catalog", "discover"):
+            assert ann[name].readOnlyHint is True
+            assert ann[name].destructiveHint is False
+
+    def test_destructive_tools_flagged(self):
+        ann = self._annotations()
+        for name in ("playlist", "library", "config"):
+            assert ann[name].destructiveHint is True
+            assert ann[name].readOnlyHint is False
+
+    def test_all_tools_hit_open_world(self):
+        ann = self._annotations()
+        assert all(a.openWorldHint is True for a in ann.values())
 
 
 class TestFormatDuration:
@@ -920,6 +1132,26 @@ class TestAddToLibraryTool:
         assert "Added" in result
         assert "2" in result
 
+    @responses.activate
+    def test_add_album_by_catalog_id_does_not_crash(
+        self, mock_config_dir, mock_developer_token, mock_user_token
+    ):
+        """Regression: album=<numeric catalog id> hit an undefined `use_ui_path`
+        (NameError) left over from the UI-automation removal. It must route to
+        the API instead."""
+        dev_token_file = mock_config_dir / "developer_token.json"
+        with open(dev_token_file, "w") as f:
+            json.dump({"token": mock_developer_token, "expires": time.time() + 86400 * 60}, f)
+        user_token_file = mock_config_dir / "music_user_token.json"
+        with open(user_token_file, "w") as f:
+            json.dump({"music_user_token": mock_user_token}, f)
+
+        responses.add(responses.POST, "https://api.music.apple.com/v1/me/library", status=202)
+
+        result = server.library(action="add", album="1538003494")
+        assert "Error: name 'use_ui_path'" not in result
+        assert "Added" in result
+
 
 class TestPlayTrackMatching:
     """Tests for play_track song matching logic."""
@@ -1035,6 +1267,12 @@ class TestPaginationWithFetchExplicit:
         # Mock cache - return cached explicit status for all tracks
         mock_cache = MagicMock()
         mock_cache.get_explicit.return_value = "Clean"  # All tracks have cached explicit status
+
+        # Resolution falls through to asc.get_playlists() when the name isn't in
+        # the API; stub it so "Test Playlist" resolves natively, offline.
+        monkeypatch.setattr(
+            server.asc, "get_playlists", lambda: (True, [{"name": "Test Playlist", "id": "PLID"}])
+        )
 
         with patch.object(server.asc, "get_playlist_tracks", side_effect=mock_asc_get_tracks):
             with patch.object(server, "get_track_cache", return_value=mock_cache):
@@ -1307,9 +1545,12 @@ class TestResolvePlaylistApiLookup:
 
     @responses.activate
     def test_falls_back_to_name_when_not_in_api(
-        self, mock_config_dir, mock_developer_token, mock_user_token
+        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
     ):
         """Should fall back to playlist name when not found in API."""
+        # API miss → resolution tries native fuzzy match; an empty playlist list
+        # means no match, so it falls back to the raw name (offline).
+        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, []))
         dev_token_file = mock_config_dir / "developer_token.json"
         with open(dev_token_file, "w") as f:
             json.dump({"token": mock_developer_token, "expires": time.time() + 86400 * 60}, f)
@@ -1332,10 +1573,12 @@ class TestResolvePlaylistApiLookup:
         assert resolved.applescript_name == "Local Only Playlist"
         assert resolved.error is None
 
-    def test_handles_ps_i_love_you_as_name(self):
+    def test_handles_ps_i_love_you_as_name(self, monkeypatch):
         """Should treat 'p.s. I love you' as a name, not an ID."""
         # This tests the edge case where a playlist name starts with "p."
         # but isn't an ID (has spaces/punctuation after p.)
+        # Empty native playlist list → raw-name fallback, offline.
+        monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, []))
         with patch.object(server, "_find_api_playlist_by_name", return_value=(None, None)):
             resolved = server._resolve_playlist("p.s. I love you")
 
@@ -1787,6 +2030,34 @@ class TestUserJourneyAPIOnly:
             },
             status=200,
         )
+        # api engine adds over amp-api: resolve playlist, catalog search, add tracks
+        _AMP = "https://amp-api.music.apple.com/v1"
+        responses.add(
+            responses.GET,
+            f"{_AMP}/me/library/playlists",
+            json={
+                "data": [{"id": "p.rock", "attributes": {"name": "Classic Rock", "canEdit": True}}]
+            },
+            status=200,
+        )
+        responses.add(
+            responses.GET,
+            f"{_AMP}/catalog/us/search",
+            json={
+                "results": {
+                    "songs": {
+                        "data": [
+                            {
+                                "id": "cat123",
+                                "attributes": {"name": "Dream On", "artistName": "Aerosmith"},
+                            }
+                        ]
+                    }
+                }
+            },
+            status=200,
+        )
+        responses.add(responses.POST, f"{_AMP}/me/library/playlists/p.rock/tracks", status=204)
         result = server.playlist(
             action="add", playlist="Classic Rock", track="Dream On", artist="Aerosmith"
         )
@@ -1800,7 +2071,8 @@ class TestUserJourneyAPIOnly:
         monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
         self._setup_tokens(mock_config_dir, mock_developer_token, mock_user_token)
 
-        # 6. Create a new playlist
+        # 6. Create a new playlist. With a dev token, off-macOS create takes the
+        # sanctioned rail (api.music.apple.com), not the grey amp-api host.
         responses.add(
             responses.POST,
             "https://api.music.apple.com/v1/me/library/playlists",
@@ -2007,6 +2279,29 @@ class TestUserJourneyFuzzyMatching:
             json={"data": [{"id": "i.new", "attributes": {"name": "Back in Black"}}]},
             status=200,
         )
+        # add routes through the api engine: catalog search + add POST hit amp-api
+        responses.add(
+            responses.GET,
+            "https://amp-api.music.apple.com/v1/catalog/us/search",
+            json={
+                "results": {
+                    "songs": {
+                        "data": [
+                            {
+                                "id": "cat456",
+                                "attributes": {"name": "Back in Black", "artistName": "AC/DC"},
+                            }
+                        ]
+                    }
+                }
+            },
+            status=200,
+        )
+        responses.add(
+            responses.POST,
+            "https://amp-api.music.apple.com/v1/me/library/playlists/p.fuzzy1/tracks",
+            status=204,
+        )
 
         result = server.playlist(
             action="add", playlist="Rock and Roll Classics", track="Back in Black"
@@ -2155,6 +2450,247 @@ class TestUserJourneyMacOSOnly:
         user_token_file = mock_config_dir / "music_user_token.json"
         with open(user_token_file, "w") as f:
             json.dump({"music_user_token": mock_user_token}, f)
+
+
+class TestApiModeReadRouting:
+    """On macOS, mode=api must skip AppleScript for library reads and use the
+    HTTP API — so a user not signed into Music.app (or signed into a different
+    account there) can stay fully API/browser."""
+
+    def _setup_tokens(self, mock_config_dir, mock_developer_token, mock_user_token):
+        dev_token_file = mock_config_dir / "developer_token.json"
+        with open(dev_token_file, "w") as f:
+            json.dump({"token": mock_developer_token, "expires": time.time() + 86400 * 60}, f)
+        user_token_file = mock_config_dir / "music_user_token.json"
+        with open(user_token_file, "w") as f:
+            json.dump({"music_user_token": mock_user_token}, f)
+
+    @responses.activate
+    def test_search_in_api_mode_skips_applescript(
+        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+    ):
+        # AppleScript is present (macOS) but the engine is pinned to api.
+        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
+        monkeypatch.setattr(server, "_engine", lambda: "api")
+        self._setup_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+
+        mock_asc = MagicMock()
+        monkeypatch.setattr(server, "asc", mock_asc)
+
+        responses.add(
+            responses.GET,
+            "https://api.music.apple.com/v1/me/library/search",
+            json={
+                "results": {
+                    "library-songs": {
+                        "data": [
+                            {
+                                "id": "i.lib1",
+                                "attributes": {"name": "Money", "artistName": "Pink Floyd"},
+                            }
+                        ]
+                    }
+                }
+            },
+            status=200,
+        )
+
+        result = server.library(action="search", query="Money")
+        assert "Money" in result
+        mock_asc.search_library_page.assert_not_called()
+
+    @responses.activate
+    def test_browse_songs_in_api_mode_skips_applescript(
+        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+    ):
+        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
+        monkeypatch.setattr(server, "_engine", lambda: "api")
+        self._setup_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+
+        mock_asc = MagicMock()
+        monkeypatch.setattr(server, "asc", mock_asc)
+
+        responses.add(
+            responses.GET,
+            "https://api.music.apple.com/v1/me/library/songs",
+            json={
+                "data": [
+                    {"id": "i.lib2", "attributes": {"name": "Time", "artistName": "Pink Floyd"}}
+                ]
+            },
+            status=200,
+        )
+
+        result = server.library(action="browse", item_type="songs", limit=25)
+        assert "Time" in result
+        mock_asc.get_library_songs_page.assert_not_called()
+        mock_asc.get_library_songs.assert_not_called()
+
+    @responses.activate
+    def test_love_by_name_in_api_mode_uses_catalog_rating(
+        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+    ):
+        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
+        monkeypatch.setattr(server, "_engine", lambda: "api")
+        self._setup_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+
+        mock_asc = MagicMock()
+        monkeypatch.setattr(server, "asc", mock_asc)
+
+        responses.add(
+            responses.GET,
+            "https://api.music.apple.com/v1/catalog/us/search",
+            json={
+                "results": {
+                    "songs": {
+                        "data": [
+                            {
+                                "id": "999",
+                                "attributes": {"name": "Money", "artistName": "Pink Floyd"},
+                            }
+                        ]
+                    }
+                }
+            },
+            status=200,
+        )
+        responses.add(
+            responses.PUT,
+            "https://api.music.apple.com/v1/me/ratings/songs/999",
+            status=204,
+        )
+
+        result = server.library(action="rate", rate_action="love", track="Money")
+        assert "Money" in result
+        mock_asc.love_track.assert_not_called()
+
+    def test_star_get_refused_without_applescript(
+        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+    ):
+        # Star ratings need AppleScript (macOS), independent of the playback mode.
+        # Off macOS they're refused; on macOS they work regardless of mode.
+        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
+        self._setup_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+
+        mock_asc = MagicMock()
+        monkeypatch.setattr(server, "asc", mock_asc)
+
+        result = server.library(action="rate", rate_action="get", track="Money")
+        assert "native" in result.lower()
+        mock_asc.get_rating.assert_not_called()
+
+    @responses.activate
+    def test_remove_in_api_mode_deletes_via_api(
+        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+    ):
+        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
+        monkeypatch.setattr(server, "_write_rail", lambda *a, **k: "web")
+        self._setup_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+
+        mock_asc = MagicMock()
+        monkeypatch.setattr(server, "asc", mock_asc)
+
+        responses.add(
+            responses.GET,
+            "https://amp-api.music.apple.com/v1/me/library/search",
+            json={
+                "results": {
+                    "library-songs": {
+                        "data": [
+                            {
+                                "id": "i.toremove",
+                                "attributes": {"name": "Money", "artistName": "Pink Floyd"},
+                            }
+                        ]
+                    }
+                }
+            },
+            status=200,
+        )
+        responses.add(
+            responses.DELETE,
+            "https://amp-api.music.apple.com/v1/me/library/songs/i.toremove",
+            status=204,
+        )
+
+        result = server.library(action="remove", track="Money")
+        assert "Removed" in result and "Money" in result
+        mock_asc.remove_from_library.assert_not_called()
+
+    @responses.activate
+    def test_add_by_ids_in_api_mode(
+        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+    ):
+        """api mode: a p.xxx playlist id is used directly (no name lookup) and a
+        library track id is added as type library-songs."""
+        # Off macOS + a web session → the add takes the web (amp-api) rail.
+        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
+        monkeypatch.setattr(server, "_has_developer_token", lambda: False)
+        monkeypatch.setattr(server, "_has_user_token", lambda: True)
+        self._setup_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+
+        responses.add(
+            responses.POST,
+            "https://amp-api.music.apple.com/v1/me/library/playlists/p.rock/tracks",
+            status=204,
+        )
+        result = server.playlist(action="add", playlist="p.rock", track="i.lib1")
+        assert "Added 1 track" in result
+        import json as _json
+
+        body = _json.loads(responses.calls[-1].request.body)
+        assert body["data"][0] == {"id": "i.lib1", "type": "library-songs"}
+
+    @responses.activate
+    def test_remove_in_api_mode_never_fans_out(
+        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+    ):
+        """Data-loss guard: a short/common term that substring-matches many
+        library songs must delete EXACTLY ONE (exact title preferred), not all."""
+        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
+        monkeypatch.setattr(server, "_write_rail", lambda *a, **k: "web")
+        self._setup_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        monkeypatch.setattr(server, "asc", MagicMock())
+
+        # "Love" matches three titles; one is an exact match.
+        responses.add(
+            responses.GET,
+            "https://amp-api.music.apple.com/v1/me/library/search",
+            json={
+                "results": {
+                    "library-songs": {
+                        "data": [
+                            {
+                                "id": "i.1",
+                                "attributes": {"name": "Crazy in Love", "artistName": "Beyoncé"},
+                            },
+                            {
+                                "id": "i.2",
+                                "attributes": {"name": "Love", "artistName": "Lana Del Rey"},
+                            },
+                            {
+                                "id": "i.3",
+                                "attributes": {"name": "Love On Top", "artistName": "Beyoncé"},
+                            },
+                        ]
+                    }
+                }
+            },
+            status=200,
+        )
+        # Only the exact-title song (i.2) may be deleted.
+        deleted = responses.add(
+            responses.DELETE,
+            "https://amp-api.music.apple.com/v1/me/library/songs/i.2",
+            status=204,
+        )
+
+        result = server.library(action="remove", track="Love")
+        # Exactly one DELETE, and it was the exact-title match.
+        delete_calls = [c for c in responses.calls if c.request.method == "DELETE"]
+        assert len(delete_calls) == 1
+        assert "i.2" in delete_calls[0].request.url
+        assert "2 other" in result  # warns about the other matches
 
 
 class TestAlbumDisambiguation:
@@ -3356,7 +3892,7 @@ class TestLibrarySearchSurfacesAppleScriptError:
 
         # API path raises the legacy token error
         def fake_get_headers():
-            raise FileNotFoundError("Developer token not found. Run: applemusic-mcp generate-token")
+            raise FileNotFoundError("Developer token not found. Run: applemusic-mcp login --dev")
 
         monkeypatch.setattr(server, "get_headers", fake_get_headers)
 
@@ -3530,7 +4066,7 @@ class TestPlaylistCreateNoTokenLeakOnAsFailure:
         # Token deliberately not configured — if cascade leaks, this is
         # the error the user would see.
         def raise_no_token():
-            raise FileNotFoundError("Developer token not found. Run: applemusic-mcp generate-token")
+            raise FileNotFoundError("Developer token not found. Run: applemusic-mcp login --dev")
 
         monkeypatch.setattr(server, "get_headers", raise_no_token)
 
@@ -3538,7 +4074,7 @@ class TestPlaylistCreateNoTokenLeakOnAsFailure:
 
         assert "Music.app isn't running" in result
         assert "Developer token not found" not in result
-        assert "generate-token" not in result
+        assert "login --dev" not in result
 
     def test_automation_denied_surfaces_actionable_message(self, monkeypatch):
         from applemusic_mcp import applescript as real_asc
@@ -3671,7 +4207,7 @@ class TestLibraryBrowseNoTokenLeakOnAsFailure:
 
         # Token NOT configured. If cascade leaks, this is what the user sees.
         def raise_no_token():
-            raise FileNotFoundError("Developer token not found. Run: applemusic-mcp generate-token")
+            raise FileNotFoundError("Developer token not found. Run: applemusic-mcp login --dev")
 
         monkeypatch.setattr(server, "get_headers", raise_no_token)
 
@@ -3902,7 +4438,7 @@ class TestPlaylistAddIdsRequireToken:
             artist="",
             allow_duplicates=False,
             verify=False,
-            auto_search=False,
+            auto_add=False,
         )
 
         assert "Track IDs require an API token" in result
@@ -3941,7 +4477,7 @@ class TestPlaylistAddIdsRequireToken:
             artist="",
             allow_duplicates=False,
             verify=False,
-            auto_search=False,
+            auto_add=False,
         )
 
         assert "Adding by album requires an API token" in result
@@ -4083,8 +4619,8 @@ class TestLibrarySearchEmptyDoesNotLeakToken:
         assert "No songs found" in result
         # The leak-error must NOT appear
         assert "Developer token not found" not in result
-        assert "applemusic-mcp generate-token" not in result
-        assert "applemusic-mcp authorize" not in result
+        assert "applemusic-mcp login --dev" not in result
+        assert "applemusic-mcp login --dev" not in result
 
     def test_tokenful_macos_empty_as_still_cascades_for_cloud_check(
         self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch

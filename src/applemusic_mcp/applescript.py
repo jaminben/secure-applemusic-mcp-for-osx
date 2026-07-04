@@ -434,6 +434,13 @@ def get_current_track() -> tuple[bool, dict]:
         end if
         set t to current track
         set output to ""
+        if player state is paused then
+            set output to output & "state:paused" & "\\n"
+        else if player state is playing then
+            set output to output & "state:playing" & "\\n"
+        else
+            set output to output & "state:" & (player state as text) & "\\n"
+        end if
         set output to output & "name:" & (name of t) & "\\n"
         set output to output & "artist:" & (artist of t) & "\\n"
         set output to output & "album:" & (album of t) & "\\n"
@@ -454,13 +461,35 @@ def get_current_track() -> tuple[bool, dict]:
     if output == "STOPPED":
         return True, {"state": "stopped"}
 
-    # Parse key:value pairs
-    track_info = {"state": "playing"}
+    # Parse key:value pairs (state is included in the output now — paused tracks
+    # were previously misreported as "playing" because it was hardcoded here).
+    track_info: dict = {}
     for line in output.split("\n"):
         if ":" in line:
             key, value = line.split(":", 1)
             track_info[key.strip()] = value.strip()
+    track_info.setdefault("state", "playing")
     return True, track_info
+
+
+def now_playing_if_running() -> Optional[dict]:
+    """Native now-playing, but ONLY if Music.app is already running — checked via
+    System Events so this never launches the app just to peek. Returns a dict
+    ({state, name, artist, album, ...}) when Music is up, or None when it isn't
+    running / nothing is playing / the read fails. Used to surface a web/native
+    engine split without side effects."""
+    # `running of application "Music"` would launch it; System Events does not.
+    ok, out = run_applescript(
+        'tell application "System Events" to (exists (processes whose name is "Music"))'
+    )
+    if not ok or out.strip().lower() != "true":
+        return None
+    ok, info = get_current_track()
+    if not ok or not isinstance(info, dict):
+        return None
+    if info.get("state") == "stopped":
+        return None
+    return info
 
 
 def get_volume() -> tuple[bool, int | str]:
@@ -482,6 +511,65 @@ def set_volume(volume: int) -> tuple[bool, str]:
     """Set volume (0-100)."""
     volume = max(0, min(100, volume))
     return run_applescript(f'tell application "Music" to set sound volume to {volume}')
+
+
+_last_cloud_nudge = 0.0
+_CLOUD_NUDGE_MIN_INTERVAL = 4.0  # seconds — don't re-foreground Music more than ~once/4s
+
+
+def update_cloud_library(min_interval: float = _CLOUD_NUDGE_MIN_INTERVAL) -> tuple[bool, str]:
+    """Nudge an iCloud Music Library sync via File > Library > Update Cloud Library,
+    so a track just added to the library over the API shows up in the LOCAL
+    Music.app sooner (needed before AppleScript can attach it to a playlist).
+
+    Rate-limited: each click briefly foregrounds Music, so a batch of adds (or
+    rapid retries) must not stomp on it. Calls within ``min_interval`` seconds of
+    the last one are skipped, returning (False, "throttled") — the caller just
+    keeps polling.
+
+    Clicks a single, fixed menu item — far more stable than the result-row UI
+    automation we retired — but it still needs Accessibility permission, and the
+    item only exists when Sync Library is enabled. Returns (False, ...) if the menu
+    isn't reachable; callers treat that as "couldn't nudge" and just poll.
+
+    The menu click is an Accessibility action, not a mouse move, but macOS only
+    exposes the frontmost app's menu bar, so we briefly activate Music and then
+    restore the previously-frontmost app so the user's focus isn't stolen."""
+    global _last_cloud_nudge
+    now = time.monotonic()
+    if now - _last_cloud_nudge < min_interval:
+        return False, "throttled (nudged recently)"
+    _last_cloud_nudge = now
+    script = """
+    set priorApp to ""
+    try
+        tell application "System Events" to set priorApp to ¬
+            name of first application process whose frontmost is true
+    end try
+    tell application "Music" to activate
+    delay 0.3
+    set clickErr to ""
+    try
+        tell application "System Events" to tell process "Music"
+            click menu item "Update Cloud Library" of menu 1 of ¬
+                (menu item "Library" of menu 1 of menu bar item "File" of menu bar 1)
+        end tell
+    on error errMsg
+        set clickErr to errMsg
+    end try
+    -- Always restore the user's focus, even if the menu item was unreachable
+    -- (e.g. Sync Library disabled) — otherwise we'd steal focus and not give it back.
+    if priorApp is not "" and priorApp is not "Music" then
+        try
+            tell application "System Events" to tell process priorApp to set frontmost to true
+        end try
+    end if
+    if clickErr is not "" then
+        error clickErr
+    end if
+    return "ok"
+    """
+    return run_applescript(script)
 
 
 def get_shuffle() -> tuple[bool, bool | str]:
@@ -508,9 +596,13 @@ def get_repeat() -> tuple[bool, str]:
 
 
 def set_repeat(mode: str) -> tuple[bool, str]:
-    """Set repeat mode (off, one, all)."""
+    """Set repeat mode (off, one, all). Accepts ``none`` as a synonym for ``off``
+    so the cross-platform ``playback`` contract matches the browser engine, which
+    uses ``none``/``one``/``all`` (MusicKit's vocabulary)."""
+    if mode == "none":
+        mode = "off"
     if mode not in ("off", "one", "all"):
-        return False, f"Invalid repeat mode: {mode}. Use 'off', 'one', or 'all'"
+        return False, f"Invalid repeat mode: {mode}. Use 'off'/'none', 'one', or 'all'"
     return run_applescript(f'tell application "Music" to set song repeat to {mode}')
 
 
@@ -530,20 +622,42 @@ def get_playlists() -> tuple[bool, list[dict]]:
     Returns:
         Tuple of (success, list of playlist dicts or error string)
     """
+    # Each property is read defensively: a single playlist that can't return,
+    # say, its persistent ID (cloud playlists mid-sync raise -1728) must not
+    # abort the whole listing. We still emit the row by name so it stays
+    # addressable, just with whatever fields it would give up.
     script = """
     tell application "Music"
         set output to ""
         repeat with p in user playlists
-            set pName to name of p
-            set pId to persistent ID of p
-            set pSmart to smart of p
-            set pCount to count of tracks of p
+            try
+                set pName to name of p
+            on error
+                set pName to ""
+            end try
+            try
+                set pId to persistent ID of p
+            on error
+                set pId to ""
+            end try
+            try
+                set pSmart to smart of p
+            on error
+                set pSmart to false
+            end try
+            try
+                set pCount to count of tracks of p
+            on error
+                set pCount to 0
+            end try
             try
                 set pTime to time of p
             on error
                 set pTime to "0:00"
             end try
-            set output to output & pName & "|||" & pId & "|||" & pSmart & "|||" & pCount & "|||" & pTime & "\\n"
+            if pName is not "" then
+                set output to output & pName & "|||" & pId & "|||" & pSmart & "|||" & pCount & "|||" & pTime & "\\n"
+            end if
         end repeat
         return output
     end tell
@@ -1516,10 +1630,11 @@ def play_track(track_name: str, artist: Optional[str] = None) -> tuple[bool, str
 
 
 def open_catalog_song(song_url: str) -> tuple[bool, str]:
-    """Open a catalog song in the Music app (user must click play).
+    """Open a catalog song's page in the Music app (does not start playback).
 
-    Note: macOS cannot programmatically play catalog songs not in library.
-    This function reveals the song in Music for manual playback.
+    AppleScript has no verb to play a non-library catalog track, but the page
+    can be deep-linked and then played via UI automation — see
+    ``open_catalog_and_play``. This function only reveals the page.
 
     Args:
         song_url: The song URL from Apple Music API (https://music.apple.com/...)
@@ -1770,23 +1885,51 @@ def _click_play_or_shuffle(shuffle: bool = False) -> tuple[bool, str]:
         Tuple of (success, message or error)
     """
     button_name = "Shuffle" if shuffle else "Play"
-    base = 'tell application "System Events" to tell process "Music"'
     sa = _SCROLL_AREA
 
-    # Path 1: Album / editorial playlist layout (nested lists)
-    script1 = f'{base} to click button "{button_name}" of UI element 1 of list 1 of list 1 of {sa}'
-    # Path 2: Personal playlist layout (playlist header group)
-    script2 = f'{base} to click button "{button_name}" of group 1 of {sa}'
+    # AXPress (`click button ...`) silently no-ops on Music.app's custom Play /
+    # Shuffle controls — it returns success but playback never starts (verified
+    # live). So we *locate* the button across the known layouts, read its screen
+    # rect, and post a real CoreGraphics mouse click at its center.
+    #   Path 1: album / editorial playlist (nested lists)
+    #   Path 2: personal playlist (header group)
+    locate = f"""
+tell application "System Events"
+    tell process "Music"
+        set sa to {sa}
+        set b to missing value
+        try
+            set b to button "{button_name}" of UI element 1 of list 1 of list 1 of sa
+        end try
+        if b is missing value then
+            try
+                set b to button "{button_name}" of group 1 of sa
+            end try
+        end if
+        if b is missing value then return "NOT_FOUND"
+        set p to position of b
+        set s to size of b
+        return (((item 1 of p) + (item 1 of s) / 2) as text) & "," & ¬
+               (((item 2 of p) + (item 2 of s) / 2) as text)
+    end tell
+end tell"""
 
-    for script in [script1, script2]:
-        ok, _ = run_applescript(script)
-        if ok:
-            time.sleep(1)
-            if _check_playing():
-                mode = "shuffling" if shuffle else "playing"
-                return True, f"Playing ({mode} via UI click)"
+    _ensure_music_frontmost()
+    ok, res = run_applescript(locate)
+    if not ok or not res or res.strip() == "NOT_FOUND":
+        return False, f"Could not find {button_name} button"
+    try:
+        cx, cy = (float(v) for v in res.strip().split(","))
+    except ValueError:
+        return False, f"Invalid {button_name} button position: {res}"
 
-    return False, f"Could not find {button_name} button"
+    if not _jxa_mouse_click(cx, cy):
+        return False, "CoreGraphics click failed"
+    time.sleep(1)
+    if _check_playing():
+        mode = "shuffling" if shuffle else "playing"
+        return True, f"Playing ({mode} via UI click)"
+    return False, f"Clicked {button_name} but playback did not start"
 
 
 def _ensure_music_frontmost() -> None:
@@ -1915,6 +2058,42 @@ $.CGEventPost($.kCGHIDEventTap, up);
         return False
 
 
+def _jxa_mouse_double_click(x: float, y: float) -> bool:
+    """Double-click at coordinates via CoreGraphics (JXA).
+
+    A single click on a Music.app track row only *selects* it; playback needs a
+    real double-click. AppleScript's ``click`` (AXPress) doesn't fire these
+    custom rows at all, so we post two down/up pairs with the click-state event
+    field (1) set to 1 then 2 so the OS coalesces them into a double-click.
+    Verified live: double-clicking a track row plays that specific track.
+
+    Returns True if the command succeeded.
+    """
+    script = f'''ObjC.import("CoreGraphics");
+var p = $.CGPointMake({x}, {y});
+for (var i = 1; i <= 2; i++) {{
+  var d = $.CGEventCreateMouseEvent($(), $.kCGEventLeftMouseDown, p, $.kCGMouseButtonLeft);
+  var u = $.CGEventCreateMouseEvent($(), $.kCGEventLeftMouseUp, p, $.kCGMouseButtonLeft);
+  $.CGEventSetIntegerValueField(d, 1, i);
+  $.CGEventSetIntegerValueField(u, 1, i);
+  $.CGEventPost($.kCGHIDEventTap, d);
+  delay(0.05);
+  $.CGEventPost($.kCGHIDEventTap, u);
+  delay(0.05);
+}}
+"ok"'''
+    try:
+        result = subprocess.run(
+            ["osascript", "-l", "JavaScript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return result.returncode == 0
+    except (subprocess.TimeoutExpired, Exception):
+        return False
+
+
 def _hover_with_nudge(cx: float, cy: float) -> bool:
     """Move to target with a 2-pixel nudge first to guarantee a mouseMoved event.
 
@@ -2024,18 +2203,85 @@ end tell"""
     return None
 
 
-def _play_specific_track() -> tuple[bool, str]:
-    """Play the track highlighted by ?i= URL parameter via hover + click.
+def _play_by_track_name(track_name: str) -> tuple[bool, str]:
+    """Find a track row by its name in the open album/playlist and double-click
+    it (real CoreGraphics double-click — a single click only selects the row,
+    and AXPress doesn't fire these rows at all). Verified live: plays the exact
+    requested track, not the whole album.
 
-    Finds the highlighted track row (marked with Favorite button), scrolls
-    it into view if off-screen, hovers via CoreGraphics to reveal the
-    per-track play checkbox, and clicks it.
+    This is the primary specific-track strategy because matching the visible row
+    text is far more robust across Music.app versions than the hover-reveal
+    per-track checkbox (whose 'Favorite button' highlight marker isn't present on
+    every Music build).
+    """
+    if not track_name.strip():
+        return False, "No track name to match"
+
+    safe = _escape_for_applescript(track_name)
+    sa = _SCROLL_AREA
+    # Walk the content list's child lists (header list + track list), find the
+    # row whose static text matches the track name, return its screen center.
+    locate = f"""
+tell application "System Events"
+    tell process "Music"
+        set sa to {sa}
+        repeat with subList in (every UI element of list 1 of sa)
+            try
+                repeat with r in (every UI element of subList)
+                    try
+                        repeat with t in (every static text of r)
+                            if (value of t) is "{safe}" then
+                                set p to position of r
+                                set s to size of r
+                                return (((item 1 of p) + (item 1 of s) / 2) as text) & "," & ¬
+                                       (((item 2 of p) + (item 2 of s) / 2) as text)
+                            end if
+                        end repeat
+                    end try
+                end repeat
+            end try
+        end repeat
+        return "NOT_FOUND"
+    end tell
+end tell"""
+
+    _ensure_music_frontmost()
+    ok, res = run_applescript(locate)
+    if not ok or not res or res.strip() == "NOT_FOUND":
+        return False, f"Track row not found by name: {track_name}"
+    try:
+        cx, cy = (float(v) for v in res.strip().split(","))
+    except ValueError:
+        return False, f"Invalid track row position: {res}"
+
+    if not _jxa_mouse_double_click(cx, cy):
+        return False, "CoreGraphics double-click failed"
+    time.sleep(1)
+    if _check_playing():
+        return True, f"Playing: {track_name}"
+    return False, f"Double-clicked '{track_name}' but playback did not start"
+
+
+def _play_specific_track(track_name: str = "") -> tuple[bool, str]:
+    """Play the track highlighted by a ?i= URL parameter.
+
+    Primary path: match the row by ``track_name`` and double-click it (robust
+    across Music.app versions). Fallback: find the highlighted row (marked with
+    a Favorite button), scroll it into view, hover via CoreGraphics to reveal
+    the per-track play checkbox, and click it.
 
     Requires Accessibility permissions for System Events.
 
     Returns:
         Tuple of (success, message or error)
     """
+    # Primary: name-match + double-click (no dependence on the hover-checkbox UI)
+    if track_name:
+        ok, msg = _play_by_track_name(track_name)
+        if ok:
+            return True, msg
+
+    # Fallback: highlighted-row hover + checkbox click
     # Ensure Music is frontmost before any CoreGraphics interaction
     _ensure_music_frontmost()
 
@@ -2096,7 +2342,7 @@ end tell"""
 
 
 def open_catalog_and_play(
-    url: str, shuffle: bool = False, timeout: float = 15.0
+    url: str, shuffle: bool = False, timeout: float = 15.0, track_name: str = ""
 ) -> tuple[bool, str]:
     """Open an Apple Music URL and attempt to start playback via UI scripting.
 
@@ -2104,9 +2350,11 @@ def open_catalog_and_play(
     via ?i= parameter. Uses multiple UI automation strategies depending on
     the URL type and page layout.
 
-    For albums/playlists: clicks the Play or Shuffle button.
-    For ?i= song URLs: hovers over the highlighted track row via CoreGraphics
-    to reveal the per-track play checkbox, then clicks it.
+    For albums/playlists: CoreGraphics-clicks the Play (or Shuffle) button.
+    For ?i= song URLs: matches the track row by name (``track_name``) and
+    double-clicks it via CoreGraphics so only that track plays. (AXPress
+    doesn't fire Music.app's custom Play controls / track rows — real mouse
+    events do.)
 
     Uses adaptive polling — checks every second and attempts playback as soon
     as the page loads, rather than waiting fixed delays. Fast networks get
@@ -2153,7 +2401,7 @@ def open_catalog_and_play(
             return True, "Playing (auto-started after opening URL)"
 
         if has_track_param:
-            ok, msg = _play_specific_track()
+            ok, msg = _play_specific_track(track_name)
             if ok:
                 return True, msg
         else:
@@ -2167,15 +2415,16 @@ def open_catalog_and_play(
         wait = 2.0 if attempt <= 2 else 1.0
         time.sleep(wait)
 
-    if has_track_param:
-        return (
-            True,
-            "Opened URL in Music. Could not auto-play the specific track — try clicking it manually.",
-        )
-    return (
-        True,
-        "Opened URL in Music. Auto-play attempted but could not confirm playback started — may need Accessibility permissions for System Events.",
+    # Opened the page but couldn't start playback within the window. Report
+    # failure (not success) so callers can fall back instead of claiming a play
+    # that never happened. Accessibility permission is the usual culprit.
+    hint = (
+        "could not start playback — grant Accessibility (System Settings → "
+        "Privacy & Security → Accessibility) for your terminal/MCP host, or play it manually"
     )
+    if has_track_param:
+        return False, f"Opened the track in Music but {hint}."
+    return False, f"Opened it in Music but {hint}."
 
 
 # =============================================================================
