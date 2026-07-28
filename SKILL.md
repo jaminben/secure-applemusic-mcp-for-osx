@@ -1,6 +1,6 @@
 ---
 name: apple-music
-version: 0.16.0
+version: 0.17.0
 description: Apple Music integration — AppleScript (local Music.app) and the Apple Music API / web player (cross-platform library, playlists, playback, and queue)
 ---
 
@@ -564,6 +564,74 @@ Music-User-Token: {user_music_token}
 ```
 
 **Base URL:** `https://api.music.apple.com/v1`
+
+## Rate Limits (read this before any bulk loop)
+
+Apple throttles with `HTTP 429` / code `42900` on a **rolling ~60-minute window**, and
+sends **no `Retry-After` and no `X-Rate-Limit` header** — remaining quota is unobservable,
+so you only find out by getting blocked.
+
+| Token | Practical ceiling | Notes |
+|---|---|---|
+| Your own developer token (`login --dev`, your `.p8`) | ~3600 requests/hour, Apple's documented figure | Your quota alone |
+| Apple's public web-player token (plain `login`, tokenless/Safari path) | a few hundred/hour, measured | Shared, not per-user — the ceiling is far lower and not yours to spend |
+
+Consequences that bite:
+
+- **Waiting briefly does nothing.** A 15-minute zero-traffic cooldown still 429s. It clears
+  roughly an hour after the burst ends, then re-throttles after a few more requests.
+  Every retry inside the window adds to the count keeping you blocked.
+- **A 429 can look like an empty result, not an error.** One search per track ("resolve
+  title+artist → catalog id") is the standard import shape and the fastest way to hit this;
+  if the caller treats an empty search as "song not found", a throttle silently produces
+  false negatives. Treat empty-after-429 as *unknown*, never as *absent*, and never cache it.
+- **For bulk work, use `login --dev`.** Your own developer token gets its own, much larger
+  quota. Reported and measured in [#42](https://github.com/epheterson/applemusic-mcp/issues/42).
+
+### Batch-resolve by ISRC instead of searching per track
+
+Where the caller has ISRCs (Spotify / Rekordbox / Plex exports all carry them),
+`GET /v1/catalog/{storefront}/songs?filter[isrc]=ISRC1,ISRC2,…` resolves **25 per request**
+and matches **exactly** — ~25x fewer requests than a search per track, and no fuzzy-match
+errors. Via the tool: `catalog(action="resolve_isrc", isrcs="…", format="json")`.
+
+Two things to get right, because `filter[isrc]` is a *filter*, not a search:
+
+- **Misses are silent.** Apple returns only what it matched and omits the rest, so the
+  unresolved ISRCs exist only as a diff of your request set against `attributes.isrc` on
+  the responses. Compute that diff — don't assume a full response.
+- **Keep "asked and absent" separate from "never asked."** If a batch fails (429) the
+  remaining ISRCs have *unknown* status, not "not in the catalog." Collapsing the two
+  recreates the false-negative bug this section exists to warn about.
+
+One ISRC can map to several catalog songs (regional releases, remasters), so carry the
+match count rather than silently taking the first.
+
+**Without ISRCs, dry-run before you write.** Title matching is fuzzy, and its failures are
+silent: `Dont Let Me Down` with no artist resolves to The Chainsmokers, not The Beatles.
+Resolve the whole list first, show the proposed matches with a confidence marker (exact vs.
+fuzzy), and only write once they've been reviewed — never interleave "search, then add"
+per track. Via the tool: `catalog(action="match", tracks=..., format="json")`, which adds
+nothing and returns `ids` ready for `playlist(action="add")`. Note this costs one request
+per track (Apple has no batch title+artist endpoint), so it is *not* a rate-limit fix —
+use ISRCs for that.
+
+Manually:
+
+```python
+resolved = {}
+for i in range(0, len(isrcs), 25):
+    batch = isrcs[i : i + 25]
+    r = requests.get(
+        f"https://api.music.apple.com/v1/catalog/{storefront}/songs",
+        headers=headers,
+        params={"filter[isrc]": ",".join(batch)},
+    )
+    if r.status_code == 429:
+        break                      # later batches only extend the window
+    for song in r.json().get("data", []):
+        resolved.setdefault(song["attributes"]["isrc"], song["id"])
+```
 
 ## Available Endpoints
 

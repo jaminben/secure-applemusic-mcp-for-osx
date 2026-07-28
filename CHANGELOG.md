@@ -5,6 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.0] - 2026-07-27
+
+### Added
+
+- **`catalog(action="resolve_isrc", isrcs=…)` — batch-resolve tracks by ISRC.** The import
+  shape ("one catalog search per track to get a catalog id") costs one request per track
+  and matches fuzzily. Where the caller has ISRCs — Spotify, Rekordbox, and Plex exports
+  all carry them — this resolves **25 per request** and matches **exactly**: ~25x fewer
+  requests, which is what keeps a large import under Apple's rate limit, and no
+  fuzzy-match errors. Accepts a comma-separated list or a JSON array, with or without the
+  printed separators (`US-ABC-12-34567`). Resulting IDs go straight into
+  `playlist(action="add", track=…)`.
+
+  It distinguishes three outcomes rather than flattening them: resolved (with a match
+  count, since one ISRC can map to several releases), **asked and not in your storefront**,
+  and **never asked** (a batch that got throttled — status unknown, not absent).
+  Malformed ISRCs are reported instead of being sent, since a bad batch still costs a
+  request. Suggested by [@Design-UU](https://github.com/Design-UU) in
+  [#42](https://github.com/epheterson/applemusic-mcp/issues/42).
+
+- **`catalog(action="match", tracks=…)` — dry-run a bulk add before it writes.** Adding by
+  name runs each title through the fuzzy matcher and commits immediately, so a long import
+  is a long list of unreviewed guesses, and the failures are silent: `Dont Let Me Down`
+  with no artist resolves to The Chainsmokers, not The Beatles. `match` runs the same
+  matcher, adds nothing, and reports what each name *would* resolve to with a confidence
+  marker (`exact` / `partial` / `fuzzy` / `id`), explicitly flagging every row that wasn't
+  an outright title match. Returns IDs ready to paste into `playlist(action="add")`.
+
+  Unlike `resolve_isrc` this costs one request **per track** — Apple has no batch
+  title+artist endpoint — so it is capped at 25 by default (`max_tracks` raises it
+  deliberately) rather than handing you a new way to hit the rate limit.
+
+### Fixed
+
+- **A rate limit no longer masquerades as "song not found."** The catalog/library reads
+  swallowed every non-200 into an empty list, so an `HTTP 429` was indistinguishable
+  from a genuine miss — a bulk playlist import would quietly record hundreds of false
+  negatives. 429s are now recorded and named: the bulk add path reports the throttle
+  instead of "not found in catalog" and stops resolving (further requests inside Apple's
+  window only push recovery further out), and every `API Error: 429 Client Error…` is
+  replaced with the real explanation. Reported and measured by
+  [@Design-UU](https://github.com/Design-UU) in
+  [#42](https://github.com/epheterson/applemusic-mcp/issues/42).
+- **Throttle checks no longer spend a request.** `session_status()` short-circuits on a
+  recently-seen 429 rather than issuing a probe that would both fail and add to the count
+  keeping you throttled. The marker clears on the next successful response, so a real
+  miss is never mislabelled.
+- **Honest retry advice.** "Wait a moment and retry" was wrong: Apple's window is rolling
+  and up to ~60 minutes, with no `Retry-After` header. The message now says so and points
+  at `login --dev`.
+
+### Documentation
+
+- README and SKILL.md now state that web sign-in uses Apple's *shared* public web-player
+  token, that bulk catalog work (playlist imports, library migrations) will hit `429` after
+  a few hundred searches in an hour, and that `applemusic-mcp login --dev` gets its own
+  much larger quota.
+
 ## [0.16.0] - 2026-07-02
 
 Cross-platform playback and hardening: library, playlists, *and playback* on macOS,

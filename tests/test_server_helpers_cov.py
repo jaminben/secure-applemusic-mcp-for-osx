@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import applemusic_mcp.browser as _browser_module  # ensure module is loaded for patching
 import pytest
+import requests
 import responses
 
 from applemusic_mcp import server
@@ -2698,3 +2699,645 @@ def test_id_based_add_classifies_catalog_id():
 
     assert _resolve_track("1440857781", "")[0].input_type == InputType.CATALOG_ID
     assert _resolve_track("Hey Jude", "")[0].input_type == InputType.NAME
+
+
+# ---------------------------------------------------------------------------
+# Rate-limit surfacing (#42)
+# ---------------------------------------------------------------------------
+
+
+class TestRateLimitSurfacing:
+    """Apple returns no Retry-After on the web-player path and the internal
+    resolvers swallow non-200 into [], so a 429 has to be surfaced explicitly or
+    it reads as "no such song"."""
+
+    def test_api_error_maps_429_to_the_real_explanation(self):
+        """A raw "429 Client Error" implies retrying works. It doesn't."""
+        resp = requests.Response()
+        resp.status_code = 429
+        exc = requests.exceptions.HTTPError("429 Client Error: Too Many Requests", response=resp)
+        msg = server._api_error(exc)
+        assert "rolling" in msg and "--dev" in msg
+        assert "Client Error" not in msg
+        assert server.amp_api.throttled_recently() is True
+
+    def test_api_error_passes_other_failures_through(self):
+        resp = requests.Response()
+        resp.status_code = 500
+        exc = requests.exceptions.HTTPError("500 Server Error", response=resp)
+        msg = server._api_error(exc)
+        assert msg == "API Error: 500 Server Error"
+        assert server.amp_api.throttled_recently() is False
+
+    def test_api_error_without_a_response_still_renders(self):
+        msg = server._api_error(requests.exceptions.ConnectionError("connection refused"))
+        assert msg == "API Error: connection refused"
+
+    @responses.activate
+    def test_catalog_search_429_tells_the_user_it_is_throttled(
+        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+    ):
+        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        monkeypatch.setattr(server, "get_storefront", lambda: "us")
+        responses.add(
+            responses.GET,
+            "https://api.music.apple.com/v1/catalog/us/search",
+            json={"errors": [{"status": "429", "code": "42900"}]},
+            status=429,
+        )
+        result = server.catalog(action="search", query="Money")
+        assert "429" in result and "rolling" in result
+
+    def test_catalog_miss_reason_prefers_the_throttle(self):
+        assert server._catalog_miss_reason("Not found in catalog") == "Not found in catalog"
+        server.amp_api.note_status(429)
+        assert "429" in server._catalog_miss_reason("Not found in catalog")
+
+    def test_catalog_miss_reason_costs_no_request(self, monkeypatch):
+        """On the miss path of a bulk loop, a probe per miss is exactly what you
+        can't afford while throttled — so it must not call session_status()."""
+        monkeypatch.setattr(
+            server.amp_api,
+            "session_status",
+            lambda: pytest.fail("_catalog_miss_reason must not spend a request"),
+        )
+        assert server._catalog_miss_reason("Not found in catalog") == "Not found in catalog"
+
+
+# ---------------------------------------------------------------------------
+# ISRC batch resolve (#42, suggestion 3)
+# ---------------------------------------------------------------------------
+
+_ISRC_URL = "https://api.music.apple.com/v1/catalog/us/songs"
+
+
+def _isrc_song(isrc: str, sid: str, name: str, artist: str = "Oasis") -> dict:
+    return {
+        "id": sid,
+        "attributes": {
+            "name": name,
+            "artistName": artist,
+            "albumName": "Morning Glory",
+            "isrc": isrc,
+            "durationInMillis": 258773,
+            "releaseDate": "1995-10-02",
+            "genreNames": ["Alternative"],
+        },
+    }
+
+
+class TestParseIsrcList:
+    def test_comma_separated_and_normalized(self):
+        valid, invalid = server._parse_isrc_list("gbaym9500001, US-ABC-12-34567")
+        assert valid == ["GBAYM9500001", "USABC1234567"]
+        assert invalid == []
+
+    def test_json_array(self):
+        valid, invalid = server._parse_isrc_list('["GBAYM9500001", "USABC1234567"]')
+        assert valid == ["GBAYM9500001", "USABC1234567"]
+        assert invalid == []
+
+    def test_broken_json_is_reported_not_sent(self):
+        valid, invalid = server._parse_isrc_list('["GBAYM9500001",')
+        assert valid == []
+        assert invalid == ['["GBAYM9500001",']
+
+    def test_malformed_entries_are_rejected(self):
+        """Garbage in a batch still costs a request, so it never gets sent."""
+        valid, invalid = server._parse_isrc_list("GBAYM9500001, notanisrc, 12345")
+        assert valid == ["GBAYM9500001"]
+        assert invalid == ["notanisrc", "12345"]
+
+    def test_duplicates_collapse(self):
+        valid, _ = server._parse_isrc_list("GBAYM9500001, gbaym9500001, GB-AYM-95-00001")
+        assert valid == ["GBAYM9500001"]
+
+    def test_whitespace_separated_and_blank_entries(self):
+        valid, invalid = server._parse_isrc_list("GBAYM9500001\n\n USABC1234567 ")
+        assert valid == ["GBAYM9500001", "USABC1234567"]
+        assert invalid == []
+
+    def test_blank_entries_are_skipped_not_flagged(self):
+        """An empty slot in an export is noise, not a malformed ISRC."""
+        valid, invalid = server._parse_isrc_list('["GBAYM9500001", "", "  ", "USABC1234567"]')
+        assert valid == ["GBAYM9500001", "USABC1234567"]
+        assert invalid == []
+
+
+class TestCatalogResolveIsrc:
+    def test_requires_input(self):
+        assert "isrcs required" in server.catalog(action="resolve_isrc")
+
+    def test_all_invalid_input(self):
+        result = server.catalog(action="resolve_isrc", isrcs="nope, also-nope")
+        assert "no valid ISRCs" in result
+
+    @responses.activate
+    def test_resolves_in_one_request(
+        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+    ):
+        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        monkeypatch.setattr(server, "get_storefront", lambda: "us")
+        responses.add(
+            responses.GET,
+            _ISRC_URL,
+            json={"data": [_isrc_song("GBAYM9500001", "1234567890", "Wonderwall")]},
+            status=200,
+        )
+        result = server.catalog(action="resolve_isrc", isrcs="GB-AYM-95-00001")
+        assert "Resolved 1/1 ISRCs in 1 request(s)" in result
+        assert "GBAYM9500001 -> 1234567890  Wonderwall - Oasis" in result
+        assert "filter%5Bisrc%5D=GBAYM9500001" in responses.calls[0].request.url
+
+    @responses.activate
+    def test_batches_at_25_per_request(
+        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+    ):
+        """The whole point: 30 tracks cost 2 requests, not 30."""
+        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        monkeypatch.setattr(server, "get_storefront", lambda: "us")
+        isrcs = [f"GBAYM95{i:05d}" for i in range(30)]
+        for chunk_start in (0, 25):
+            chunk = isrcs[chunk_start : chunk_start + 25]
+            responses.add(
+                responses.GET,
+                _ISRC_URL,
+                json={"data": [_isrc_song(i, f"id{i}", f"Track {i}") for i in chunk]},
+                status=200,
+            )
+        result = server.catalog(action="resolve_isrc", isrcs=",".join(isrcs), format="json")
+        payload = json.loads(result)
+        assert payload["requests"] == 2
+        assert len(payload["resolved"]) == 30
+        assert payload["unmatched"] == []
+
+    @responses.activate
+    def test_unmatched_isrcs_are_reported(
+        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+    ):
+        """filter[isrc] silently omits misses — they only exist as a diff."""
+        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        monkeypatch.setattr(server, "get_storefront", lambda: "us")
+        responses.add(
+            responses.GET,
+            _ISRC_URL,
+            json={"data": [_isrc_song("GBAYM9500001", "1234567890", "Wonderwall")]},
+            status=200,
+        )
+        result = server.catalog(action="resolve_isrc", isrcs="GBAYM9500001,USZZZ9900001")
+        assert "Resolved 1/2" in result
+        assert "Not in the us catalog (1)" in result
+        assert "USZZZ9900001" in result
+
+    @responses.activate
+    def test_multiple_catalog_matches_are_flagged(
+        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+    ):
+        """One ISRC can map to several releases — don't hide that behind 'the first'."""
+        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        monkeypatch.setattr(server, "get_storefront", lambda: "us")
+        responses.add(
+            responses.GET,
+            _ISRC_URL,
+            json={
+                "data": [
+                    _isrc_song("GBAYM9500001", "111", "Wonderwall"),
+                    _isrc_song("GBAYM9500001", "222", "Wonderwall (Remastered)"),
+                ]
+            },
+            status=200,
+        )
+        result = server.catalog(action="resolve_isrc", isrcs="GBAYM9500001")
+        assert "-> 111" in result
+        assert "[2 catalog matches]" in result
+
+    @responses.activate
+    def test_malformed_input_surfaces_alongside_results(
+        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+    ):
+        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        monkeypatch.setattr(server, "get_storefront", lambda: "us")
+        responses.add(
+            responses.GET,
+            _ISRC_URL,
+            json={"data": [_isrc_song("GBAYM9500001", "1234567890", "Wonderwall")]},
+            status=200,
+        )
+        result = server.catalog(action="resolve_isrc", isrcs="GBAYM9500001, junk")
+        assert "Malformed, not sent (1)" in result
+        assert "junk" in result
+
+    @responses.activate
+    def test_429_stops_early_and_keeps_partial_results(
+        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+    ):
+        """Later batches can only extend the window — stop, but don't throw away
+        the work that already succeeded."""
+        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        monkeypatch.setattr(server, "get_storefront", lambda: "us")
+        isrcs = [f"GBAYM95{i:05d}" for i in range(75)]
+        responses.add(
+            responses.GET,
+            _ISRC_URL,
+            json={"data": [_isrc_song(i, f"id{i}", f"Track {i}") for i in isrcs[:25]]},
+            status=200,
+        )
+        responses.add(responses.GET, _ISRC_URL, json={"errors": []}, status=429)
+        result = server.catalog(action="resolve_isrc", isrcs=",".join(isrcs))
+        assert "Resolved 25/75" in result
+        assert "429" in result
+        # 50 unknown: the batch that 429'd, plus the batch never sent.
+        assert "50 ISRC(s) were never asked about" in result
+        assert "UNKNOWN, not 'not in the catalog'" in result
+        assert "Not in the us catalog" not in result  # never-asked != absent
+        assert len(responses.calls) == 2  # stopped; did not attempt the third batch
+        assert server.amp_api.throttled_recently() is True
+
+    @responses.activate
+    def test_429_in_json_format_sets_the_flag(
+        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+    ):
+        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        monkeypatch.setattr(server, "get_storefront", lambda: "us")
+        responses.add(responses.GET, _ISRC_URL, json={"errors": []}, status=429)
+        payload = json.loads(
+            server.catalog(action="resolve_isrc", isrcs="GBAYM9500001", format="json")
+        )
+        assert payload["throttled"] is True
+        assert payload["resolved"] == {}
+
+    @responses.activate
+    def test_http_error_is_reported(
+        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+    ):
+        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        monkeypatch.setattr(server, "get_storefront", lambda: "us")
+        responses.add(responses.GET, _ISRC_URL, json={"errors": []}, status=500)
+        result = server.catalog(action="resolve_isrc", isrcs="GBAYM9500001")
+        assert "API Error" in result
+
+    def test_missing_credentials_is_reported(self, mock_config_dir):
+        result = server.catalog(action="resolve_isrc", isrcs="GBAYM9500001")
+        assert "Error" in result or "token" in result.lower()
+
+    @responses.activate
+    def test_resolve_alias_and_query_fallback(
+        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+    ):
+        """`action="resolve"` works, and the ISRCs may arrive in `query`."""
+        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        monkeypatch.setattr(server, "get_storefront", lambda: "us")
+        responses.add(
+            responses.GET,
+            _ISRC_URL,
+            json={"data": [_isrc_song("GBAYM9500001", "1234567890", "Wonderwall")]},
+            status=200,
+        )
+        result = server.catalog(action="resolve", query="GBAYM9500001")
+        assert "Resolved 1/1" in result
+
+    @responses.activate
+    def test_resolved_ids_feed_straight_into_playlist_add(
+        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+    ):
+        """The output is only useful if the IDs are directly addable."""
+        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        monkeypatch.setattr(server, "get_storefront", lambda: "us")
+        responses.add(
+            responses.GET,
+            _ISRC_URL,
+            json={"data": [_isrc_song("GBAYM9500001", "1234567890", "Wonderwall")]},
+            status=200,
+        )
+        payload = json.loads(
+            server.catalog(action="resolve_isrc", isrcs="GBAYM9500001", format="json")
+        )
+        catalog_id = payload["resolved"]["GBAYM9500001"]["id"]
+        added = []
+        monkeypatch.setattr(server.amp_api, "get_tracks", lambda pid: [])
+        monkeypatch.setattr(
+            server.amp_api, "add_tracks", lambda pid, items: (added.extend(items), (True, "ok"))[1]
+        )
+        result = server._playlist_add_api("p.abc123", catalog_id, "", auto_add=True)
+        assert "Added" in result
+        assert added == [catalog_id]
+
+    @responses.activate
+    def test_unknown_action_lists_resolve_isrc(self, mock_config_dir):
+        assert "resolve_isrc" in server.catalog(action="bogus")
+
+
+# ---------------------------------------------------------------------------
+# Dry-run track matching
+# ---------------------------------------------------------------------------
+
+
+def _cat_song(sid: str, name: str, artist: str, album: str = "Help!", year: str = "1965") -> dict:
+    return {
+        "id": sid,
+        "attributes": {
+            "name": name,
+            "artistName": artist,
+            "albumName": album,
+            "releaseDate": f"{year}-01-01",
+        },
+    }
+
+
+class TestCatalogMatchTracks:
+    """The dry run exists so a bulk add's fuzzy matches get reviewed BEFORE they're
+    written — the wrong-edition/wrong-artist case is silent and hard to undo."""
+
+    def test_requires_input(self):
+        assert "tracks required" in server.catalog(action="match")
+
+    def test_exact_match_is_not_flagged(self, monkeypatch):
+        monkeypatch.setattr(
+            server,
+            "_find_matching_catalog_song",
+            lambda n, a: (_cat_song("111", "Yesterday", "The Beatles"), None, None),
+        )
+        result = server.catalog(action="match", tracks="Yesterday")
+        assert "Matched 1/1" in result
+        assert "DRY RUN, nothing was added" in result
+        assert "= exact" in result
+        assert "NOT an outright title match" not in result
+
+    def test_fuzzy_match_is_flagged_for_review(self, monkeypatch):
+        """The case that motivated this: a missing apostrophe lands on another act."""
+        fuzzy = server.FuzzyMatchResult(
+            matched_name="Don't Let Me Down (feat. Daya)",
+            query="Dont Let Me Down",
+            normalized_query="dont let me down",
+            normalized_match="dont let me down",
+            transformations=["apostrophe"],
+            match_type="fuzzy_partial",
+        )
+        monkeypatch.setattr(
+            server,
+            "_find_matching_catalog_song",
+            lambda n, a: (
+                _cat_song("222", "Don't Let Me Down (feat. Daya)", "The Chainsmokers"),
+                None,
+                fuzzy,
+            ),
+        )
+        result = server.catalog(action="match", tracks="Dont Let Me Down")
+        assert "? fuzzy_partial" in result
+        assert "NOT an outright title match" in result
+        assert "The Chainsmokers" in result
+
+    def test_catalog_id_costs_no_request(self, monkeypatch):
+        monkeypatch.setattr(
+            server,
+            "_find_matching_catalog_song",
+            lambda n, a: pytest.fail("a catalog id is already exact; don't spend a request"),
+        )
+        result = server.catalog(action="match", tracks="1441134128")
+        assert "# id" in result
+        assert "1441134128" in result
+
+    def test_no_match_is_reported(self, monkeypatch):
+        monkeypatch.setattr(
+            server, "_find_matching_catalog_song", lambda n, a: (None, "Not found in catalog", None)
+        )
+        result = server.catalog(action="match", tracks="Zzzz Nonexistent")
+        assert "Matched 0/1" in result
+        assert "No match (1)" in result
+        assert "Add them with" not in result  # nothing to add
+
+    def test_unmatchable_id_type_is_reported(self, monkeypatch):
+        result = server.catalog(action="match", tracks="i.ABC123DEF")
+        assert "can't be name-matched" in result
+
+    def test_ids_are_emitted_ready_to_paste(self, monkeypatch):
+        songs = {
+            "Yesterday": _cat_song("111", "Yesterday", "The Beatles"),
+            "Help": _cat_song("222", "Help!", "The Beatles"),
+        }
+        monkeypatch.setattr(
+            server, "_find_matching_catalog_song", lambda n, a: (songs[n], None, None)
+        )
+        result = server.catalog(action="match", tracks="Yesterday, Help")
+        assert "playlist(action='add', playlist='<name>', track='111,222')" in result
+
+    def test_caps_at_25_and_points_at_isrc(self, monkeypatch):
+        """Uncapped, this action is a fresh way to recreate the #42 rate limit —
+        it costs one request per track."""
+        calls = []
+
+        def one_match(n, a):
+            calls.append(n)
+            return _cat_song(str(len(calls)), n, "X"), None, None
+
+        monkeypatch.setattr(server, "_find_matching_catalog_song", one_match)
+        tracks = ",".join(f"Track {i}" for i in range(40))
+        result = server.catalog(action="match", tracks=tracks)
+        assert len(calls) == 25
+        assert "15 more not attempted (cap 25)" in result
+        assert "resolve_isrc" in result
+
+    def test_limit_raises_the_cap_deliberately(self, monkeypatch):
+        calls = []
+
+        def one_match(n, a):
+            calls.append(n)
+            return _cat_song(str(len(calls)), n, "X"), None, None
+
+        monkeypatch.setattr(server, "_find_matching_catalog_song", one_match)
+        tracks = ",".join(f"Track {i}" for i in range(30))
+        server.catalog(action="match", tracks=tracks, max_tracks=30)
+        assert len(calls) == 30
+
+    def test_max_tracks_is_independent_of_the_search_limit(self, monkeypatch):
+        """`limit` means 'how many search results'; reusing it as the cap silently
+        capped this at 15."""
+        calls = []
+        monkeypatch.setattr(
+            server,
+            "_find_matching_catalog_song",
+            lambda n, a: (calls.append(n), (_cat_song("1", n, "X"), None, None))[1],
+        )
+        tracks = ",".join(f"Track {i}" for i in range(40))
+        server.catalog(action="match", tracks=tracks, limit=5)
+        assert len(calls) == 25
+
+    def test_explicit_small_cap_is_clamped_not_crashing(self, monkeypatch):
+        monkeypatch.setattr(
+            server, "_find_matching_catalog_song", lambda n, a: (_cat_song("1", n, "X"), None, None)
+        )
+        result = server.catalog(action="match", tracks="A,B,C", max_tracks=1)
+        assert "Matched 1/1" in result
+
+    def test_throttle_stops_and_marks_the_rest_unknown(self, monkeypatch):
+        """Never-asked is UNKNOWN, not 'not in the catalog' — the whole point of #42."""
+        calls = []
+
+        def throttled(n, a):
+            calls.append(n)
+            server.amp_api.note_status(429)
+            return None, server._THROTTLED_REASON, None
+
+        monkeypatch.setattr(server, "_find_matching_catalog_song", throttled)
+        result = server.catalog(action="match", tracks="A Song,B Song,C Song")
+        assert len(calls) == 1  # stopped immediately
+        assert "Never asked (3)" in result
+        assert "UNKNOWN, not absent" in result
+        assert "429" in result
+
+    def test_json_format(self, monkeypatch):
+        monkeypatch.setattr(
+            server,
+            "_find_matching_catalog_song",
+            lambda n, a: (_cat_song("111", "Yesterday", "The Beatles"), None, None),
+        )
+        payload = json.loads(server.catalog(action="match", tracks="Yesterday", format="json"))
+        assert payload["ids"] == ["111"]
+        assert payload["matched"][0]["confidence"] == "exact"
+        assert payload["requests"] == 1
+        assert payload["throttled"] is False
+        assert payload["unmatched"] == []
+
+    def test_artist_hint_is_passed_through(self, monkeypatch):
+        seen = {}
+
+        def capture(n, a):
+            seen["name"], seen["artist"] = n, a
+            return _cat_song("111", n, a), None, None
+
+        monkeypatch.setattr(server, "_find_matching_catalog_song", capture)
+        server.catalog(action="match", tracks="Dont Let Me Down", artist="The Beatles")
+        assert seen == {"name": "Dont Let Me Down", "artist": "The Beatles"}
+
+    def test_per_item_artist_from_json_wins(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(
+            server,
+            "_find_matching_catalog_song",
+            lambda n, a: (seen.append((n, a)), (_cat_song("1", n, a), None, None))[1],
+        )
+        server.catalog(action="match", tracks='[{"name":"Yesterday","artist":"The Beatles"}]')
+        assert seen == [("Yesterday", "The Beatles")]
+
+    def test_bad_json_entry_is_reported_not_matched(self, monkeypatch):
+        monkeypatch.setattr(
+            server,
+            "_find_matching_catalog_song",
+            lambda n, a: pytest.fail("a malformed entry must not cost a request"),
+        )
+        result = server.catalog(action="match", tracks='[{"artist":"The Beatles"}]')
+        assert "No match (1)" in result
+        assert "name" in result.lower()
+
+    def test_action_aliases(self, monkeypatch):
+        monkeypatch.setattr(
+            server, "_find_matching_catalog_song", lambda n, a: (_cat_song("1", n, "X"), None, None)
+        )
+        for action in ("match", "match_tracks", "resolve_tracks"):
+            assert "Matched 1/1" in server.catalog(action=action, tracks="Yesterday")
+
+    def test_bare_resolve_dispatches_on_which_param_is_set(self, monkeypatch):
+        """`resolve` is ambiguous by name, so it routes on the argument given."""
+        monkeypatch.setattr(
+            server, "_find_matching_catalog_song", lambda n, a: (_cat_song("1", n, "X"), None, None)
+        )
+        assert "Matched 1/1" in server.catalog(action="resolve", tracks="Yesterday")
+        monkeypatch.setattr(server, "_catalog_resolve_isrc", lambda i, f, fu: f"ISRC PATH: {i}")
+        assert "ISRC PATH" in server.catalog(action="resolve", isrcs="GBAYM9500001")
+
+    def test_unknown_action_lists_match(self, mock_config_dir):
+        assert "match" in server.catalog(action="bogus")
+
+    @responses.activate
+    def test_end_to_end_against_a_mocked_catalog(
+        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+    ):
+        """Exercise the real matcher, not a stubbed one."""
+        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        monkeypatch.setattr(server, "get_storefront", lambda: "us")
+        responses.add(
+            responses.GET,
+            "https://api.music.apple.com/v1/catalog/us/search",
+            json={"results": {"songs": {"data": [_cat_song("111", "Yesterday", "The Beatles")]}}},
+            status=200,
+        )
+        result = server.catalog(action="match", tracks="Yesterday", artist="The Beatles")
+        assert "= exact" in result
+        assert "Yesterday - The Beatles" in result
+        assert "111" in result
+
+
+class TestThrottleHonesty:
+    """Fixing the advice in one place and leaving it stale elsewhere would have the
+    tool contradicting its own docs."""
+
+    def test_server_search_records_the_api_rail(self, monkeypatch, mock_config_dir):
+        """server.py talks to api.music.apple.com, not amp-api."""
+        server.amp_api.note_status(429, server.amp_api.API)
+        assert server.amp_api.throttled_recently(rail=server.amp_api.API) is True
+        assert server.amp_api.throttled_recently(rail=server.amp_api.WEB) is False
+
+    def test_no_stale_wait_a_moment_advice_anywhere(self):
+        """Apple's window is rolling; 'wait a moment and retry' is wrong AND makes
+        it worse. Guard against it creeping back in."""
+        import pathlib
+
+        src = pathlib.Path(server.__file__).parent
+        offenders = [
+            f"{f.name}:{n}"
+            for f in src.glob("*.py")
+            for n, line in enumerate(f.read_text().splitlines(), 1)
+            if "wait a moment and retry" in line or "try again shortly" in line
+        ]
+        assert offenders == []
+
+    def test_401_while_throttled_admits_it_cannot_tell(self, monkeypatch):
+        """session_status() short-circuits to 'throttled' without a probe, so the
+        expired-vs-unwritable check genuinely can't run — say that instead of
+        confidently blaming the playlist's origin."""
+        monkeypatch.setattr(server.amp_api, "get_tracks", lambda pid: [])
+        monkeypatch.setattr(
+            server.amp_api, "add_tracks", lambda pid, items: (False, "status 403 — nope")
+        )
+        monkeypatch.setattr(
+            server.amp_api, "search_catalog_songs", lambda q, n: [{"id": "1", "name": "X"}]
+        )
+        server.amp_api.note_status(429, server.amp_api.WEB)
+        result = server._playlist_add_api("p.abc123", "Some Song", "", auto_add=True)
+        assert "Can't tell whether your session expired" in result
+        assert "created in Music.app" not in result
+
+    def test_401_when_not_throttled_still_diagnoses(self, monkeypatch):
+        monkeypatch.setattr(server.amp_api, "get_tracks", lambda pid: [])
+        monkeypatch.setattr(
+            server.amp_api, "add_tracks", lambda pid, items: (False, "status 403 — nope")
+        )
+        monkeypatch.setattr(
+            server.amp_api, "search_catalog_songs", lambda q, n: [{"id": "1", "name": "X"}]
+        )
+        monkeypatch.setattr(server.amp_api, "session_status", lambda: "ok")
+        result = server._playlist_add_api("p.abc123", "Some Song", "", auto_add=True)
+        assert "created in Music.app" in result
+
+    def test_titles_sent_to_resolve_isrc_point_at_match(self):
+        result = server.catalog(action="resolve_isrc", isrcs="Yesterday, Wonderwall")
+        assert "action='match'" in result
+        assert "USABC1234567" in result  # shows what an ISRC looks like
+
+    def test_remove_path_401_while_throttled_admits_it_cannot_tell(self, monkeypatch):
+        """Same ambiguity as add — the remove path got the same fix."""
+        monkeypatch.setattr(
+            server.amp_api, "resolve_playlist_id", lambda n, api_created_only: "p.1"
+        )
+        monkeypatch.setattr(
+            server.amp_api,
+            "get_tracks",
+            lambda pid: [{"relationship_id": "i.1", "name": "Some Song", "artist": "X"}],
+        )
+        monkeypatch.setattr(
+            server.amp_api, "remove_track", lambda pid, rid: (False, "status 401 — nope")
+        )
+        server.amp_api.note_status(429, server.amp_api.WEB)
+        result = server._playlist_remove_api("My Playlist", "Some Song")
+        assert "Can't tell whether your session expired" in result
+        assert "created in Music.app" not in result

@@ -1246,9 +1246,42 @@ _SESSION_EXPIRED_MSG = (
     "Error: your Apple Music session has expired — re-run `applemusic-mcp login` "
     "(browser) or `applemusic-mcp login --dev` (developer-token path)."
 )
-_SESSION_THROTTLED_MSG = (
-    "Error: Apple Music is rate-limiting requests (HTTP 429) — wait a moment and retry."
+# Apple's throttle is a ROLLING ~60-minute window with no Retry-After header, so
+# "wait a moment" was wrong advice: a short cooldown still 429s, and each retry
+# adds to the very count keeping you throttled (#42).
+_THROTTLED_REASON = (
+    "Apple Music is rate-limiting requests (HTTP 429). Apple's window is rolling and "
+    "up to ~60 minutes long — a short wait won't clear it, and retrying extends it. "
+    "For bulk work (playlist imports, library migrations), `applemusic-mcp login --dev` "
+    "uses your own Apple Developer token, which gets its own much larger quota instead "
+    "of sharing Apple's public web-player one."
 )
+_SESSION_THROTTLED_MSG = f"Error: {_THROTTLED_REASON}"
+
+
+def _api_error(e: Exception) -> str:
+    """Render a failed ``requests`` call for the user, and record its status.
+
+    A raw ``429 Client Error: Too Many Requests`` tells the user nothing useful
+    and implies an immediate retry will work — it won't, and it makes things
+    worse. Swap it for the real explanation, and note the 429 so the reads that
+    swallow errors into empty lists can be attributed correctly (#42)."""
+    resp = getattr(e, "response", None)
+    code = getattr(resp, "status_code", None)
+    if code is not None:
+        amp_api.note_status(code, amp_api.API)
+        if code == 429:
+            return _SESSION_THROTTLED_MSG
+    return f"API Error: {e}"
+
+
+def _catalog_miss_reason(not_found_msg: str) -> str:
+    """An empty catalog search normally means "no such song" — unless a 429 just
+    came back, in which case the search never really ran and "not found" is a
+    false negative (#42). Unlike ``_resolve_failure_msg`` this costs no request:
+    on the miss path of a bulk loop, a probe per miss is exactly what you can't
+    afford while throttled."""
+    return _THROTTLED_REASON if amp_api.throttled_recently() else not_found_msg
 
 
 def _resolve_failure_msg(not_found_msg: str) -> str:
@@ -1299,7 +1332,15 @@ def _playlist_remove_api(playlist: str, track: str, artist: str = "") -> str:
         # playlist the web API can't modify. Surface the real cause, not a flat
         # "remove failed."
         if msg.startswith("status 401") or msg.startswith("status 403"):
-            if amp_api.session_status() == "expired":
+            st = amp_api.session_status()
+            if st == "throttled":
+                return (
+                    f"Error: {msg}. Can't tell whether your session expired or this "
+                    "playlist just isn't writable over the web API — you're rate-limited "
+                    "right now, so the check that would distinguish them can't run. "
+                    "Retry once the window clears."
+                )
+            if st == "expired":
                 return f"Error: your web session expired — re-run `applemusic-mcp login`. ({msg})"
             return (
                 f"Error: couldn't remove from '{playlist}' over the web API ({msg}). This "
@@ -1438,6 +1479,14 @@ def _playlist_add_api(
                     )
             if hit is None:
                 if auto_add:
+                    # A rate-limited search returns EMPTY, not an error — reporting
+                    # "not found in catalog" here is how a throttle silently becomes
+                    # a run full of false negatives (#42). Name the real cause, and
+                    # stop resolving: more requests inside Apple's rolling window
+                    # only push the recovery further out.
+                    if amp_api.throttled_recently():
+                        errors.append(_THROTTLED_REASON)
+                        break
                     errors.append(f"{r.value}: not found in catalog")
             elif _dup(cid=hit.get("id"), nm=hit.get("name")):
                 skipped.append(f"{hit.get('name')} - {hit.get('artist')}")
@@ -1468,7 +1517,15 @@ def _playlist_add_api(
         # with a cheap session probe before blaming origin — otherwise an expired
         # session gets the wrong cause and the wrong fix.
         if msg.startswith("status 401") or msg.startswith("status 403"):
-            if amp_api.session_status() == "expired":
+            st = amp_api.session_status()
+            if st == "throttled":
+                return (
+                    f"Error: {msg}. Can't tell whether your session expired or this "
+                    "playlist just isn't writable over the web API — you're rate-limited "
+                    "right now, so the check that would distinguish them can't run. "
+                    "Retry once the window clears."
+                )
+            if st == "expired":
                 return f"Error: your web session expired — re-run `applemusic-mcp login`. ({msg})"
             return (
                 f"Error: couldn't add to '{playlist}' over the web API ({msg}). This "
@@ -2105,7 +2162,7 @@ def _find_matching_catalog_song(
     songs = _search_catalog_songs(search_term, limit=5)  # Get more results for fuzzy
 
     if not songs:
-        return None, "Not found in catalog", None
+        return None, _catalog_miss_reason("Not found in catalog"), None
 
     # Filter by artist first if provided
     def artist_matches(song: dict) -> bool:
@@ -2167,7 +2224,9 @@ def _search_catalog_songs(query: str, limit: int = 5) -> list[dict]:
 
     Returns:
         List of song dicts with 'id', 'attributes' (name, artistName, etc.)
-        Empty list on error.
+        Empty list on error — including a 429, which is recorded via
+        ``amp_api.note_status`` so callers can say "rate limited" instead of
+        the false "not found" an empty list would otherwise imply (#42).
     """
     try:
         headers = get_headers()
@@ -2177,6 +2236,7 @@ def _search_catalog_songs(query: str, limit: int = 5) -> list[dict]:
             params={"term": query, "types": "songs", "limit": min(limit, 25)},
             timeout=REQUEST_TIMEOUT,
         )
+        amp_api.note_status(response.status_code, amp_api.API)
         if response.status_code == 200:
             data = response.json()
             return data.get("results", {}).get("songs", {}).get("data", [])
@@ -2204,6 +2264,7 @@ def _search_catalog_albums(query: str, limit: int = 5) -> list[dict]:
             params={"term": query, "types": "albums", "limit": min(limit, 25)},
             timeout=REQUEST_TIMEOUT,
         )
+        amp_api.note_status(response.status_code, amp_api.API)
         if response.status_code == 200:
             data = response.json()
             return data.get("results", {}).get("albums", {}).get("data", [])
@@ -3002,7 +3063,7 @@ def _playlist_list(
         return prefix + format_output(playlist_data, format, export, full, "playlists")
 
     except requests.exceptions.RequestException as e:
-        return f"API Error: {str(e)}"
+        return _api_error(e)
     except (FileNotFoundError, ValueError) as e:
         return str(e)
 
@@ -3392,7 +3453,7 @@ def _playlist_tracks(
         return result + fuzzy_info + stats_line
 
     except requests.exceptions.RequestException as e:
-        return f"API Error: {str(e)}"
+        return _api_error(e)
     except (FileNotFoundError, ValueError) as e:
         return str(e)
 
@@ -3568,7 +3629,7 @@ def _playlist_create(name: str, description: str = "") -> str:
         return f"Created playlist '{name}' (ID: {playlist_id})"
 
     except requests.exceptions.RequestException as e:
-        return f"API Error: {str(e)}"
+        return _api_error(e)
     except (FileNotFoundError, ValueError) as e:
         return str(e)
 
@@ -3626,7 +3687,7 @@ def _playlist_create_folder(path: str) -> str:
     except FileNotFoundError:
         return "Error: API credentials required for folder creation on non-macOS"
     except requests.exceptions.RequestException as e:
-        return f"API Error: {str(e)}"
+        return _api_error(e)
 
 
 def _playlist_tree() -> str:
@@ -4506,7 +4567,7 @@ def _playlist_copy(source: str = "", new_name: str = "") -> str:
         return f"Created '{new_name}' (ID: {new_id}) with {len(all_tracks)} tracks{fuzzy_info}"
 
     except requests.exceptions.RequestException as e:
-        return f"API Error: {str(e)}"
+        return _api_error(e)
     except (FileNotFoundError, ValueError) as e:
         return str(e)
 
@@ -5248,7 +5309,7 @@ def _library_recently_played(
         return format_output(track_data, format, export, full, "recently_played")
 
     except requests.exceptions.RequestException as e:
-        return f"API Error: {str(e)}"
+        return _api_error(e)
     except (FileNotFoundError, ValueError) as e:
         return str(e)
 
@@ -5411,9 +5472,303 @@ def _catalog_search(
         return ("\n".join(output) + export_msg) if output else "No results found"
 
     except requests.exceptions.RequestException as e:
-        return f"API Error: {str(e)}"
+        return _api_error(e)
     except (FileNotFoundError, ValueError) as e:
         return str(e)
+
+
+# ============ ISRC BATCH RESOLVE ============
+#
+# The import shape — "for each track, one catalog search to turn title+artist into
+# a catalog id" — costs one request per track and matches fuzzily. Where the caller
+# has ISRCs (Spotify/Rekordbox/Plex exports all carry them), Apple's
+# ``filter[isrc]`` resolves 25 at a time and matches EXACTLY: a ~25x cut in requests
+# (which is what keeps you under the rate limit, #42) and no fuzzy-match errors.
+
+_ISRC_BATCH_SIZE = 25  # Apple caps filter[isrc] at 25 values per request
+# CC (country) + 3-char registrant + 2-digit year + 5-digit designation.
+_ISRC_RE = re.compile(r"^[A-Z]{2}[A-Z0-9]{3}[0-9]{7}$")
+
+
+def _normalize_isrc(raw: str) -> str:
+    """ISRCs are printed with separators (``US-ABC-12-34567``) but sent without."""
+    return re.sub(r"[^A-Z0-9]", "", raw.strip().upper())
+
+
+def _parse_isrc_list(value: str) -> tuple[list[str], list[str]]:
+    """Parse a JSON array or a comma/whitespace-separated list of ISRCs.
+
+    Returns (valid, invalid). Malformed entries are reported rather than sent —
+    a batch that includes garbage still costs a request, and the caller needs to
+    know which of its inputs never got asked about."""
+    value = value.strip()
+    if value.startswith("["):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return [], [value]
+        items = [str(i) for i in parsed]
+    else:
+        items = re.split(r"[,\s]+", value)
+
+    valid: list[str] = []
+    invalid: list[str] = []
+    for item in items:
+        if not item.strip():
+            continue
+        norm = _normalize_isrc(item)
+        if not _ISRC_RE.match(norm):
+            invalid.append(item.strip())
+        elif norm not in valid:  # de-dup: no point paying for the same one twice
+            valid.append(norm)
+    return valid, invalid
+
+
+def _catalog_resolve_isrc(isrcs: str, format: str = "text", full: bool = False) -> str:
+    """Resolve ISRCs to catalog songs in batches of 25 — exact, not fuzzy.
+
+    ``filter[isrc]`` is a filter, not a search: Apple returns only what it matched
+    and silently omits the rest, so the misses are computed by diffing the request
+    set against what came back. One ISRC can legitimately map to several catalog
+    songs (regional releases, remasters); the first is returned and the match count
+    travels with it, so the caller can tell an unambiguous hit from a judgement call.
+    """
+    if not isrcs.strip():
+        return "Error: isrcs required (comma-separated or a JSON array)"
+
+    wanted, invalid = _parse_isrc_list(isrcs)
+    if not wanted:
+        # Easy to land here by passing titles to the wrong action — say so, rather
+        # than leaving the caller to guess what a "valid ISRC" is.
+        return (
+            f"Error: no valid ISRCs in input (rejected: {', '.join(invalid[:5])}). "
+            "An ISRC looks like USABC1234567. If these are titles, use "
+            "catalog(action='match', tracks=...) instead."
+        )
+
+    resolved: dict[str, dict] = {}
+    asked: list[str] = []  # only batches that actually came back
+    requests_made = 0
+    throttled = False
+
+    try:
+        headers = get_headers()
+        storefront = get_storefront()
+        for start in range(0, len(wanted), _ISRC_BATCH_SIZE):
+            batch = wanted[start : start + _ISRC_BATCH_SIZE]
+            response = requests.get(
+                f"{BASE_URL}/catalog/{storefront}/songs",
+                headers=headers,
+                params={"filter[isrc]": ",".join(batch)},
+                timeout=REQUEST_TIMEOUT,
+            )
+            requests_made += 1
+            amp_api.note_status(response.status_code, amp_api.API)
+            if response.status_code == 429:
+                # Stop immediately: further batches can only extend the window.
+                # Whatever resolved before this point is still good, so report it
+                # rather than throwing the partial work away.
+                throttled = True
+                break
+            response.raise_for_status()
+            asked.extend(batch)
+
+            for song in response.json().get("data", []):
+                # extract_track_data also populates the track cache (name/artist/ISRC
+                # → catalog id), so a later lookup for the same track is free.
+                data = extract_track_data(song, full)
+                isrc = _normalize_isrc(song.get("attributes", {}).get("isrc", ""))
+                if not isrc:
+                    continue  # pragma: no cover  # Apple always echoes the filtered ISRC
+                if isrc in resolved:
+                    resolved[isrc]["matches"] += 1
+                else:
+                    resolved[isrc] = {**data, "isrc": isrc, "matches": 1}
+
+    except requests.exceptions.RequestException as e:
+        return _api_error(e)
+    except (FileNotFoundError, ValueError) as e:
+        return str(e)
+
+    # "Asked and not returned" is a real absence; "never asked" is unknown. Folding
+    # the second into the first would recreate the exact false-negative this whole
+    # change exists to kill (#42), so they stay separate.
+    unmatched = [i for i in asked if i not in resolved]
+    never_asked = [i for i in wanted if i not in asked]
+
+    if format == "json":
+        return json.dumps(
+            {
+                "resolved": resolved,
+                "unmatched": unmatched,
+                "never_asked": never_asked,
+                "invalid": invalid,
+                "requests": requests_made,
+                "throttled": throttled,
+            },
+            indent=2,
+        )
+
+    lines = [f"=== Resolved {len(resolved)}/{len(wanted)} ISRCs in {requests_made} request(s) ==="]
+    for isrc, song in resolved.items():
+        ambiguous = f"  [{song['matches']} catalog matches]" if song["matches"] > 1 else ""
+        lines.append(f"{isrc} -> {song['id']}  {song['name']} - {song['artist']}{ambiguous}")
+    if unmatched:
+        lines.append(f"\n=== Not in the {get_storefront()} catalog ({len(unmatched)}) ===")
+        lines.append(", ".join(unmatched))
+    if invalid:
+        lines.append(f"\n=== Malformed, not sent ({len(invalid)}) ===")
+        lines.append(", ".join(invalid))
+    if throttled:
+        lines.append(f"\n{_SESSION_THROTTLED_MSG}")
+        lines.append(
+            f"Stopped after {requests_made} request(s); {len(never_asked)} ISRC(s) were "
+            "never asked about — their status is UNKNOWN, not 'not in the catalog'. "
+            "Re-run with just those once the window clears."
+        )
+    return "\n".join(lines)
+
+
+# ============ DRY-RUN TRACK MATCHING ============
+#
+# Adding by name resolves each title through the fuzzy matcher and writes
+# immediately, so a 150-track import is 150 unreviewed judgement calls — and the
+# wrong-edition case is common (one ISRC routinely maps to 2-4 catalog releases).
+# This runs the SAME matcher and reports what it would pick, without touching the
+# library, so the choice can be reviewed before it's committed.
+#
+# Unlike resolve_isrc this costs one request PER TRACK (Apple has no batch
+# title+artist endpoint), which is exactly the shape that hits the rate limit —
+# hence the cap and the nudge toward ISRCs.
+
+_MATCH_DEFAULT_CAP = 25
+
+
+def _catalog_match_tracks(
+    tracks: str, artist: str = "", max_tracks: int = 0, format: str = "text"
+) -> str:
+    """Dry-run: what would these names resolve to? Adds nothing.
+
+    Reports the proposed catalog song per input plus how confident the match is
+    — ``exact`` (title matched outright), ``partial``/``fuzzy`` (the matcher had
+    to work for it, so it's worth a look), or ``id`` (already a catalog id, no
+    lookup needed). The ids come back ready to paste into ``playlist(action="add")``.
+    """
+    if not tracks.strip():
+        return "Error: tracks required (comma-separated, newline-separated, or a JSON array)"
+
+    inputs = _resolve_track(tracks, artist)
+    # Deliberately NOT the tool's `limit` — that one means "how many search results",
+    # and quietly reusing it here capped this at 15 instead of 25.
+    cap = max(1, max_tracks or _MATCH_DEFAULT_CAP)
+    considered, deferred = inputs[:cap], inputs[cap:]
+
+    matched: list[dict] = []
+    unmatched: list[dict] = []
+    never_asked: list[str] = []
+    requests_made = 0
+    throttled = False
+
+    for i, r in enumerate(considered):
+        if r.error:
+            unmatched.append({"input": r.raw or r.value, "reason": r.error})
+            continue
+        if r.input_type == InputType.CATALOG_ID:
+            # Already an exact reference — spending a request to confirm it would
+            # be the same wasted probe the 429 work just removed elsewhere.
+            matched.append({"input": r.value, "id": r.value, "confidence": "id"})
+            continue
+        if r.input_type not in (InputType.NAME, InputType.JSON_OBJECT):
+            unmatched.append(
+                {"input": r.raw or r.value, "reason": f"{r.input_type.value} can't be name-matched"}
+            )
+            continue
+
+        song, err, fuzzy = _find_matching_catalog_song(r.value, r.artist or artist)
+        requests_made += 1
+        if song is None:
+            # A throttle surfaces here as the rate-limit reason, not "not found"
+            # (#42) — stop, and mark the remainder UNKNOWN rather than absent.
+            if amp_api.throttled_recently():
+                throttled = True
+                never_asked.extend(x.value or x.raw for x in considered[i:])
+                break
+            unmatched.append({"input": r.value, "reason": err or "Not found in catalog"})
+            continue
+
+        attrs = song.get("attributes", {})
+        matched.append(
+            {
+                "input": r.value,
+                "id": song.get("id", ""),
+                "name": attrs.get("name", ""),
+                "artist": attrs.get("artistName", ""),
+                "album": attrs.get("albumName", ""),
+                "year": (attrs.get("releaseDate", "") or "")[:4],
+                "confidence": fuzzy.match_type if fuzzy else "exact",
+            }
+        )
+
+    if format == "json":
+        return json.dumps(
+            {
+                "matched": matched,
+                "unmatched": unmatched,
+                "never_asked": never_asked,
+                "deferred": [x.value or x.raw for x in deferred],
+                "requests": requests_made,
+                "throttled": throttled,
+                "ids": [m["id"] for m in matched],
+            },
+            indent=2,
+        )
+
+    total = len(considered)
+    lines = [
+        f"=== Matched {len(matched)}/{total} — DRY RUN, nothing was added ===",
+    ]
+    # Anything the matcher had to work for gets flagged; only an outright title
+    # match (or an id the caller supplied) is trusted silently.
+    marks = {"exact": "=", "id": "#", "partial": "~", "fuzzy": "?", "fuzzy_partial": "?"}
+    for m in matched:
+        mark = marks.get(m["confidence"], "?")
+        if m["confidence"] == "id":
+            lines.append(f"{mark} {'id':<13} {m['id']} (already a catalog id)")
+            continue
+        year = f", {m['year']}" if m["year"] else ""
+        arrow = " -> " if m["confidence"] != "exact" else " == "
+        lines.append(
+            f"{mark} {m['confidence']:<13} {m['input']!r}{arrow}{m['name']} - {m['artist']} "
+            f"[{m['album']}{year}]  {m['id']}"
+        )
+    if unmatched:
+        lines.append(f"\n=== No match ({len(unmatched)}) ===")
+        lines.extend(f"x {u['input']!r}: {u['reason']}" for u in unmatched)
+    if never_asked:
+        lines.append(f"\n=== Never asked ({len(never_asked)}) — UNKNOWN, not absent ===")
+        lines.append(", ".join(never_asked))
+        lines.append(_SESSION_THROTTLED_MSG)
+    if deferred:
+        lines.append(
+            f"\n{len(deferred)} more not attempted (cap {cap}). This action costs one request "
+            "PER TRACK — for a large import use catalog(action='resolve_isrc') instead "
+            "(25 per request, exact), or raise `limit` deliberately."
+        )
+    if matched:
+        ids = ",".join(m["id"] for m in matched)
+        lines.append(
+            f"\nReviewed and happy? Add them with:\n"
+            f"  playlist(action='add', playlist='<name>', track='{ids}')"
+        )
+    inexact = [m for m in matched if m["confidence"] not in ("exact", "id")]
+    if inexact:
+        lines.append(
+            f"\n!! {len(inexact)} match(es) were NOT an outright title match — check these "
+            "before adding. A missing apostrophe or a title without an artist can land on a "
+            "different act entirely, and one title often maps to several catalog editions:"
+        )
+        lines.extend(f"   {m['input']!r} -> {m['name']} - {m['artist']}" for m in inexact)
+    return "\n".join(lines)
 
 
 def _catalog_album_tracks(
@@ -5525,7 +5880,7 @@ def _catalog_album_tracks(
         )
 
     except requests.exceptions.RequestException as e:
-        return f"API Error: {str(e)}"
+        return _api_error(e)
     except (FileNotFoundError, ValueError) as e:
         return str(e)
 
@@ -5632,7 +5987,7 @@ def _catalog_album_details(
         return "\n".join(output_lines)
 
     except requests.exceptions.RequestException as e:
-        return f"API Error: {str(e)}"
+        return _api_error(e)
     except (FileNotFoundError, ValueError) as e:
         return str(e)
 
@@ -5835,7 +6190,7 @@ def _library_browse(
         )
 
     except requests.exceptions.RequestException as e:
-        return f"API Error: {str(e)}"
+        return _api_error(e)
     except (FileNotFoundError, ValueError) as e:
         return str(e)
 
@@ -5922,7 +6277,7 @@ def _discover_recommendations(limit: int, format: str, export: str, full: bool) 
         return format_output(all_items, format, export, full, "recommendations")
 
     except requests.exceptions.RequestException as e:
-        return f"API Error: {str(e)}"
+        return _api_error(e)
     except (FileNotFoundError, ValueError) as e:
         return str(e)
 
@@ -5967,7 +6322,7 @@ def _discover_heavy_rotation(format: str, export: str, full: bool) -> str:
         return format_output(item_data, format, export, full, "heavy_rotation")
 
     except requests.exceptions.RequestException as e:
-        return f"API Error: {str(e)}"
+        return _api_error(e)
     except (FileNotFoundError, ValueError) as e:
         return str(e)
 
@@ -6026,7 +6381,7 @@ def _library_recently_added(limit: int, format: str, export: str, full: bool) ->
         return format_output(item_data, format, export, full, "recently_added")
 
     except requests.exceptions.RequestException as e:
-        return f"API Error: {str(e)}"
+        return _api_error(e)
     except (FileNotFoundError, ValueError) as e:
         return str(e)
 
@@ -6064,7 +6419,7 @@ def _discover_personal_station() -> str:
         return "\n".join(output)
 
     except requests.exceptions.RequestException as e:
-        return f"API Error: {str(e)}"
+        return _api_error(e)
     except (FileNotFoundError, ValueError) as e:
         return str(e)
 
@@ -6181,7 +6536,7 @@ def _discover_top_songs(artist: str, storefront: str = "") -> str:
         return "\n".join(output) if len(output) > 1 else "No top songs found"
 
     except requests.exceptions.RequestException as e:
-        return f"API Error: {str(e)}"
+        return _api_error(e)
     except (FileNotFoundError, ValueError) as e:
         return str(e)
 
@@ -6249,7 +6604,7 @@ def _discover_similar_artists(artist: str, storefront: str = "") -> str:
         return "\n".join(output) if len(output) > 1 else "No similar artists found"
 
     except requests.exceptions.RequestException as e:
-        return f"API Error: {str(e)}"
+        return _api_error(e)
     except (FileNotFoundError, ValueError) as e:
         return str(e)
 
@@ -6280,7 +6635,7 @@ def _discover_song_station(song_id: str, storefront: str = "") -> str:
         return f"Station: {name}\nStation ID: {station_id}\n\nUse this station to discover music similar to this song."
 
     except requests.exceptions.RequestException as e:
-        return f"API Error: {str(e)}"
+        return _api_error(e)
     except (FileNotFoundError, ValueError) as e:
         return str(e)
 
@@ -6443,7 +6798,7 @@ def _library_rate(
                     return f"{action.capitalize()}d: {song_name} by {song_artist}"
                 return f"Error: {msg}"
 
-    return f"Track not found: {track_name}"
+    return _catalog_miss_reason(f"Track not found: {track_name}")
 
 
 # ============ CATALOG DETAILS ============
@@ -6481,7 +6836,7 @@ def _catalog_song_details(song_id: str) -> str:
         return "\n".join(output)
 
     except requests.exceptions.RequestException as e:
-        return f"API Error: {str(e)}"
+        return _api_error(e)
     except (FileNotFoundError, ValueError) as e:
         return str(e)
 
@@ -6557,7 +6912,7 @@ def _catalog_artist_details(artist: str) -> str:
         return "\n".join(output)
 
     except requests.exceptions.RequestException as e:
-        return f"API Error: {str(e)}"
+        return _api_error(e)
     except (FileNotFoundError, ValueError) as e:
         return str(e)
 
@@ -6596,7 +6951,7 @@ def _discover_charts(chart_type: str = "songs", storefront: str = "") -> str:
         return "\n".join(output) if output else "No chart data available"
 
     except requests.exceptions.RequestException as e:
-        return f"API Error: {str(e)}"
+        return _api_error(e)
     except (FileNotFoundError, ValueError) as e:
         return str(e)
 
@@ -6624,7 +6979,7 @@ def _catalog_genres() -> str:
         return "\n".join(output) if output else "No genres found"
 
     except requests.exceptions.RequestException as e:
-        return f"API Error: {str(e)}"
+        return _api_error(e)
     except (FileNotFoundError, ValueError) as e:
         return str(e)
 
@@ -6653,7 +7008,7 @@ def _catalog_suggestions(term: str) -> str:
         return "\n".join(output) if len(output) > 1 else "No suggestions found"
 
     except requests.exceptions.RequestException as e:
-        return f"API Error: {str(e)}"
+        return _api_error(e)
     except (FileNotFoundError, ValueError) as e:
         return str(e)
 
@@ -6672,6 +7027,9 @@ def catalog(
     song_id: str = "",
     chart_type: str = "songs",
     term: str = "",
+    isrcs: str = "",
+    tracks: str = "",
+    max_tracks: int = 0,
     limit: int = 15,
     offset: int = 0,
     format: str = "text",
@@ -6679,7 +7037,20 @@ def catalog(
     full: bool = False,
     clean_only: Optional[bool] = None,
 ) -> str:
-    """Apple Music catalog. Actions: search, album_tracks, album_details, song_details, artist_details, genres, suggestions."""
+    """Apple Music catalog. Actions: search, resolve_isrc, match, album_tracks, album_details, song_details, artist_details, genres, suggestions.
+
+    For turning a list of tracks into catalog IDs, prefer these over repeated `search`:
+
+    - `resolve_isrc` (isrcs=...) when you have ISRCs — exact, 25 per request. This is
+      the one that keeps a large import under Apple's rate limit.
+    - `match` (tracks=...) for titles/artists — a DRY RUN that reports what each name
+      would resolve to and how confident the match is, without adding anything. Costs
+      one request per track, so it's capped at 25 by default (raise with `max_tracks`,
+      not `limit`). Use it to review before a bulk add, especially since one title can
+      map to several catalog editions.
+
+    Both hand back IDs ready for `playlist(action="add", track=...)`.
+    """
     action = action.lower().strip().replace("-", "_")
 
     if action == "search":
@@ -6706,6 +7077,10 @@ def catalog(
                 if why:
                     return f"Error: UI search failed — {why}"
             return "Error: API token required for catalog search. Set up API access or use UI search on macOS."
+    elif action == "resolve_isrc" or (action == "resolve" and (isrcs or not tracks)):
+        return _catalog_resolve_isrc(isrcs or query, format, full)
+    elif action in ("match", "match_tracks", "resolve_tracks", "resolve"):
+        return _catalog_match_tracks(tracks or query, artist, max_tracks, format)
     elif action == "album_tracks":
         return _catalog_album_tracks(album, artist, limit, offset, format, export, full)
     elif action == "album_details":
@@ -6727,7 +7102,7 @@ def catalog(
             return "Error: term required for suggestions"
         return _catalog_suggestions(term)
     else:
-        return f"Unknown action: {action}. Use: search, album_tracks, album_details, song_details, artist_details, genres, suggestions"
+        return f"Unknown action: {action}. Use: search, resolve_isrc, match, album_tracks, album_details, song_details, artist_details, genres, suggestions"
 
 
 # ============ SYSTEM MANAGEMENT ============
@@ -7127,7 +7502,8 @@ def _config_auth_status(mutation_status: "Optional[str]" = None) -> str:
                     "`applemusic-mcp login` (browser) or `applemusic-mcp login --dev` (dev token)."
                 )
             elif response.status_code == 429:
-                status.append("API Connection: RATE-LIMITED (429) — wait a moment and retry.")
+                amp_api.note_status(429, amp_api.API)
+                status.append(f"API Connection: RATE-LIMITED (429) — {_THROTTLED_REASON}")
             else:
                 status.append(f"API Connection: FAILED ({response.status_code})")
         except Exception as e:
@@ -7145,8 +7521,7 @@ def _config_auth_status(mutation_status: "Optional[str]" = None) -> str:
                     "session expired. Re-run `applemusic-mcp login`."
                 ),
                 "throttled": (
-                    "Web fallback writes (amp-api): RATE-LIMITED (429) — wait a "
-                    "moment and retry."
+                    f"Web fallback writes (amp-api): RATE-LIMITED (429) — {_THROTTLED_REASON}"
                 ),
                 "error": (
                     "Web fallback writes (amp-api): ERROR reaching amp-api "
@@ -7502,7 +7877,7 @@ def _auth_action(action: str = "status", confirm: bool = False) -> str:
         elif mut == "ok":
             nxt = "✅ Ready — catalog, playlists, add, and rate all work."
         elif mut == "throttled":
-            nxt = "⚠️ Rate-limited (429) right now — auth looks fine; wait and retry."
+            nxt = f"⚠️ Rate-limited (429) right now — auth looks fine. {_THROTTLED_REASON}"
         elif mut == "expired":
             nxt = (
                 "⚠️ Reads may work, but add/playlist/rate are unauthorized — the "
