@@ -5,39 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-
-- **Support for `mcp` 2.x alongside 1.x.** `mcp` 2.0 renamed `mcp.server.fastmcp` to
-  `mcp.server.mcpserver` and `FastMCP` to `MCPServer`. Everything this server uses of
-  it — the constructor's positional name, `.tool(annotations=...)`, `.resource(uri)`,
-  and `.run()` — is signature-compatible, so a single import alias covers both majors.
-  The dependency is now `mcp>=1.0.0,<3`.
-
-  Clients see no difference: `ToolAnnotations` renamed its fields to snake_case
-  internally but still accepts the camelCase kwargs and still emits camelCase on the
-  wire. Verified with a real JSON-RPC handshake against each major — identical tool
-  list, byte-identical annotation payloads — and the full suite passes on both.
-
-  The upper bound stays deliberately. `mcp` 2.0 moved a module with no deprecation
-  path, and an unbounded requirement is what broke every fresh install in 0.18.2.
-  CI now runs the suite against 2.x as well, so neither major rots unnoticed.
+## [0.18.3] - 2026-08-05
 
 ### Fixed
 
 - **Queueing a track by name could queue an unrelated song.** `queue(action=
-  "play_next"/"play_last"/"jump"/"set")` resolved a name by taking the first row of
-  a catalog search without checking it corresponded — the same shape as the playlist
-  bug fixed in 0.18.0, where `"Yesterday"` matched "Renaissance Fair" by The Byrds.
-  Resolution now requires the title to correspond and honours an artist hint, and
-  resolves to nothing rather than queueing something the user did not ask for. A
-  throttled search in this path also reported "not found in catalog"; it now names
-  the rate limit.
-- **`serverInfo.version` reported the wrong version.** On `mcp` 1.x it reported the
-  mcp library's version (a client would show "Apple Music 1.25.0"); on 2.x it was
-  blank. It now reports this package's version where the runtime supports it. `mcp`
-  1.x has no `version` parameter, so that path is unchanged.
+  "play_next"/"play_last"/"jump"/"set")` resolved a name by taking the first row of a
+  catalog search without checking that it corresponded to the query. Apple's search
+  returns loosely-related rows first — `"Yesterday"` matched "Renaissance Fair (Single
+  Version)" by The Byrds. Resolution now requires the title to correspond and honours
+  an artist hint, and resolves to nothing rather than queueing a track that was not
+  asked for.
+- **A rate-limited queue lookup reported "not found in catalog".** A 429 empties the
+  search results, so the throttle read as a missing track. It now names the rate limit.
+- **`serverInfo.version` reported the wrong version.** On `mcp` 1.x it reported the mcp
+  library's own version, so a client displayed "Apple Music 1.25.0"; on 2.x it was
+  blank. It now reports this package's version where the runtime accepts one.
+
+### Changed
+
+- **`mcp` 2.x is now supported alongside 1.x.** The requirement is `mcp>=1.0.0,<3`.
+  The MCP interface is unchanged: same tools, same annotations on the wire, no client
+  or configuration change needed.
 
 ## [0.18.2] - 2026-07-28
 
