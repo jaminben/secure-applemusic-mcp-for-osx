@@ -497,6 +497,24 @@ def format_duration(ms: int | None) -> str:
     return f"{minutes}:{seconds:02d}"
 
 
+def _rating_from_song_object(track: dict) -> str:
+    """Three-state content rating for an Apple Music API song object.
+
+    Catalog objects (`type: "songs"`) omit `contentRating` on clean tracks, so
+    absent legitimately means "No" there. Library objects (`type:
+    "library-songs"`) never carry the field at all -- the endpoint simply does
+    not return it -- so reading absent as "No" reports every library track as
+    clean without checking anything. That is the whole bug this exists to
+    prevent, and on Windows/Linux the library API is the only source.
+    """
+    attrs = track.get("attributes", {})
+    if attrs.get("contentRating") == "explicit":
+        return "Yes"
+    if track.get("type") == "library-songs" or str(track.get("id", "")).startswith("i."):
+        return "Unknown"
+    return "No"
+
+
 def extract_track_data(track: dict, include_extras: bool = False) -> dict:
     """Extract track data from API response into standardized dict.
 
@@ -518,7 +536,7 @@ def extract_track_data(track: dict, include_extras: bool = False) -> dict:
     name = attrs.get("name", "")
     artist = attrs.get("artistName", "")
     album = attrs.get("albumName", "")
-    explicit = "Yes" if attrs.get("contentRating") == "explicit" else "No"
+    explicit = _rating_from_song_object(track)
     isrc = attrs.get("isrc", "")
 
     data = {
@@ -530,6 +548,9 @@ def extract_track_data(track: dict, include_extras: bool = False) -> dict:
         "genre": genres[0] if genres else "",
         "explicit": explicit,
         "id": track_id,
+        # Carried unconditionally: the rating verifier batches by catalog id,
+        # and without it every library track falls back to a fuzzy search.
+        "catalog_id": track_id if str(track_id).isdigit() else play_params.get("catalogId", ""),
     }
 
     if include_extras:
@@ -542,7 +563,7 @@ def extract_track_data(track: dict, include_extras: bool = False) -> dict:
                 "catalog_id": play_params.get("catalogId", ""),
                 "composer": attrs.get("composerName", ""),
                 "isrc": isrc,
-                "is_explicit": attrs.get("contentRating") == "explicit",
+                "is_explicit": explicit == "Yes",
                 "preview_url": previews[0].get("url", "") if previews else "",
                 "artwork_url": attrs.get("artwork", {})
                 .get("url", "")
@@ -551,7 +572,10 @@ def extract_track_data(track: dict, include_extras: bool = False) -> dict:
         )
 
     # Cache track metadata for later ID lookups (e.g., removal by catalog ID)
-    if track_id and name:
+    # Never cache a rating that was not actually established: the cache is
+    # consulted as authoritative, and set_track_metadata refuses to overwrite,
+    # so one unverified guess would become a permanent answer.
+    if track_id and name and explicit in ("Yes", "No"):
         cache = get_track_cache()
         # Determine if this is a catalog or library ID
         catalog_id = track_id if track_id.isdigit() else play_params.get("catalogId", "")
@@ -6294,7 +6318,7 @@ def _resolve_explicit_ratings(tracks: list[dict], budget: int = _CLEAN_VERIFY_BU
 
     Mutates `tracks` in place. Returns counts for the caller to report.
     """
-    stats = {"cached": 0, "looked_up": 0, "unverified": 0, "blocked": ""}
+    stats = {"cached": 0, "batched": 0, "looked_up": 0, "unverified": 0, "blocked": ""}
     cache = get_track_cache()
     pending = []
 
@@ -6317,6 +6341,31 @@ def _resolve_explicit_ratings(tracks: list[dict], budget: int = _CLEAN_VERIFY_BU
             stats["cached"] += 1
         else:
             pending.append(t)
+
+    # Batch pass: anything carrying a catalog id is answered exactly, in one
+    # request per 250 ids, with no name matching involved at all. This is both
+    # cheaper and more correct than searching per track, so it runs first and
+    # the fuzzy fallback only sees what is left.
+    by_id = {t.get("catalog_id", ""): t for t in pending if t.get("catalog_id")}
+    if by_id:
+        try:
+            ratings = amp_api.catalog_content_ratings(list(by_id))
+        except Exception:
+            ratings = {}
+        cache = get_track_cache()
+        for cid, rating in ratings.items():
+            t = by_id.get(cid)
+            if not t:
+                continue
+            t["explicit"] = rating
+            stats["batched"] += 1
+            cache.set_track_metadata(
+                explicit=rating,
+                catalog_id=cid,
+                name=t.get("name") or None,
+                artist=t.get("artist") or None,
+            )
+        pending = [t for t in pending if t.get("explicit") not in ("Yes", "No")]
 
     for t in pending:
         if stats["looked_up"] >= budget or not t.get("name"):
@@ -6396,6 +6445,10 @@ def _apply_clean_filter(tracks: list[dict], clean_only: bool) -> tuple[list[dict
     if removed:
         parts.append(f"{removed} explicit removed")
     if unverified:
+        # A throttle is the most likely reason a lookup came back empty, and it
+        # is the one the user can act on (wait, or sign in with --dev).
+        if not stats.get("blocked") and amp_api.throttled_recently():
+            stats["blocked"] = "rate limited by Apple"
         why = f" ({stats['blocked']})" if stats.get("blocked") else ""
         parts.append(f"{unverified} could NOT be verified{why}")
     note = "Clean filter: " + " · ".join(parts)

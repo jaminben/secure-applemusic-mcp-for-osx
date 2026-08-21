@@ -2249,3 +2249,120 @@ def test_clean_filter_degrades_without_crashing(monkeypatch, failure, expected_r
     )
     assert kept and kept[0]["explicit"] == "Unknown"
     assert expected_reason in note
+
+
+def test_library_song_without_content_rating_is_unknown_not_clean():
+    """`/me/library/songs` never returns `contentRating`. Reading absent as "No"
+    reported every library track as clean without checking anything, and on
+    Windows/Linux the library API is the only source."""
+    from applemusic_mcp import server as srv
+
+    library = {"type": "library-songs", "id": "i.abc", "attributes": {"name": "X"}}
+    catalog_clean = {"type": "songs", "id": "123", "attributes": {"name": "X"}}
+    catalog_explicit = {"type": "songs", "id": "124", "attributes": {"contentRating": "explicit"}}
+
+    assert srv._rating_from_song_object(library) == "Unknown"
+    # The catalog *does* omit the field on clean tracks, so absent means No there.
+    assert srv._rating_from_song_object(catalog_clean) == "No"
+    assert srv._rating_from_song_object(catalog_explicit) == "Yes"
+
+
+def test_unverified_rating_is_never_cached(monkeypatch):
+    """The cache is consulted as authoritative and refuses to overwrite, so
+    caching an unverified guess would make it permanent."""
+    from applemusic_mcp import server as srv
+
+    writes = []
+    monkeypatch.setattr(
+        srv,
+        "get_track_cache",
+        lambda: types.SimpleNamespace(set_track_metadata=lambda **kw: writes.append(kw)),
+    )
+    srv.extract_track_data(
+        {"type": "library-songs", "id": "i.abc", "attributes": {"name": "N", "artistName": "A"}},
+        False,
+    )
+    assert writes == [], "an Unknown rating must not be written to the cache"
+
+
+def test_ratings_are_resolved_by_catalog_id_before_any_name_search(monkeypatch):
+    """Batching by id is exact and one request; the fuzzy search should only
+    ever see what has no catalog id."""
+    from applemusic_mcp import server as srv
+
+    searched = []
+    monkeypatch.setattr(
+        srv,
+        "get_track_cache",
+        lambda: types.SimpleNamespace(
+            get_explicit=lambda tid: None,
+            get_track_by_name=lambda n, a="": None,
+            set_track_metadata=lambda **kw: None,
+        ),
+    )
+    monkeypatch.setattr(
+        srv.amp_api, "catalog_content_ratings", lambda ids, storefront="us": {"111": "Yes"}
+    )
+    monkeypatch.setattr(srv, "_search_catalog_songs", lambda q, n: searched.append(q) or [])
+
+    tracks = [
+        {"name": "Batched", "artist": "A", "catalog_id": "111", "explicit": "Unknown"},
+        {"name": "NoId", "artist": "B", "catalog_id": "", "explicit": "Unknown"},
+    ]
+    srv._resolve_explicit_ratings(tracks)
+
+    assert tracks[0]["explicit"] == "Yes", "resolved exactly, by id"
+    assert len(searched) == 1 and "NoId" in searched[0], "only the id-less track is searched"
+
+
+def test_batched_resolutions_do_not_consume_the_search_budget(monkeypatch):
+    """The budget caps expensive per-track searches. Counting cheap batched
+    resolutions against it would let one well-populated page disable the
+    fallback for exactly the tracks that need it -- the ones with no id."""
+    from applemusic_mcp import server as srv
+
+    monkeypatch.setattr(
+        srv,
+        "get_track_cache",
+        lambda: types.SimpleNamespace(
+            get_explicit=lambda tid: None,
+            get_track_by_name=lambda n, a="": None,
+            set_track_metadata=lambda **kw: None,
+        ),
+    )
+    batched = {str(i): "No" for i in range(50)}
+    monkeypatch.setattr(
+        srv.amp_api, "catalog_content_ratings", lambda ids, storefront="us": batched
+    )
+    searched = []
+    monkeypatch.setattr(srv, "_search_catalog_songs", lambda q, n: searched.append(q) or [])
+
+    tracks = [
+        {"name": f"B{i}", "artist": "A", "catalog_id": str(i), "explicit": "Unknown"}
+        for i in range(50)
+    ] + [{"name": "NoId", "artist": "A", "catalog_id": "", "explicit": "Unknown"}]
+
+    srv._resolve_explicit_ratings(tracks, budget=5)
+    assert searched, "50 batched tracks must not exhaust a 5-search budget"
+
+
+def test_rate_limiting_is_named_as_the_reason(monkeypatch):
+    from applemusic_mcp import server as srv
+
+    monkeypatch.setattr(
+        srv,
+        "get_track_cache",
+        lambda: types.SimpleNamespace(
+            get_explicit=lambda tid: None,
+            get_track_by_name=lambda n, a="": None,
+            set_track_metadata=lambda **kw: None,
+        ),
+    )
+    monkeypatch.setattr(srv.amp_api, "catalog_content_ratings", lambda ids, storefront="us": {})
+    monkeypatch.setattr(srv, "_search_catalog_songs", lambda q, n: [])
+    monkeypatch.setattr(srv.amp_api, "throttled_recently", lambda *a, **k: True)
+
+    _, note = srv._apply_clean_filter(
+        [{"name": "T", "artist": "A", "catalog_id": "1", "explicit": "Unknown"}], True
+    )
+    assert "rate limited by Apple" in note
