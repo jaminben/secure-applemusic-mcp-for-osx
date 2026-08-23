@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import os
+import plistlib
 import signal
 import subprocess
 import time
@@ -63,9 +64,15 @@ class Client:
     # present but has never written an MCP config.
     evidence: tuple[Path, ...] = ()
     caveat: str = ""
-    # What the app is called in /Applications, when that differs from the name
-    # we use. The picker shows both: a user looking for "ChatGPT Classic"
-    # should not have to know it is Codex underneath.
+    # Bundle identifiers this client ships under. Preferred over the file name
+    # for locating the app: names change (ChatGPT Classic became ChatGPT in a
+    # point release, same bundle id) and a rename must not silently drop the
+    # icon or the ability to restart it.
+    bundle_ids: tuple[str, ...] = ()
+    # Show the installed app's own name alongside ours. For clients whose app
+    # is called something a user would not connect to the name here.
+    show_app_name: bool = False
+    # Fallback alias when the app is not installed to read a name from.
     aka: str = ""
     # A GUI app we can quit and reopen for the user. False for anything that
     # lives in a terminal, where "restart it" is the user's job.
@@ -73,7 +80,18 @@ class Client:
 
     @property
     def label(self) -> str:
-        return f"{self.name} ({self.aka})" if self.aka else self.name
+        """What to call this in the picker.
+
+        Reads the name off the installed app so a rename fixes itself, and
+        falls back to the declared alias when nothing is installed.
+        """
+        if not self.show_app_name:
+            return self.name
+        app = _app_path(self)
+        alias = app.stem if app is not None else self.aka
+        if not alias or alias.lower() in self.name.lower():
+            return self.name
+        return f"{self.name} ({alias})"
 
     def installed(self) -> bool:
         return any(p.exists() for p in (self.config, *self.evidence))
@@ -100,6 +118,7 @@ def known_clients() -> list[Client]:
     return [
         Client(
             key="claude-desktop",
+            bundle_ids=("com.anthropic.claudefordesktop",),
             name="Claude Desktop",
             config=support / "Claude" / "claude_desktop_config.json",
             evidence=(*app("Claude"), support / "Claude"),
@@ -113,11 +132,12 @@ def known_clients() -> list[Client]:
             # preserves it on exit, so there is no clobber risk. What is true
             # of every client here is that MCP config is read at startup, and
             # a terminal session is not ours to restart.
-            caveat="Restart Claude Code afterwards.",
+            caveat="Restart Claude Code afterwards",
             restartable=False,
         ),
         Client(
             key="cursor",
+            bundle_ids=("com.todesktop.230313mzl4w4u92",),
             name="Cursor",
             config=home / ".cursor" / "mcp.json",
             evidence=(*app("Cursor"), home / ".cursor"),
@@ -131,7 +151,9 @@ def known_clients() -> list[Client]:
         Client(
             key="codex",
             name="Codex",
-            aka="ChatGPT Classic",
+            bundle_ids=("com.openai.codex",),
+            show_app_name=True,
+            aka="ChatGPT",
             config=home / ".codex" / "config.toml",
             fmt="toml",
             servers_key="mcp_servers",
@@ -143,6 +165,7 @@ def known_clients() -> list[Client]:
         ),
         Client(
             key="vscode",
+            bundle_ids=("com.microsoft.VSCode",),
             name="VS Code",
             config=support / "Code" / "User" / "mcp.json",
             servers_key="servers",
@@ -152,8 +175,46 @@ def known_clients() -> list[Client]:
     ]
 
 
+def _bundle_index() -> "dict[str, Path]":
+    """Bundle identifier -> installed .app, for the applications directories.
+
+    Reads Info.plist rather than trusting file names. Rebuilt per call: setup
+    runs once, and a cache keyed on nothing would be wrong the moment a test
+    (or the user) moved an app.
+    """
+    index: dict[str, Path] = {}
+    for directory in app_dirs():
+        try:
+            entries = sorted(directory.iterdir())
+        except OSError:
+            continue
+        for app in entries:
+            if app.suffix != ".app":
+                continue
+            try:
+                with open(app / "Contents" / "Info.plist", "rb") as handle:
+                    info = plistlib.load(handle)
+            except Exception:  # noqa: BLE001
+                # Third-party bundles, so anything goes: missing plists,
+                # truncated XML, expat errors that are not ValueErrors. One
+                # unreadable app must not stop the scan.
+                continue
+            identifier = info.get("CFBundleIdentifier")
+            # First match wins, so /Applications beats ~/Applications.
+            if isinstance(identifier, str) and identifier not in index:
+                index[identifier] = app
+    return index
+
+
 def _app_path(client: Client) -> Optional[Path]:
-    """The installed .app for this client, if we know of one."""
+    """The installed .app for this client, if we can find one."""
+    if client.bundle_ids:
+        index = _bundle_index()
+        for identifier in client.bundle_ids:
+            found = index.get(identifier)
+            if found is not None:
+                return found
+    # No bundle id declared, or none installed: fall back to the known names.
     return next((p for p in client.evidence if p.suffix == ".app" and p.exists()), None)
 
 

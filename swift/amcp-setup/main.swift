@@ -142,6 +142,26 @@ private enum Brand {
     }
 }
 
+/// Draws its own rounded background.
+///
+/// NSBox was the obvious choice and was wrong: it sizes its contentView by
+/// autoresizing, so under Auto Layout the box collapsed to nothing and the
+/// bubbles never appeared. Drawing in draw(_:) also fixes dark mode for free --
+/// the colour is resolved against the view's effective appearance each time,
+/// which a CALayer background colour is not.
+final class BubbleView: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        let path = NSBezierPath(roundedRect: bounds, xRadius: 14, yRadius: 14)
+        Brand.bubble.setFill()
+        path.fill()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+}
+
 private enum Metrics {
     static let margin: CGFloat = 24
     static let related: CGFloat = 8
@@ -170,7 +190,11 @@ func wrappingLabel(_ text: String, style: NSFont.TextStyle, colour: NSColor,
 func iconView(iconPath: String?, symbol: String?, size: CGFloat) -> NSImageView? {
     var image: NSImage?
     if let iconPath, FileManager.default.fileExists(atPath: iconPath) {
-        image = NSWorkspace.shared.icon(forFile: iconPath)
+        // NSWorkspace returns the icon *for* a file, which for an .icns is the
+        // generic document icon rather than the artwork inside it.
+        image = iconPath.hasSuffix(".icns")
+            ? NSImage(contentsOfFile: iconPath)
+            : NSWorkspace.shared.icon(forFile: iconPath)
     }
     if image == nil, let symbol {
         image = NSImage(
@@ -178,7 +202,10 @@ func iconView(iconPath: String?, symbol: String?, size: CGFloat) -> NSImageView?
             .withSymbolConfiguration(.init(pointSize: size, weight: .regular))
     }
     guard let image else { return nil }
-    image.size = NSSize(width: size, height: size)
+    // Deliberately NOT setting image.size: pinning it to the display size makes
+    // AppKit ask for that one representation, and on a cold Icon Services cache
+    // the small variant may not exist yet -- which renders as a blank square.
+    // Leaving the full set in place lets it scale from whichever rep is ready.
     let view = NSImageView(image: image)
     view.imageScaling = .scaleProportionallyUpOrDown
     view.setAccessibilityElement(false)
@@ -230,7 +257,10 @@ final class WizardController: NSObject, NSWindowDelegate {
     private var page: Page { plan.pages[index] }
     private var isLast: Bool { index == plan.pages.count - 1 }
 
-    func present() {
+    var snapshotView: NSView? { window?.contentView }
+
+    func present(at page: Int = 0) {
+        index = min(max(page, 0), plan.pages.count - 1)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: Metrics.windowWidth, height: 460),
             styleMask: [.titled, .closable],
@@ -366,29 +396,43 @@ final class WizardController: NSObject, NSWindowDelegate {
                 equalTo: root.bottomAnchor, constant: -Metrics.margin),
         ])
         window?.contentView = root
+
+        // Fit the window to the page rather than scrolling a fixed box: the
+        // splash was taller than 460pt, so its title was cut off at the top.
+        root.layoutSubtreeIfNeeded()
+        let needed = body.fittingSize.height
+            + Metrics.margin * 2
+            + buttons.fittingSize.height
+            + Metrics.related
+            + Metrics.margin
+        let height = min(max(needed, 360), 760)
+        window?.setContentSize(NSSize(width: Metrics.windowWidth, height: height))
+        window?.center()
     }
 
     /// A speech bubble holding something the user might say.
     private func makeExample(_ text: String) -> NSView {
-        let inset: CGFloat = 14
+        let inset = NSSize(width: 14, height: 10)
         let label = wrappingLabel(
             "\u{201C}\(text)\u{201D}", style: .body, colour: .labelColor,
-            width: Metrics.contentWidth - inset * 2)
+            width: Metrics.contentWidth - inset.width * 2)
+        label.translatesAutoresizingMaskIntoConstraints = false
 
-        // NSBox rather than a layer-backed view: it repaints its fill when the
-        // system appearance changes, which a CALayer colour does not.
-        let box = NSBox()
-        box.boxType = .custom
-        box.titlePosition = .noTitle
-        box.borderWidth = 0
-        box.fillColor = Brand.bubble
-        box.cornerRadius = 14
-        box.contentViewMargins = NSSize(width: inset, height: 10)
-        box.contentView = label
-        box.translatesAutoresizingMaskIntoConstraints = false
-        box.widthAnchor.constraint(
-            lessThanOrEqualToConstant: Metrics.contentWidth).isActive = true
-        return box
+        let bubble = BubbleView()
+        bubble.translatesAutoresizingMaskIntoConstraints = false
+        bubble.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(
+                equalTo: bubble.leadingAnchor, constant: inset.width),
+            label.trailingAnchor.constraint(
+                equalTo: bubble.trailingAnchor, constant: -inset.width),
+            label.topAnchor.constraint(equalTo: bubble.topAnchor, constant: inset.height),
+            label.bottomAnchor.constraint(
+                equalTo: bubble.bottomAnchor, constant: -inset.height),
+            bubble.widthAnchor.constraint(
+                lessThanOrEqualToConstant: Metrics.contentWidth),
+        ])
+        return bubble
     }
 
     private func makeBullet(_ bullet: Bullet) -> NSView {
@@ -598,6 +642,30 @@ guard let first = reader.next(),
       !plan.pages.isEmpty else {
     FileHandle.standardError.write(Data("amcp-setup: could not read the plan\n".utf8))
     finish("cancel")
+}
+
+// --render <path> [--page N]: lay the page out offscreen, write a PNG, exit.
+// Iterating on a UI by asking someone to look at it is slow and imprecise; this
+// makes the layout inspectable directly.
+if let flag = CommandLine.arguments.firstIndex(of: "--render"),
+   CommandLine.arguments.count > flag + 1 {
+    let path = CommandLine.arguments[flag + 1]
+    var wanted = 0
+    if let pageFlag = CommandLine.arguments.firstIndex(of: "--page"),
+       CommandLine.arguments.count > pageFlag + 1 {
+        wanted = Int(CommandLine.arguments[pageFlag + 1]) ?? 0
+    }
+    let app = NSApplication.shared
+    app.setActivationPolicy(.prohibited)
+    let controller = WizardController(plan: plan)
+    controller.present(at: min(wanted, plan.pages.count - 1))
+    guard let view = controller.snapshotView else { exit(1) }
+    view.layoutSubtreeIfNeeded()
+    guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { exit(1) }
+    view.cacheDisplay(in: view.bounds, to: rep)
+    guard let png = rep.representation(using: .png, properties: [:]) else { exit(1) }
+    try? png.write(to: URL(fileURLWithPath: path))
+    exit(0)
 }
 
 let application = NSApplication.shared

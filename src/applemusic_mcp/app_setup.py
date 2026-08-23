@@ -429,20 +429,23 @@ def _musickit_page() -> "Optional[dict]":
 
     page = {
         "id": "musickit",
-        "title": "Allow Apple Music",
+        "title": "Play anything on Apple Music",
         "body": (
-            "Some songs aren't in your library yet. To play one, it has to be "
-            "added first — and that needs your permission to use Apple Music."
+            "If you subscribe to Apple Music, this opens up the whole catalog — "
+            "not just what's already in your library. Ask for a song by name, "
+            "or for something you've never heard.\n\n"
+            "It needs your permission to use Apple Music."
         ),
         "examples": [
-            "Play the new Rosalía single",
-            "What's that song from the ad? Put it on",
+            "What was the best song of 2024 I've probably never heard?",
+            "Play the album that defined 90s hip-hop",
+            "Something like Khruangbin, but faster",
         ],
         "footer": (
-            "It's only ever used to add a song. It can't buy anything or "
-            "change your subscription, and anything it adds goes into a "
-            "playlist called \"Added by Music MCP\" so it's easy to find.\n\n"
-            "This one's optional — everything else works without it."
+            "Anything it adds for you goes into a playlist called "
+            "\u201cAdded by Music MCP\u201d, so it's easy to find. It can't buy "
+            "anything or change your subscription.\n\n"
+            "Optional — everything else works without it."
         ),
         "next": "Continue",
     }
@@ -499,8 +502,8 @@ def _build_plan() -> dict:
                         "iconPath": "/System/Applications/Music.app",
                     },
                     {
-                        "label": "Allow Apple Music",
-                        "detail": "Optional. For songs you don't own yet.",
+                        "label": "Play anything on Apple Music",
+                        "detail": "Optional. For Apple Music subscribers.",
                         "symbol": "sparkles",
                     },
                 ],

@@ -462,12 +462,50 @@ def test_creating_a_config_from_nothing_writes_no_backup(home):
     assert list(client.config.parent.glob("*.bak-*")) == []
 
 
+def _install_app(home, name: str, bundle_id: str):
+    """Put a minimal .app on the fake disk."""
+    import plistlib
+
+    app = home / "Applications" / f"{name}.app"
+    (app / "Contents").mkdir(parents=True)
+    with open(app / "Contents" / "Info.plist", "wb") as handle:
+        plistlib.dump({"CFBundleIdentifier": bundle_id}, handle)
+    return app
+
+
 def test_codex_is_labelled_with_the_name_on_disk(home):
-    """It ships as ChatGPT Classic.app. Someone looking for the ChatGPT app in
-    the picker must not have to know it is Codex underneath."""
-    client = clients.find("codex")
-    assert client.label == "Codex (ChatGPT Classic)"
-    assert "ChatGPT" in client.label
+    """Someone looking for their ChatGPT app must not have to know it is Codex
+    underneath. The name is read from the installed bundle, so a rename fixes
+    itself -- ChatGPT Classic became ChatGPT in a point release."""
+    _install_app(home, "ChatGPT", "com.openai.codex")
+    assert clients.find("codex").label == "Codex (ChatGPT)"
+
+    # And again under the older name, with no code change.
+    import shutil
+
+    shutil.rmtree(home / "Applications")
+    _install_app(home, "ChatGPT Classic", "com.openai.codex")
+    assert clients.find("codex").label == "Codex (ChatGPT Classic)"
+
+
+def test_an_app_is_found_by_bundle_id_not_by_file_name(home):
+    """The whole point: a renamed app must still be found."""
+    app = _install_app(home, "Something Else Entirely", "com.openai.codex")
+    assert clients._app_path(clients.find("codex")) == app
+
+
+def test_a_client_with_no_app_installed_falls_back_to_its_alias(home):
+    (home / ".codex").mkdir()
+    assert clients.find("codex").label == "Codex (ChatGPT)"
+
+
+def test_an_unreadable_bundle_does_not_stop_the_scan(home):
+    """Third-party bundles contain anything, including broken plists."""
+    broken = home / "Applications" / "Broken.app" / "Contents"
+    broken.mkdir(parents=True)
+    (broken / "Info.plist").write_bytes(b"<plist><not well formed")
+    wanted = _install_app(home, "ChatGPT", "com.openai.codex")
+    assert clients._app_path(clients.find("codex")) == wanted
 
 
 def test_clients_without_an_alias_are_labelled_plainly(home):
