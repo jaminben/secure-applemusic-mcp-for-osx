@@ -408,7 +408,7 @@ def _client_options() -> list[dict]:
         if client.caveat:
             option["note"] = client.caveat
         elif clients.is_running(client):
-            option["note"] = "Running — will be quit and reopened"
+            option["note"] = "Open now — will be restarted"
         options.append(option)
     return options
 
@@ -416,56 +416,40 @@ def _client_options() -> list[dict]:
 def _musickit_page() -> "Optional[dict]":
     """The Apple Music page, or None if this build cannot offer it.
 
-    A *different* permission from the Automation grant on the previous page,
-    and worth being explicit about because the two sound alike:
+    A different permission from controlling Music.app: that one reaches the
+    Music app on this Mac, this one reaches the Apple Music service. They
+    appear in different places in System Settings and are granted separately.
 
-      * Automation reaches the Music **app** on this Mac — play, pause, search
-        your library, edit playlists. Granted in Privacy & Security > Automation.
-      * This reaches the Apple Music **service** — the only thing it is used for
-        is adding a song to your library. Granted in Privacy & Security >
-        Media & Apple Music.
-
-    It is genuinely optional, which the previous pages are not: everything
-    works without it except playing a song you do not already own. The reason
-    that needs a service call at all is that Music.app's `play` needs an object
-    specifier, and a catalog track you do not own has none — so it has to be
-    added to the library before it can be played.
+    Apple's guidance for permission copy is to say plainly what the app will do
+    and why, in a sentence or two, without jargon -- so the page says what it is
+    for and what it cannot do, and leaves the mechanics out.
     """
     if not musickit.is_available():
         return None                       # no signed helper in this build
 
-    already = musickit.authorization_status() == "authorized"
     page = {
         "id": "musickit",
-        "title": "Apple Music access (optional)",
+        "title": "Allow Apple Music",
         "body": (
-            "WHY  Playing a song you do not already own means adding it to your "
-            "library first — Music.app cannot play a catalog track that is not "
-            "there. That is a request to the Apple Music service, which the "
-            "permission on the previous page cannot make.\n\n"
-            "This is a different permission from that one. It appears "
-            "separately, under Privacy & Security → Media & Apple Music.\n\n"
-            "WHAT YOU ARE GRANTING  Permission for this app to use your Apple "
-            "Music account. It needs an active subscription.\n\n"
-            "WHAT IT IS USED FOR  Exactly one request: adding a song to your "
-            "library. Songs added this way are collected in a playlist called "
-            "\"Added by Music MCP\" so you can find and undo them in one "
-            "gesture, and you can turn the whole behaviour off later.\n\n"
-            "The grant itself is broader than that single use — Apple does not "
-            "offer a narrower one — so what limits it is the code: the helper "
-            "that holds this permission is a signed 130-line binary that can "
-            "issue that one request and nothing else.\n\n"
-            "NO PAYMENT  It cannot buy anything, change your subscription, or "
-            "see your payment details.\n\n"
-            "SKIPPING IS FINE  Everything else works without it. You will just "
-            "get an error if you ask for a song you do not own."
+            "Some songs aren't in your library yet. To play one, it has to be "
+            "added first — and that needs your permission to use Apple Music."
+        ),
+        "examples": [
+            "Play the new Rosalía single",
+            "What's that song from the ad? Put it on",
+        ],
+        "footer": (
+            "It's only ever used to add a song. It can't buy anything or "
+            "change your subscription, and anything it adds goes into a "
+            "playlist called \"Added by Music MCP\" so it's easy to find.\n\n"
+            "This one's optional — everything else works without it."
         ),
         "next": "Continue",
     }
-    if already:
-        page["body"] += "\n\nALREADY GRANTED  Nothing to do here."
+    if musickit.authorization_status() == "authorized":
+        page["footer"] += "\n\nYou've already allowed this."
     else:
-        page["action"] = "Allow"
+        page["action"] = "Continue"
         page["skip"] = "Not Now"
     return page
 
@@ -473,17 +457,11 @@ def _musickit_page() -> "Optional[dict]":
 def _build_plan() -> dict:
     """The wizard: a splash saying what will happen, then one page per step.
 
-    Order matters. The helper must exist before macOS can be asked to trust it,
-    the permission must be granted before a client is pointed at something that
-    cannot yet work, and the clients come last so the thing they are told about
-    is already functioning.
-
-    Each page says why the step is needed, what it grants, and — the part
-    installers usually leave out — what it does not. A permission dialog with
-    no stated limit is one the user has to take on faith.
+    Copy follows Apple's conventions for asking permission: short sentences,
+    plain words, say what it does and why before the system dialog appears, and
+    name where to turn it off. No jargon the reader has to already know --
+    nothing here says LaunchAgent, Apple Events or daemon.
     """
-    # Built once: each call shells out to the helper to read the current
-    # authorization status.
     optional = _musickit_page()
 
     return {
@@ -492,113 +470,98 @@ def _build_plan() -> dict:
         "pages": [
             {
                 "id": "splash",
-                "title": "Apple Music MCP",
+                "title": "Control Apple Music",
                 "body": (
-                    "This lets your AI assistants control the Music app on this "
-                    "Mac — play something, search your library, build a playlist.\n\n"
-                    "It asks for one macOS permission, and only one: the ability "
-                    "to send commands to Music. Not to your files, not to your "
-                    "browser, not to other apps.\n\n"
-                    "Here is what setup will do. Nothing has changed yet."
+                    "Ask your AI assistant to put music on — in your own words."
+                ),
+                "examples": [
+                    "Play something upbeat for a run",
+                    "Add this to my dinner party playlist",
+                    "Turn it down a bit",
+                ],
+                "footer": (
+                    "Setting up takes a minute. Nothing changes until you say so."
                 ),
                 "bullets": [
                     {
-                        "label": "1.  Install a background helper",
-                        "detail": "So the permission belongs to this app, not to your terminal.",
+                        "label": "Set up the server",
+                        "detail": "Runs quietly on this Mac.",
                         "symbol": "gearshape.fill",
                     },
                     {
-                        "label": "2.  Ask macOS for permission to control Music",
-                        "detail": "One app. Revocable at any time in System Settings.",
+                        "label": "Connect your AI assistants",
+                        "detail": "You pick which ones.",
+                        "symbol": "app.badge.checkmark",
+                    },
+                    {
+                        "label": "Allow control of Music",
+                        "detail": "The one permission it needs.",
                         "iconPath": "/System/Applications/Music.app",
                     },
                     {
-                        "label": "3.  Optionally, allow Apple Music access",
-                        "detail": (
-                            "Only needed to play songs you do not already own. "
-                            "Skippable."
-                        ),
+                        "label": "Allow Apple Music",
+                        "detail": "Optional. For songs you don't own yet.",
                         "symbol": "sparkles",
-                    },
-                    {
-                        "label": "4.  Add it to your AI assistants",
-                        "detail": "You choose which ones. Each config is backed up first.",
-                        "symbol": "app.badge.checkmark",
                     },
                 ],
                 "next": "Continue",
             },
             {
                 "id": "helper",
-                "title": "Background helper",
+                "title": "Set up the server",
                 "body": (
-                    "WHY  macOS grants app-control permission to whichever program "
-                    "starts the process. If your AI client launched the server, the "
-                    "permission would land on your client — or on your terminal, "
-                    "which would then hold it for everything you ever run there.\n\n"
-                    "Letting launchd start this helper makes it answerable for "
-                    "itself, so the permission lands on this app alone.\n\n"
-                    "WHAT IT ADDS  One LaunchAgent file, which starts the helper "
-                    "at login:\n"
-                    "    ~/Library/LaunchAgents/{bundle}.plist\n\n"
-                    "WHAT IT DOES NOT DO  It has no window and no menu bar item. "
-                    "It listens on a private socket inside your home folder and "
-                    "nothing else — no network port, nothing reachable from "
-                    "outside this Mac.\n\n"
-                    "TO REMOVE  Delete that file, or move this app to the Trash."
-                ).format(bundle=BUNDLE_ID),
-                "action": "Install",
+                    "This sets up the MCP server to run locally on this Mac.\n\n"
+                    "It starts when you log in and stays quietly in the "
+                    "background. There's no window, and nothing on the internet "
+                    "can reach it.\n\n"
+                    "Changed your mind later? Just drag the app to the Trash."
+                ),
+                "action": "Set Up",
+            },
+            {
+                "id": "clients",
+                "title": "Connect your AI assistants",
+                "body": (
+                    "Choose which apps can control your music.\n\n"
+                    "Each one keeps the settings it already has, and a backup "
+                    "is saved first."
+                ),
+                "options": _client_options(),
+                "action": "Connect",
             },
             {
                 "id": "permission",
-                "title": "Permission to control Music",
+                "title": "Allow control of Music",
                 "body": (
-                    "WHY  Everything this does — play, pause, skip, search your "
-                    "library, edit playlists — is done by sending commands to the "
-                    "Music app, the same way an AppleScript would. macOS requires "
-                    "your consent for that, per app.\n\n"
-                    "WHAT YOU ARE GRANTING  Permission for this app to send "
-                    "commands to Music. That is the entire scope: macOS tracks it "
-                    "per target application, so it conveys nothing about any other "
-                    "app on this Mac.\n\n"
-                    "WHAT IT IS NOT  This is not Accessibility. Accessibility "
-                    "would allow typing and clicking into any application, cannot "
-                    "be limited to one app, and is what a keylogger needs. This "
-                    "app never asks for it, and is built so it cannot use it.\n\n"
-                    "It also grants no access to your files, your browser, your "
-                    "messages or your keychain.\n\n"
-                    "TO REVOKE  System Settings → Privacy & Security → Automation. "
-                    "Turning it off stops this app; nothing else breaks."
+                    "macOS will ask whether this app can control Music. "
+                    "Choose OK, and you'll be able to say things like:"
                 ),
-                "action": "Ask macOS",
+                "examples": [
+                    "Play my Discover Weekly",
+                    "Skip this one",
+                    "Make a playlist of everything I loved this year",
+                ],
+                "footer": (
+                    "That's the only permission it needs. It can't see your "
+                    "files, your browser, or anything else on your Mac.\n\n"
+                    "You can turn it off any time in System Settings > "
+                    "Privacy & Security > Automation."
+                ),
+                "action": "Continue",
             },
             *([optional] if optional else []),
             {
-                "id": "clients",
-                "title": "Add to your AI assistants",
-                "body": (
-                    "WHY  Each client needs one line of configuration telling it "
-                    "how to start the server.\n\n"
-                    "WHAT CHANGES  A single 'apple-music' entry per client. Your "
-                    "other MCP servers and settings are untouched, and a "
-                    "timestamped backup is written next to each file first.\n\n"
-                    "WORTH KNOWING  The entry points at a shim that holds no "
-                    "permission of its own — it just relays to the helper over "
-                    "that private socket. So your AI client never inherits the "
-                    "Music permission, and revoking it in System Settings still "
-                    "works."
-                ),
-                "options": _client_options(),
-                "action": "Add",
-            },
-            {
                 "id": "summary",
-                "title": "Setup finished",
+                "title": "You're all set",
                 "body": (
-                    "Any client that was already running needs a restart to pick "
-                    "up the server.\n\n"
-                    "You can review or revoke the Music permission at any time in "
-                    "System Settings → Privacy & Security → Automation."
+                    "Go ahead and ask for something."
+                ),
+                "examples": ["Play something mellow while I work"],
+                "footer": (
+                    "If an app was already open, restart it so it picks up the "
+                    "new connection.\n\n"
+                    "You can change these permissions any time in System "
+                    "Settings > Privacy & Security."
                 ),
                 "next": "Done",
             },

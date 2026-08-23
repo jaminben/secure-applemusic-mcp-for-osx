@@ -113,7 +113,7 @@ def known_clients() -> list[Client]:
             # preserves it on exit, so there is no clobber risk. What is true
             # of every client here is that MCP config is read at startup, and
             # a terminal session is not ours to restart.
-            caveat="Restart your Claude Code session to pick up the server.",
+            caveat="Restart Claude Code afterwards.",
             restartable=False,
         ),
         Client(

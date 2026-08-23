@@ -170,7 +170,7 @@ def test_claude_code_is_not_ours_to_restart(home):
     """It lives in a terminal. We tell the user; we do not kill their shell."""
     client = clients.find("claude-code")
     assert client.restartable is False
-    assert "Restart your Claude Code session" in client.caveat
+    assert "Restart Claude Code" in client.caveat
 
 
 def test_gui_clients_are_restartable(home):

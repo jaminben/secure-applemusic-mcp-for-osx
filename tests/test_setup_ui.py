@@ -17,6 +17,16 @@ import pytest
 from applemusic_mcp import app_setup, setup_ui
 
 
+def prose(page: dict) -> str:
+    """Everything the page says. Which half a sentence sits in is layout, not
+    meaning, so tests assert against both."""
+    return " ".join(filter(None, [page.get("body"), page.get("footer")]))
+
+
+def find(page_id: str) -> dict:
+    return next(p for p in app_setup._build_plan()["pages"] if p["id"] == page_id)
+
+
 # Captured at import, before the conftest guard neutralises them.
 _REAL_WINDOW_PATH = setup_ui.window_path
 _REAL_RUN_WIZARD = setup_ui.run_wizard
@@ -124,43 +134,64 @@ def test_garbage_lines_are_skipped_not_fatal(fake_window):
 # --- what the wizard says --------------------------------------------------------
 
 
-def test_clients_come_after_the_permission():
-    """Pointing a client at a server that cannot yet reach Music would have it
-    fail on first use, which reads as a broken install."""
+def test_the_running_order_is_server_then_clients_then_permissions():
+    """Set up the thing, connect it, then grant it what it needs. All steps
+    finish before the user goes near a client, so nothing depends on the
+    permission having been granted first."""
     ids = [p["id"] for p in app_setup._build_plan()["pages"]]
-    assert ids.index("helper") < ids.index("permission") < ids.index("clients")
+    assert ids.index("helper") < ids.index("clients") < ids.index("permission")
     assert ids[0] == "splash" and ids[-1] == "summary"
 
 
-def test_every_step_page_says_why_it_is_needed():
+def test_the_copy_stays_out_of_jargon():
+    """Apple's guidance is plain language. Someone who does not already know
+    what a LaunchAgent is must not have to look it up to consent to one."""
+    jargon = [
+        "LaunchAgent", "Apple Event", "daemon", "TCC", "plist", "shim",
+        "object specifier", "stdio", "socket", "argv", "bundle id",
+    ]
     for page in app_setup._build_plan()["pages"]:
-        if not page.get("action"):
-            continue
-        assert "WHY" in (page.get("body") or ""), page["id"]
+        body = prose(page) + " " + page["title"]
+        for word in jargon:
+            assert word.lower() not in body.lower(), f"{page['id']}: '{word}'"
 
 
-def test_the_permission_page_states_the_limits_not_just_the_ask():
-    body = next(
-        p["body"] for p in app_setup._build_plan()["pages"] if p["id"] == "permission"
-    )
-    # What it is not, and how to get rid of it.
-    assert "Accessibility" in body
-    assert "never asks for it" in body
-    assert "REVOKE" in body
-    assert "System Settings" in body
+def test_pages_are_short_enough_to_read():
+    """A wall of text is not consent; nobody reads it."""
+    for page in app_setup._build_plan()["pages"]:
+        assert len(prose(page)) < 480, f"{page['id']} is {len(prose(page))} characters"
+        for half in ("body", "footer"):
+            text = page.get(half) or ""
+            paragraphs = [p for p in text.split("\n\n") if p.strip()]
+            assert len(paragraphs) <= 3, f"{page['id']} {half}: {len(paragraphs)} paragraphs"
 
 
-def test_the_splash_names_the_single_permission_up_front():
+def test_the_splash_is_titled_for_what_the_app_does():
+    assert app_setup._build_plan()["pages"][0]["title"] == "Control Apple Music"
+
+
+def test_the_permission_page_states_the_limit_and_how_to_undo_it():
+    """Apple's convention: say what it is for before the system dialog, and
+    name where the user can change their mind."""
+    body = prose(find("permission"))
+    assert "only permission" in body
+    assert "can't see your files" in body
+    assert "System Settings > Privacy & Security > Automation" in body
+
+
+def test_the_splash_previews_every_step_and_does_nothing_itself():
     splash = app_setup._build_plan()["pages"][0]
-    assert "one macOS permission" in splash["body"]
     assert splash.get("action") is None, "the splash must not do anything"
+    assert "Nothing changes until you say so" in prose(splash)
+    # One bullet per page that follows, summary excluded.
+    steps = [p for p in app_setup._build_plan()["pages"][1:] if p["id"] != "summary"]
+    assert len(splash["bullets"]) == len(steps)
 
 
-def test_the_clients_page_explains_that_the_client_gains_nothing():
-    body = next(
-        p["body"] for p in app_setup._build_plan()["pages"] if p["id"] == "clients"
-    )
-    assert "never inherits" in body
+def test_the_clients_page_promises_the_backup_it_makes():
+    body = prose(find("clients"))
+    assert "backup" in body
+    assert "keeps the settings it already has" in body
 
 
 # --- steps -----------------------------------------------------------------------
@@ -205,7 +236,9 @@ def test_the_apple_music_page_can_be_declined_on_its_own(monkeypatch):
     monkeypatch.setattr(app_setup.musickit, "is_available", lambda: True)
     monkeypatch.setattr(app_setup.musickit, "authorization_status", lambda: "notDetermined")
     page = app_setup._musickit_page()
-    assert page["action"] == "Allow"
+    # "Continue" rather than "Allow": the system dialog owns that word, and
+    # echoing it on our own button pre-empts a choice that is Apple's to offer.
+    assert page["action"] == "Continue"
     assert page["skip"] == "Not Now"
 
 
@@ -215,17 +248,19 @@ def test_an_already_granted_page_offers_no_action(monkeypatch):
     monkeypatch.setattr(app_setup.musickit, "authorization_status", lambda: "authorized")
     page = app_setup._musickit_page()
     assert page.get("action") is None and page.get("skip") is None
-    assert "ALREADY GRANTED" in page["body"]
+    assert "already allowed" in prose(page)
 
 
 def test_the_page_distinguishes_itself_from_the_automation_grant(monkeypatch):
     """The two permissions sound alike; conflating them is the likely mistake."""
     monkeypatch.setattr(app_setup.musickit, "is_available", lambda: True)
     monkeypatch.setattr(app_setup.musickit, "authorization_status", lambda: "notDetermined")
-    body = app_setup._musickit_page()["body"]
-    assert "different permission" in body
-    assert "Media & Apple Music" in body        # where it actually appears
-    assert "cannot buy" in body.lower() or "NO PAYMENT" in body
+    body = prose(app_setup._musickit_page())
+    # Name the permission the way macOS will, so the system dialog that
+    # follows is recognisably the same thing.
+    assert "Apple Music" in body
+    assert "can't buy anything" in body
+    assert "optional" in body.lower()
 
 
 def test_only_the_apple_music_step_is_skippable(monkeypatch):
@@ -266,3 +301,28 @@ def test_the_plan_is_built_without_re_probing_the_helper(monkeypatch):
     )
     app_setup._build_plan()
     assert len(calls) == 1, f"probed {len(calls)} times"
+
+
+# --- example prompts -------------------------------------------------------------
+
+
+def test_every_permission_page_shows_what_it_unlocks():
+    """The clearest explanation of a permission is an example of what it lets
+    you do. Abstract wording is what makes people click Deny."""
+    for page_id in ("permission", "musickit"):
+        page = find(page_id)
+        assert page.get("examples"), f"{page_id} has no example prompts"
+
+
+def test_the_splash_leads_with_examples():
+    splash = find("splash")
+    assert len(splash.get("examples") or []) >= 2
+
+
+def test_examples_are_things_a_person_would_actually_say():
+    """Short, spoken, no jargon -- they are dialogue, not documentation."""
+    for page in app_setup._build_plan()["pages"]:
+        for example in page.get("examples") or []:
+            assert len(example) <= 60, f"too long to read at a glance: {example!r}"
+            assert not example.endswith("."), f"not a sentence to read aloud: {example!r}"
+            assert "MCP" not in example and "server" not in example.lower()

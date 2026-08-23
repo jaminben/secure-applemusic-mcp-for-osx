@@ -54,6 +54,13 @@ struct Page: Decodable {
     var body: String?
     var bullets: [Bullet]?
     var options: [Option]?
+    /// Things the user could actually say once this is set up. Shown as
+    /// speech bubbles: on a permission page, the most useful explanation of
+    /// what you are granting is an example of what it lets you do.
+    var examples: [String]?
+    /// The quieter half: caveats, limits, how to undo it. Set below the
+    /// examples in secondary text, so the page leads with what you get.
+    var footer: String?
     /// Button that performs this page's work. Absent on pages that only read.
     var action: String?
     /// Button that moves on once the work is done (or immediately, if none).
@@ -121,6 +128,20 @@ func finish(_ type: String) -> Never {
 // Human Interface Guidelines: 20pt margins, 8pt between related controls,
 // 20pt between groups, 12pt between buttons.
 
+/// One accent colour, matching the app icon. Enough to look like ours rather
+/// than a stock template, without imitating any Apple product's palette.
+private enum Brand {
+    static let tint = NSColor(srgbRed: 0.42, green: 0.35, blue: 0.85, alpha: 1)
+
+    /// Appearance-aware, because a 12% tint that reads as a soft card in light
+    /// mode disappears entirely in dark mode.
+    static let bubble = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? tint.withAlphaComponent(0.30)
+            : tint.withAlphaComponent(0.12)
+    }
+}
+
 private enum Metrics {
     static let margin: CGFloat = 24
     static let related: CGFloat = 8
@@ -173,6 +194,8 @@ func iconView(iconPath: String?, symbol: String?, size: CGFloat) -> NSImageView?
 /// icon on the left, text block on the right, both pinned to a known width so
 /// nothing can overflow and re-centre itself.
 func mediaRow(icon: NSView?, content: NSView, width: CGFloat) -> NSView {
+    // A fixed width keeps rows left-aligned as a block even when the enclosing
+    // stack is centred, which is what the splash does.
     let row = NSStackView()
     row.orientation = .horizontal
     row.alignment = .top
@@ -239,9 +262,12 @@ final class WizardController: NSObject, NSWindowDelegate {
 
         // Splash carries the app icon; step pages carry a "Step n of m" label.
         if index == 0 {
-            if let icon = iconView(iconPath: plan.icon, symbol: "music.note", size: 72) {
+            // Apple centres the icon and title on a welcome screen, then
+            // left-aligns the detail beneath it.
+            body.alignment = .centerX
+            if let icon = iconView(iconPath: plan.icon, symbol: "music.note", size: 84) {
                 body.addArrangedSubview(icon)
-                body.setCustomSpacing(Metrics.related * 2, after: icon)
+                body.setCustomSpacing(Metrics.group, after: icon)
             }
         } else {
             let steps = plan.pages.count - 2      // splash and summary excluded
@@ -256,12 +282,32 @@ final class WizardController: NSObject, NSWindowDelegate {
         let title = wrappingLabel(
             page.title, style: index == 0 ? .largeTitle : .title2,
             colour: .labelColor, width: Metrics.contentWidth)
+        if index == 0 { title.alignment = .center }
         body.addArrangedSubview(title)
         body.setCustomSpacing(Metrics.related, after: title)
 
         if let text = page.body, !text.isEmpty {
             let label = wrappingLabel(
                 text, style: .body, colour: .labelColor, width: Metrics.contentWidth)
+            if index == 0 { label.alignment = .center }
+            body.addArrangedSubview(label)
+            body.setCustomSpacing(Metrics.group, after: label)
+        }
+
+        for example in page.examples ?? [] {
+            let bubble = makeExample(example)
+            body.addArrangedSubview(bubble)
+            body.setCustomSpacing(6, after: bubble)
+        }
+        if page.examples?.isEmpty == false, let last = body.arrangedSubviews.last {
+            body.setCustomSpacing(Metrics.group, after: last)
+        }
+
+        if let footer = page.footer, !footer.isEmpty {
+            let label = wrappingLabel(
+                footer, style: .callout, colour: .secondaryLabelColor,
+                width: Metrics.contentWidth)
+            if index == 0 { label.alignment = .center }
             body.addArrangedSubview(label)
             body.setCustomSpacing(Metrics.group, after: label)
         }
@@ -320,6 +366,29 @@ final class WizardController: NSObject, NSWindowDelegate {
                 equalTo: root.bottomAnchor, constant: -Metrics.margin),
         ])
         window?.contentView = root
+    }
+
+    /// A speech bubble holding something the user might say.
+    private func makeExample(_ text: String) -> NSView {
+        let inset: CGFloat = 14
+        let label = wrappingLabel(
+            "\u{201C}\(text)\u{201D}", style: .body, colour: .labelColor,
+            width: Metrics.contentWidth - inset * 2)
+
+        // NSBox rather than a layer-backed view: it repaints its fill when the
+        // system appearance changes, which a CALayer colour does not.
+        let box = NSBox()
+        box.boxType = .custom
+        box.titlePosition = .noTitle
+        box.borderWidth = 0
+        box.fillColor = Brand.bubble
+        box.cornerRadius = 14
+        box.contentViewMargins = NSSize(width: inset, height: 10)
+        box.contentView = label
+        box.translatesAutoresizingMaskIntoConstraints = false
+        box.widthAnchor.constraint(
+            lessThanOrEqualToConstant: Metrics.contentWidth).isActive = true
+        return box
     }
 
     private func makeBullet(_ bullet: Bullet) -> NSView {

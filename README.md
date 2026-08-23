@@ -8,6 +8,44 @@ A hardened fork of [epheterson/applemusic-mcp](https://github.com/epheterson/app
 playback, Up Next, works without an Apple Developer account. This fork trades
 those away for a smaller capability surface.
 
+## Why this exists
+
+Two goals, and the order matters:
+
+1. **Anyone should be able to install it** — not just people who use a terminal.
+2. **It should be safe to hand to that person.**
+
+Both came out of looking at what already existed. As of August 2026 every other
+Apple Music MCP server needed a command line: clone a repo or run a package
+manager, then hand-edit Claude's JSON config. One also wanted an Apple
+Developer account, a MusicKit key and a `.p8` file before it would do anything.
+That's a fair bar for a developer tool and an impossible one for everybody else
+— and "let Claude run my music" is not a developer's request. Hence: download,
+drag, double-click, and an installer that edits the config for you.
+
+The security half is that same survey seen from the other side. The most capable
+of those servers reaches a few features through **Accessibility** — macOS's
+system-wide synthetic-input permission. It's an honest fix for a real gap
+(playing a catalog track you don't own: deep-link Music.app, then click the play
+button with a synthetic mouse event). The trouble is that Accessibility cannot
+be scoped to a single app. Granting it to a music server also grants the ability
+to type into any window, click anything on screen, and read other applications'
+interfaces. And you would be granting that to a program which takes its
+instructions from a model reading text nobody controls — track names, playlist
+titles, whatever it just searched. That is a very short path from prompt
+injection to synthetic keystrokes, so this fork removed those code paths
+entirely and [a test](tests/test_capability_invariants.py) keeps them removed.
+
+The same instinct produced the app bundle. A server your MCP client spawns
+inherits the *client's* permissions, so the ordinary setup means approving
+"Automation → Music" for your entire terminal, and everything you ever run from
+it. Here the grant lands on one launchd-started helper instead — a single
+revocable row in System Settings, and your terminal gets nothing.
+
+None of this makes the fork better than upstream; it makes it **smaller**.
+Upstream does more and always will. This one is built to be handed to someone
+who is never going to read its source.
+
 > **On the name.** "Secure" is the goal, not a certification. This has not been
 > independently audited. The checkable claim is the one below.
 
