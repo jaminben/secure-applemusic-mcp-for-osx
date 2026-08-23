@@ -42,6 +42,82 @@ macOS only, no web player, no Up Next queue. What you get instead is a much
 smaller capability surface (below) and an installer a non-technical person can
 actually use.
 
+## Full functional scope
+
+Taken from each project's source on 22 Aug 2026, not from its README.
+
+**kennethreitz** — 10 flat tools: `itunes_play`, `itunes_pause`, `itunes_next`,
+`itunes_previous`, `itunes_search`, `itunes_play_song`, `itunes_create_playlist`,
+`itunes_library`, `itunes_current_song`, `itunes_all_songs`.
+
+**Cifero74** — 11 flat tools: `search_catalog`, `search_library`,
+`get_library_songs` / `_albums` / `_artists` / `_playlists`,
+`get_playlist_tracks`, `create_playlist`, `add_tracks_to_playlist`,
+`get_recently_played`, `get_recommendations`. Note what's absent: it is
+**read-plus-create only** — no playback, no ratings, no delete, no remove.
+
+**epheterson** — 7 dispatcher tools carrying ~70 actions: `playlist` (14),
+`library` (10), `catalog` (12), `discover` (7), `playback` (6), `queue` (10),
+`config` (14).
+
+**this fork** — the same 7 tools minus `queue`, with an **identical action list**
+in the six that remain. The differences are in which engine serves an action and
+what it requires, not in what you can ask for.
+
+| Capability | kennethreitz | epheterson | Cifero74 | this fork |
+|---|---|---|---|---|
+| Play / pause / next / previous | ✅ | ✅ | ❌ | ✅ |
+| Seek, volume, shuffle, repeat | ❌ | ✅ | ❌ | ✅ |
+| Now playing | ✅ | ✅ | ❌ | ✅ |
+| Play a specific track by name | ✅ | ✅ | ❌ | ✅ |
+| Play an album / playlist | ❌ | ✅ | ❌ | ✅ |
+| Play a catalog track you don't own | ❌ | ✅ (UI automation) | ❌ | ✅ (add-then-play, needs token) |
+| **Up Next queue** (list/set/jump/remove/autoplay) | ❌ | ✅ | ❌ | ❌ |
+| **AirPlay output switching** | ❌ | ✅ | ❌ | ✅ |
+| Library search | ✅ | ✅ | ✅ | ✅ |
+| Library browse (songs/albums/artists) | ✅ list all | ✅ | ✅ | ✅ |
+| Add to library | ❌ | ✅ | ❌ | ✅ (needs token) |
+| Remove from library | ❌ | ✅ | ❌ | ✅ |
+| Recently played / added | ❌ | ✅ | ✅ played | ✅ |
+| Favorites / loved | ❌ | ✅ | ❌ | ✅ |
+| Ratings (love / dislike / stars) | ❌ | ✅ | ❌ | ✅ |
+| List playlists | ✅ | ✅ | ✅ | ✅ |
+| Create playlist | ✅ | ✅ | ✅ | ✅ |
+| Add tracks to playlist | ✅ at create | ✅ | ✅ | ✅ |
+| Remove tracks from playlist | ❌ | ✅ | ❌ | ✅ |
+| Rename / delete playlist | ❌ | ✅ | ❌ | ✅ |
+| Copy playlist, swap a track | ❌ | ✅ | ❌ | ✅ |
+| Dry-run a playlist add | ❌ | ✅ | ❌ | ✅ |
+| **Folders** (create/move/tree/nested paths) | ❌ | ✅ | ❌ | ✅ |
+| Catalog search | ❌ | ✅ | ✅ | ✅ (tokenless) |
+| Song / album / artist details | ❌ | ✅ | ❌ | ✅ |
+| Resolve by ISRC, bulk track matching | ❌ | ✅ | ❌ | ✅ |
+| Charts, genres, search suggestions | ❌ | ✅ | ❌ | ✅ |
+| Recommendations / heavy rotation | ❌ | ✅ | ✅ recs | ✅ |
+| Similar artists, top songs, stations | ❌ | ✅ | ❌ | ✅ |
+| CSV / JSON export | ❌ | ✅ | ❌ | ✅ |
+| Library snapshot + diff | ❌ | ✅ | ❌ | ✅ |
+| Audit log of every change | ❌ | ✅ | ❌ | ✅ |
+| Explicit-content filter (`clean_only`) | ❌ | ✅ | ❌ | ✅ (+ verified in exports) |
+| Works on Windows / Linux | ❌ | ✅ | ✅ | ❌ |
+
+### Reading that table
+
+**You lose exactly two things** relative to upstream by choosing this fork: the
+**Up Next queue**, and **non-macOS support**. Both are consequences of removing
+the browser engine — Up Next lives inside the web player's MusicKit instance and
+has no AppleScript equivalent, and the web player was what made Windows and
+Linux work.
+
+**What needs a credential differs.** On this fork, everything above works with
+no account at all *except* adding a catalog track you don't already own, which
+needs an optional Apple Developer token. Upstream covers that case without one
+by harvesting Apple's web-player token; Cifero74 requires a developer account
+for everything.
+
+**Catalog search is tokenless here** via Apple's public iTunes Search API, and it
+returns an explicit flag — so `clean_only` is *verified* rather than assumed.
+
 ## Capability surface
 
 The dimension this fork exists for. "Can it, in principle, do the thing" — not
