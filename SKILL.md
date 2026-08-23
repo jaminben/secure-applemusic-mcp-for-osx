@@ -1,10 +1,18 @@
 ---
 name: apple-music
 version: 0.1.0
-description: Apple Music integration — AppleScript (local Music.app) and the Apple Music API / web player (cross-platform library, playlists, playback, and queue)
+description: Apple Music integration for macOS — local Music.app via Apple Events, plus the official Apple Music API for catalog reads. No UI automation, no web player, no queue.
 ---
 
 # Apple Music Integration
+
+> **This is the hardened macOS-only fork
+> ([secure-applemusic-mcp-for-osx](https://github.com/jaminben/secure-applemusic-mcp-for-osx)).**
+> Relative to upstream: no UI automation / Accessibility, no browser or Safari
+> web player, no Up Next queue tool, no URL opening, and no stored credentials
+> by default. Sections below describing those capabilities are marked REMOVED —
+> do not attempt them. Six tools exist: playlist, library, discover, catalog,
+> config, playback.
 
 Guide for integrating with Apple Music. Three approaches: AppleScript (direct control), UI automation (catalog without API), and MusicKit API (cross-platform).
 
@@ -363,189 +371,24 @@ osascript stderr messages map to a small set of environmental states. When Apple
 
 ---
 
-# UI Automation (macOS)
+# UI Automation (macOS) — REMOVED IN THIS BUILD
 
-> **Add-to-library/playlist UI automation was removed in 0.15.0.** Catalog
-> add-to-library and auto_add→playlist run over the **unified Apple Music API**
-> (developer token generated **or** sourced from Apple's public web player, plus a
-> `media-user-token`). The old UI add path was version-fragile (it broke across
-> macOS/Music.app releases, #37). To enable the API path: `applemusic-mcp login`
-> (or `login --dev` with a developer token). On **macOS** `login` defaults to reading the
-> media-user-token from a signed-in **Safari** — no Chrome/Playwright — provided
-> Safari → Settings → Advanced → Develop → "Allow JavaScript from Apple Events" is
-> enabled; `login --chrome` uses the Chrome web player instead (needs
-> `pip install 'applemusic-mcp[browser]'`). **Off macOS**, `login` opens Chrome
-> (Playwright ships by default there). The UI primitives below remain only for
-> **playback / play-from-URL** and catalog *search*, not for adding.
->
-> **Engines (`mode` pref / per-call `engine=`):** `auto` (default — native Music.app
-> for playback, **Safari** for the Up Next queue, the API for data on macOS; Chrome
-> off-mac), `native`, `safari`, `chrome`, `api`. The **Safari** engine drives your
-> signed-in Safari's MusicKit through the same `do JavaScript` channel (DRM-native,
-> no Chrome) for play/control/now_playing/settings and the full queue — so on macOS
-> the whole web-player surface works without Playwright. Using the `queue` makes its
-> engine the active one, so `playback control` reaches it.
+Upstream drove Music.app through its UI with System Events (synthetic
+keystrokes, AX-tree walks) and CoreGraphics mouse events. That required
+Accessibility permission, which is system-wide synthetic input and cannot be
+scoped to one app, so the whole subsystem was removed from this fork.
 
-The remaining UI automation controls Music.app through System Events (Accessibility API) and CoreGraphics (mouse events).
+Consequences for anything reading this file:
 
-**Requirements:** Display attached, Music.app visible, Accessibility permissions for System Events (System Settings → Privacy & Security → Accessibility).
-
-## Key Concepts
-
-**System Events** reads and clicks UI elements by their accessibility hierarchy:
-```applescript
-tell application "System Events" to tell process "Music"
-    -- Main content area
-    scroll area 2 of splitter group 1 of window "Music"
-    -- Search field
-    text field 1 of UI element 1 of row 1 of outline 1 of scroll area 1 of splitter group 1 of window "Music"
-end tell
-```
-
-**CoreGraphics mouse events** (via JXA) generate real mouse input — hover, click, and double-click:
-```javascript
-// osascript -l JavaScript
-ObjC.import("CoreGraphics");
-var point = $.CGPointMake(x, y);
-// hover (reveals hidden controls):
-$.CGEventPost($.kCGHIDEventTap, $.CGEventCreateMouseEvent($(), $.kCGEventMouseMoved, point, 0));
-// click: post LeftMouseDown then LeftMouseUp at the point.
-// double-click: post two down/up pairs with the click-state field (1) set to 1 then 2.
-```
-
-> **Critical:** System Events `click` (AXPress) **does not fire** Music.app's
-> custom Play/Shuffle buttons or track rows — it returns success but nothing
-> plays. Read element rects with System Events, then click with **CoreGraphics**
-> mouse events at the element's screen coordinates. A single click only *selects*
-> a track row; **double-click** it to play.
-
-## Playing a catalog (non-library) track natively
-
-AppleScript has no verb to play a non-library catalog track. Deep-link the page,
-then drive the UI with CoreGraphics:
-
-1. `open "music://…/album/<id>"` (album/playlist) or `…?i=<songId>` (one track)
-2. **Album/playlist:** locate the `Play` button, read its position+size, CoreGraphics-click its center.
-3. **Single track:** match the track row by name in the track list, CoreGraphics **double-click** it (so only that track plays, not the whole album).
-
-## The Hover Trick (per-row controls)
-
-Music.app hides per-track Play / "Add to Library" controls until the mouse hovers over a row:
-
-1. Find the track's UI element position via System Events
-2. Move the mouse there via CoreGraphics (generates real hover events)
-3. The hidden `checkbox` (play) and `button` (Add to Library) appear in the accessibility tree
-4. Click them via **CoreGraphics** at their coordinates (not System Events AXPress)
-
-## Search via UI
-
-1. Set the search field value: `set value of searchField to "query"`
-2. Press Return: `key code 36`
-3. Wait for results to load (~4 seconds)
-4. Parse the "Top Results" list from `scroll area 2`
-5. Each result is a `UI element` with `description` = name, static texts for type/artist
-
-**Note:** The type separator in results uses Unicode three-per-em space (U+2004) + middle dot (U+00B7): `Song꘎·꘎Radiohead`
-
-## Window Recovery
-
-Music.app can run without a window. To ensure a window exists:
-```applescript
-tell application "Music" to activate
-tell application "System Events" to tell process "Music"
-    if (count of windows) is 0 then
-        click menu item "Music" of menu "Window" of menu bar 1
-    end if
-end tell
-```
-
-## Fragility
-
-UI paths break when Apple updates Music.app's layout. Centralize paths as constants and test after macOS updates. Use Accessibility Inspector.app to explore the current hierarchy.
-
-The search field location changed between macOS 15 (sidebar outline row) and macOS 26/Tahoe (toolbar group). The server probes for the toolbar element at runtime using an AppleScript `exists` check and falls back to the sidebar path — so both OS versions are supported without hardcoding. If UI search ever breaks on a new macOS version, inspect the search field path first.
-
-## Tool routing (when to use which top-level action)
-
-When a user asks for something, the right MCP tool depends on whether they're searching their library or the catalog. Easy to confuse — gating wrong here leads users into "Developer token not found" rabbit holes when the operation could have worked tokenlessly.
-
-| Goal | Use | Notes |
-|---|---|---|
-| Find a song the user already has | `library(action='search', query='...')` | Local library only. AppleScript on macOS, API otherwise. |
-| Find a playlist by name | `playlist(action='list', filter='jack')` | Loose name match, returns matching playlists with IDs. Do **not** use `action='search'` for this — that searches the *tracks inside* a given playlist and needs a `playlist` param. |
-| List the user's tracks in a genre | `library(action='search', query='Rock', types='genre')` | Filters on the track's genre field — **macOS-only**. Do NOT route a genre name through plain full-text search: it never looks at the genre field, so "Rock" would false-match a song titled *"Rock Your Body."* Zero matches returns "No tracks found"; off macOS it reports genre filtering isn't available via the API. |
-| Find a song in Apple Music's full catalog | `catalog(action='search', query='...')` | Tries API first, falls back to Music.app UI search on tokenless macOS. |
-| Add a catalog song to the user's library | `library(action='add', track='...')` | API only — needs a developer token (generated or harvested) + a media-user-token (`signin`). The UI-automation fallback was removed in 0.15.0 (see note above). |
-| Add a song (in library OR catalog) to a playlist | `playlist(action='add', track='...', auto_add=True)` | `auto_add=True` is required to reach the catalog when the song isn't already in the library. Default is False to avoid unwanted library writes — set it to True for "fill this playlist" workflows. |
-| Browse charts / recommendations | `discover` | API only. No UI fallback for this one. |
-
-`library(action='search')` returns one page: `limit` (default 25) caps the results and `offset` pages through larger result sets. The text header shows `start-end of total`, so when `end < total` there are more results — bump `offset` by `limit` to fetch the next page (mirrors `action='browse'`).
-
-If `library(action='search')` returns "No songs found in library", it is **not** a hint to set up an API token — it's a hint to try `catalog(action='search')` or `playlist(action='add', auto_add=True)` instead. The tokenless macOS path covers all of these.
-
-## Compound flows (no API)
-
-Recipes for replicating applemusic-mcp's catalog features without an API token. Gate each user request on "does this need catalog access?" — pure library and playback ops stay in AppleScript; only catalog lookups go through UI automation.
-
-### Add a catalog song to the user's library
-
-If the user gave a single combined string like `"Silvera - GOJIRA"`, split on ` - ` before searching so the catalog query gets a clean name.
-
-**Step 0 — resolve the canonical title FIRST (do not skip this).** Hit the free, tokenless iTunes Search API (`https://itunes.apple.com/search?term=<name>+<artist>&entity=song&country=<storefront>`) and pick the best match, scoring **artist-primary**: when the user named an artist, a result by a *different* artist is the wrong track even if its title is an exact match — reject it rather than risk a silent wrong-add (e.g. "Lemons"/"Brye" must resolve to Brye's "LEMONS (feat. Cavetown)", **not** "Lemons" by Hairitage). Use the resolved **canonical title** for the UI query below. This matters because Apple's autocomplete is ranking-sensitive: a vague query ("Lemons") surfaces popular homonyms and misses obscure tracks, while the canonical title ("LEMONS (feat. Cavetown)") makes the exact row appear.
-
-Then, **version-dependent surface**:
-
-- **macOS 26 / new Music (Music ≥ 1.6.x):** the search autocomplete pop-over IS in the accessibility tree, and catalog deep-links no longer navigate. Use the pop-over:
-  1. UI search with the **canonical title** (§ Search via UI)
-  2. Pick the first `Song` result whose name + artist match — do not fall back to a non-Song result; fail cleanly if no Song matched. Stale search state can lead to wrong-result clicks otherwise.
-  3. Click the row → it navigates to the song detail page
-  4. Hover the track row via CoreGraphics — the hidden "Add to Library" button becomes reachable. **If you find a "Download" button instead, the track is already in the library** (that's success, not failure).
-  5. Click "Add to Library" via a real CoreGraphics click (SwiftUI buttons ignore AXPress)
-- **macOS 15 / old Music (Music ≤ 1.5.x):** the autocomplete pop-over is **not** in the accessibility tree, but `open`-ing the resolved `music://…?i=…` deep-link DOES navigate to the album page. Deep-link to the resolved URL, find the highlighted track row, hover, and click its "Add to Library" button there.
-
-Finally:
-6. Clear the search field so the next call starts from fresh state
-7. Verify the add. The pop-over UI is authoritative for the iCloud library — trust its success even if the next step lags. Poll `search_library` / a direct `library playlist 1` lookup until the track is visible locally (first appears ~3 s; iCloud can stall longer — cap at ~18 s). A verify miss after a UI-confirmed add means "still syncing," not "failed."
-
-### Add a catalog song to a specific playlist
-
-Compose **"add to library"** (above) → then AppleScript `duplicate` the new library track into the target playlist:
-
-```applescript
-tell application "Music"
-    set targetTrack to first track of library playlist 1 ¬
-        whose name contains "Silvera" and artist contains "GOJIRA"
-    duplicate targetTrack to user playlist "Road Trip"
-end tell
-```
-
-**Don't** click "Add to Playlist" menu items via UI — the AppleScript `duplicate` path is more reliable. Even if you have a dev token, **don't** hit `POST /v1/me/library/playlists/{id}/tracks` — it returns HTTP 500 for any playlist not originally created via API (the default for playlists made in Music.app). `duplicate` works for any playlist.
-
-### Write routing (sanctioned-first)
-
-The server picks a write's path by **credential and capability, not the playback mode**:
-
-- **Sanctioned** — the official Apple Music API (`api.music.apple.com`) with a generated developer token. Preferred whenever a dev token is present and the op is supported.
-- **Web** — the web-player backend with a signed-in session token. Used only for the gaps the public API can't do (delete a playlist, add to a Music.app-created playlist, move out of a folder) or when there's no dev token.
-- **Native** — local Music.app via AppleScript on macOS (tokenless), the default writer on a Mac.
-
-So `mode=web` (a *playback* choice) does NOT force writes onto the web path — a dev-token holder still writes via the official API. Star ratings need AppleScript (macOS) regardless of mode. Each write reports the path it took (`via Apple Music API` / `via web player` / `via Music.app`); `config(action="status")` shows the resolved rail on its `Writes:` line.
-
-### Post-add verification
-
-The UI path can silently click the wrong result under stale search state, and AppleScript state lags briefly after a fresh add. Always verify the expected track actually landed:
-
-```applescript
-tell application "Music"
-    set matches to (every track of user playlist "Road Trip" ¬
-        whose name contains "Silvera" and artist contains "GOJIRA")
-    return (count of matches) > 0
-end tell
-```
-
-Retry once after a ~1 s sleep before failing. If the second verify still fails, trust it — the add did not land, surface the error instead of claiming false success.
-
----
+- There are no `ui_*` operations. Do not attempt Top Results clicking, the
+  hover trick, search-field typing, popover row matching, or window recovery.
+- Playing a catalog track you do NOT own is add-then-play: add it to the
+  library over the official API, wait for the iCloud sync, then play it by
+  name. `playback(action="play", track=..., add_to_library=True)` does this.
+  Without a developer token it is not possible; say so rather than improvising.
+- There is no Up Next queue tool. Up Next lived in the web player's MusicKit
+  instance, which this build does not have.
+- `playback(url=...)` parses the URL for a catalog id. It never opens it.
 
 # MusicKit API
 

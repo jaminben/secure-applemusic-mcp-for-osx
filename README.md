@@ -93,8 +93,8 @@ real; there is no sandbox).
 Three issues inherited from upstream are fixed here — a bypassable Apple Music
 URL check, an inert path-traversal guard on the `exports://` resource, and
 destructive operations acting on a substring guess. See
-[CHANGELOG.md](CHANGELOG.md#fixed--inherited-security-issues) for details. They
-were reported upstream before this fork was published.
+[CHANGELOG.md](CHANGELOG.md#fixed--inherited-security-issues) for details, and
+[DISCLOSURE.md](DISCLOSURE.md) for their upstream reporting status.
 
 ## Relationship to upstream
 
