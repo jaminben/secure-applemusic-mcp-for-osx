@@ -28,7 +28,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from . import clients, ipc, setup_ui
+from . import clients, ipc, musickit, setup_ui
 
 APP_NAME = "AppleMusicMCP"
 BUNDLE_ID = ipc.BUNDLE_ID
@@ -413,6 +413,63 @@ def _client_options() -> list[dict]:
     return options
 
 
+def _musickit_page() -> "Optional[dict]":
+    """The Apple Music page, or None if this build cannot offer it.
+
+    A *different* permission from the Automation grant on the previous page,
+    and worth being explicit about because the two sound alike:
+
+      * Automation reaches the Music **app** on this Mac — play, pause, search
+        your library, edit playlists. Granted in Privacy & Security > Automation.
+      * This reaches the Apple Music **service** — the only thing it is used for
+        is adding a song to your library. Granted in Privacy & Security >
+        Media & Apple Music.
+
+    It is genuinely optional, which the previous pages are not: everything
+    works without it except playing a song you do not already own. The reason
+    that needs a service call at all is that Music.app's `play` needs an object
+    specifier, and a catalog track you do not own has none — so it has to be
+    added to the library before it can be played.
+    """
+    if not musickit.is_available():
+        return None                       # no signed helper in this build
+
+    already = musickit.authorization_status() == "authorized"
+    page = {
+        "id": "musickit",
+        "title": "Apple Music access (optional)",
+        "body": (
+            "WHY  Playing a song you do not already own means adding it to your "
+            "library first — Music.app cannot play a catalog track that is not "
+            "there. That is a request to the Apple Music service, which the "
+            "permission on the previous page cannot make.\n\n"
+            "This is a different permission from that one. It appears "
+            "separately, under Privacy & Security → Media & Apple Music.\n\n"
+            "WHAT YOU ARE GRANTING  Permission for this app to use your Apple "
+            "Music account. It needs an active subscription.\n\n"
+            "WHAT IT IS USED FOR  Exactly one request: adding a song to your "
+            "library. Songs added this way are collected in a playlist called "
+            "\"Added by Music MCP\" so you can find and undo them in one "
+            "gesture, and you can turn the whole behaviour off later.\n\n"
+            "The grant itself is broader than that single use — Apple does not "
+            "offer a narrower one — so what limits it is the code: the helper "
+            "that holds this permission is a signed 130-line binary that can "
+            "issue that one request and nothing else.\n\n"
+            "NO PAYMENT  It cannot buy anything, change your subscription, or "
+            "see your payment details.\n\n"
+            "SKIPPING IS FINE  Everything else works without it. You will just "
+            "get an error if you ask for a song you do not own."
+        ),
+        "next": "Continue",
+    }
+    if already:
+        page["body"] += "\n\nALREADY GRANTED  Nothing to do here."
+    else:
+        page["action"] = "Allow"
+        page["skip"] = "Not Now"
+    return page
+
+
 def _build_plan() -> dict:
     """The wizard: a splash saying what will happen, then one page per step.
 
@@ -425,6 +482,10 @@ def _build_plan() -> dict:
     installers usually leave out — what it does not. A permission dialog with
     no stated limit is one the user has to take on faith.
     """
+    # Built once: each call shells out to the helper to read the current
+    # authorization status.
+    optional = _musickit_page()
+
     return {
         "title": "Apple Music MCP Setup",
         "icon": setup_ui.icon_path(),
@@ -452,7 +513,15 @@ def _build_plan() -> dict:
                         "iconPath": "/System/Applications/Music.app",
                     },
                     {
-                        "label": "3.  Add it to your AI assistants",
+                        "label": "3.  Optionally, allow Apple Music access",
+                        "detail": (
+                            "Only needed to play songs you do not already own. "
+                            "Skippable."
+                        ),
+                        "symbol": "sparkles",
+                    },
+                    {
+                        "label": "4.  Add it to your AI assistants",
                         "detail": "You choose which ones. Each config is backed up first.",
                         "symbol": "app.badge.checkmark",
                     },
@@ -503,6 +572,7 @@ def _build_plan() -> dict:
                 ),
                 "action": "Ask macOS",
             },
+            *([optional] if optional else []),
             {
                 "id": "clients",
                 "title": "Add to your AI assistants",
@@ -571,6 +641,13 @@ def _run_step(page: str, selected: list) -> "tuple[bool, list[str]]":
         if page == "permission":
             ok, msg = prime_permission()
             return ok, [("✓ " if ok else "✗ ") + msg]
+
+        if page == "musickit":
+            ok, detail = musickit.request_authorization()
+            if ok:
+                return True, ["✓ Apple Music access granted"]
+            # Declining is a normal answer here, not a failure to fix.
+            return False, [f"• Apple Music access not granted ({detail or 'declined'})"]
     except Exception as exc:  # noqa: BLE001 - a step must not kill the wizard
         _log(f"step {page} failed: {exc}")
         return False, [f"✗ {exc}"]

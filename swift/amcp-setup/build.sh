@@ -44,10 +44,20 @@ cat > "${APP}/Contents/Info.plist" <<PLIST
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>1.0</string>
     <key>LSMinimumSystemVersion</key><string>12.0</string>
+    <key>CFBundleIconFile</key><string>AppleMusicMCP</string>
 </dict>
 </plist>
 PLIST
 plutil -lint "${APP}/Contents/Info.plist" >/dev/null
+
+# The wizard runs with a .regular activation policy, so it gets its own Dock
+# tile while it is on screen. Without the icon that tile is a blank page, which
+# is the first thing a new user sees.
+ICON="../../tools/icon/AppleMusicMCP.icns"
+if [[ -f "$ICON" ]]; then
+  mkdir -p "${APP}/Contents/Resources"
+  cp "$ICON" "${APP}/Contents/Resources/AppleMusicMCP.icns"
+fi
 
 if [[ -n "$SIGN" ]]; then
   codesign --force --timestamp --options runtime --sign "$SIGN" "$APP"

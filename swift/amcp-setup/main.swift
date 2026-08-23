@@ -58,6 +58,10 @@ struct Page: Decodable {
     var action: String?
     /// Button that moves on once the work is done (or immediately, if none).
     var next: String?
+    /// Button that moves on WITHOUT doing the work. Only on optional steps --
+    /// its presence is what tells the user a step can be declined on its own,
+    /// as opposed to Cancel, which abandons the whole wizard.
+    var skip: String?
 }
 
 struct Plan: Decodable {
@@ -194,6 +198,7 @@ final class WizardController: NSObject, NSWindowDelegate {
     private var actionButton: NSButton?
     private var nextButton: NSButton?
     private var spinner: NSProgressIndicator?
+    private var skipButton: NSButton?
     private var resultStack: NSStackView?
     private var ranCurrentPage = false
 
@@ -222,6 +227,7 @@ final class WizardController: NSObject, NSWindowDelegate {
         checkboxes = []
         actionButton = nil
         nextButton = nil
+        skipButton = nil
         spinner = nil
         ranCurrentPage = false
 
@@ -395,6 +401,13 @@ final class WizardController: NSObject, NSWindowDelegate {
             row.addArrangedSubview(cancel)
         }
 
+        if let skip = page.skip, page.action != nil {
+            let button = NSButton(title: skip, target: self, action: #selector(advance))
+            button.bezelStyle = .rounded
+            skipButton = button
+            row.addArrangedSubview(button)
+        }
+
         if let action = page.action {
             let button = NSButton(title: action, target: self, action: #selector(runAction))
             button.bezelStyle = .rounded
@@ -453,6 +466,8 @@ final class WizardController: NSObject, NSWindowDelegate {
         // Checkboxes describe work already done; freeze them.
         for (_, box) in checkboxes { box.isEnabled = false }
 
+        // The step has run, so declining it is no longer one of the choices.
+        skipButton?.isHidden = true
         actionButton?.title = isLast ? "Done" : "Continue"
         actionButton?.isEnabled = true
     }

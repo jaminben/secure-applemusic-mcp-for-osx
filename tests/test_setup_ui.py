@@ -187,3 +187,82 @@ def test_selecting_no_clients_is_a_normal_outcome(monkeypatch):
 
 def test_an_unknown_page_does_nothing(monkeypatch):
     assert app_setup._run_step("nonsense", []) == (True, [])
+
+
+# --- the Apple Music page --------------------------------------------------------
+
+
+def test_no_apple_music_page_without_the_helper(monkeypatch):
+    """A build with no signed helper cannot offer the permission at all."""
+    monkeypatch.setattr(app_setup.musickit, "is_available", lambda: False)
+    assert app_setup._musickit_page() is None
+    assert "musickit" not in [p["id"] for p in app_setup._build_plan()["pages"]]
+
+
+def test_the_apple_music_page_can_be_declined_on_its_own(monkeypatch):
+    """It is the one optional step, and 'Not Now' is what says so -- Cancel
+    abandons the whole wizard, which is a different thing."""
+    monkeypatch.setattr(app_setup.musickit, "is_available", lambda: True)
+    monkeypatch.setattr(app_setup.musickit, "authorization_status", lambda: "notDetermined")
+    page = app_setup._musickit_page()
+    assert page["action"] == "Allow"
+    assert page["skip"] == "Not Now"
+
+
+def test_an_already_granted_page_offers_no_action(monkeypatch):
+    """Re-prompting for something already granted would just be noise."""
+    monkeypatch.setattr(app_setup.musickit, "is_available", lambda: True)
+    monkeypatch.setattr(app_setup.musickit, "authorization_status", lambda: "authorized")
+    page = app_setup._musickit_page()
+    assert page.get("action") is None and page.get("skip") is None
+    assert "ALREADY GRANTED" in page["body"]
+
+
+def test_the_page_distinguishes_itself_from_the_automation_grant(monkeypatch):
+    """The two permissions sound alike; conflating them is the likely mistake."""
+    monkeypatch.setattr(app_setup.musickit, "is_available", lambda: True)
+    monkeypatch.setattr(app_setup.musickit, "authorization_status", lambda: "notDetermined")
+    body = app_setup._musickit_page()["body"]
+    assert "different permission" in body
+    assert "Media & Apple Music" in body        # where it actually appears
+    assert "cannot buy" in body.lower() or "NO PAYMENT" in body
+
+
+def test_only_the_apple_music_step_is_skippable(monkeypatch):
+    monkeypatch.setattr(app_setup.musickit, "is_available", lambda: True)
+    monkeypatch.setattr(app_setup.musickit, "authorization_status", lambda: "notDetermined")
+    for page in app_setup._build_plan()["pages"]:
+        if page.get("skip"):
+            assert page["id"] == "musickit", f"{page['id']} must not be skippable"
+
+
+def test_declining_apple_music_is_reported_softly(monkeypatch):
+    """Declining is an answer, not a failure to be fixed, so it must not be
+    rendered as an error."""
+    monkeypatch.setattr(
+        app_setup.musickit, "request_authorization", lambda: (False, "user did not grant access")
+    )
+    ok, lines = app_setup._run_step("musickit", [])
+    assert ok is False
+    assert lines[0].startswith("•"), lines
+    assert not lines[0].startswith("✗")
+
+
+def test_granting_apple_music_is_reported(monkeypatch):
+    monkeypatch.setattr(app_setup.musickit, "request_authorization", lambda: (True, "authorized"))
+    ok, lines = app_setup._run_step("musickit", [])
+    assert ok and lines == ["✓ Apple Music access granted"]
+
+
+def test_the_plan_is_built_without_re_probing_the_helper(monkeypatch):
+    """Reading the status shells out to the helper; doing it per page render
+    would spawn processes for nothing."""
+    calls = []
+    monkeypatch.setattr(app_setup.musickit, "is_available", lambda: True)
+    monkeypatch.setattr(
+        app_setup.musickit,
+        "authorization_status",
+        lambda: (calls.append(1), "notDetermined")[1],
+    )
+    app_setup._build_plan()
+    assert len(calls) == 1, f"probed {len(calls)} times"
