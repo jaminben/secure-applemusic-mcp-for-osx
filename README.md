@@ -103,12 +103,44 @@ Automation, and your terminal gets nothing.
 git clone https://github.com/jaminben/secure-applemusic-mcp-for-osx
 cd secure-applemusic-mcp-for-osx
 ./install.sh --scoped --sign "My Local Signing Cert"   # or plain ./install.sh
-make app                                               # or build the .app yourself
+tools/make-signing-cert.sh                             # one-off local signing cert
+SIGN_ID="Apple Music MCP Self-Signed" make app         # build a signed .app
 ```
 
 `install.sh` installs into a private `0700` virtualenv from the checkout you're
 standing in — nothing is piped from the network into a shell. Plain `./install.sh`
 skips the bundle and configures the simpler (unscoped) stdio server.
+
+### Sharing it with someone else
+
+Two things decide whether it "just works" on their Mac.
+
+**Architecture.** The zip is built for one architecture. `AppleMusicMCP-*-arm64`
+is Apple Silicon (M1 and later); build `--arch x86_64` for an Intel Mac. If in
+doubt, ask them for  → About This Mac.
+
+**Gatekeeper.** A *self-signed* build is not a notarized one. On their machine
+macOS will refuse it on first open, and the right-click → Open trick no longer
+works on recent macOS. They need:
+
+> System Settings → Privacy & Security → scroll down → **Open Anyway**
+
+That is one extra step, and it is the honest cost of not paying for notarization.
+Self-signing still earns its keep: it gives the app a stable identity, so the
+Music permission survives updates instead of re-prompting every time.
+
+For a genuinely frictionless hand-off — no scary dialog at all — sign with a
+**Developer ID Application** certificate and notarize:
+
+```sh
+SIGN_ID="Developer ID Application: Your Name (TEAMID)" make app
+xcrun notarytool submit dist/AppleMusicMCP-*.zip \
+    --apple-id you@example.com --team-id TEAMID --wait
+xcrun stapler staple dist/AppleMusicMCP.app
+```
+
+That needs a paid Apple Developer account ($99/yr). Nothing else about the app
+changes.
 
 ### Uninstall
 
@@ -159,13 +191,22 @@ removed capability back in.
 
 ## Comparison with other Apple Music MCP servers
 
-[kennethreitz/mcp-applemusic](https://github.com/kennethreitz/mcp-applemusic) is
-the minimal option: ~165 lines, 10 tools, osascript only, no credentials, and no
-Accessibility — a genuinely small capability surface. It builds its AppleScript
-with unescaped f-string interpolation of tool parameters, so a track or playlist
-name containing a quote breaks out of the string literal; consider that before
-pointing it at input you don't control.
+Full write-up with sources in [docs/COMPARISON.md](docs/COMPARISON.md). The
+short version, by stars (Aug 2026):
 
-This fork keeps upstream's escaping (backslash-then-quote, control characters
-stripped, applied at every interpolation site) and its much larger feature set,
-while removing the capabilities upstream added on top.
+| | Best for | Needs a dev account | Install |
+|---|---|---|---|
+| [kennethreitz/mcp-applemusic](https://github.com/kennethreitz/mcp-applemusic) ★90 | Something tiny you can audit in one sitting | no | clone + edit JSON |
+| [epheterson/applemusic-mcp](https://github.com/epheterson/applemusic-mcp) ★86 | **Most features**; Windows/Linux; Up Next queue | no | pip/uvx + edit JSON |
+| [Cifero74/mcp-apple-music](https://github.com/Cifero74/mcp-apple-music) ★38 | The official REST API | **yes** | wizard + edit JSON |
+| **this fork** | A Mac user who doesn't use a terminal | no | **double-click** |
+
+Upstream (epheterson) does more than this fork and always will — web playback,
+Windows/Linux, the Up Next queue. This fork trades those away for a smaller
+capability surface (no Accessibility, no browser automation, no stored
+credentials) and an installer that doesn't need a terminal.
+
+One thing worth flagging if you're choosing between them: kennethreitz's server
+interpolates tool parameters into AppleScript without escaping, so a quote in a
+track or playlist name breaks out of the string literal. Reported with a fix as
+[issue #8](https://github.com/kennethreitz/mcp-applemusic/issues/8).

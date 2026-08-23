@@ -28,6 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `install.sh` for source installs (private `0700` virtualenv, `--scoped`,
   `--uninstall`), and `make release` producing wheel, sdist, signed `.app`, zip
   and `SHA256SUMS.txt`.
+- `tools/make-signing-cert.sh` — creates a self-signed code-signing certificate
+  in its own keychain, so builds are signed non-interactively. macOS keys the
+  Automation grant on the signing identity, so a stable certificate is what
+  stops the permission being re-prompted after every rebuild. (Self-signed is
+  not notarized: someone else downloading the app still has to allow it in
+  System Settings → Privacy & Security.)
+- [docs/COMPARISON.md](docs/COMPARISON.md) — an honest comparison against the
+  three most-starred Apple Music MCP servers, including where each is the
+  better choice than this one.
 
 Forked from [epheterson/applemusic-mcp](https://github.com/epheterson/applemusic-mcp)
 at `0acf697` (v0.18.5+). The goal of the fork is a smaller *capability* surface,
