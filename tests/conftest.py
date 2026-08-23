@@ -29,12 +29,18 @@ def _block_external_network(request):
     may open a real external socket. Apple's API is external, so this proves the
     mocked suite never touches the real account — a stray un-mocked amp-api call
     raises instead of silently hammering the library. Localhost is allowed (the
-    auth server tests bind a real loopback socket)."""
+    auth server tests bind a real loopback socket), as is AF_UNIX — a unix-domain
+    socket is local IPC between our own shim and helper, never a network call,
+    and it is the transport that scopes the macOS permission grant."""
     if request.node.get_closest_marker("ui") or request.node.get_closest_marker("ui_live"):
         yield
         return
 
     def _guard(self, address, *args, **kwargs):
+        # AF_UNIX carries no host — it addresses a filesystem path on this
+        # machine. Let it through rather than reading the path as a hostname.
+        if getattr(self, "family", None) == socket.AF_UNIX:
+            return _real_socket_connect(self, address, *args, **kwargs)
         host = address[0] if isinstance(address, tuple) else address
         if host not in _LOCAL_HOSTS:
             raise RuntimeError(

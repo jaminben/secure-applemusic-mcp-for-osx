@@ -161,10 +161,32 @@ def cmd_status(args):
 
 
 def cmd_serve(args):
-    """Start the MCP server."""
+    """Start the MCP server directly on stdio (the simple, unscoped path)."""
     from .server import main
 
     main()
+
+
+def cmd_helper(args):
+    """Run the resident helper behind a unix socket.
+
+    This is the half that sends Apple Events, so it is the half that must own
+    the Automation grant. Normally started by launchd from the .app bundle —
+    see docs/PERMISSIONS.md — not run by hand.
+    """
+    from .helper import main
+
+    return main()
+
+
+def cmd_shim(args):
+    """Bridge stdio to the resident helper. This is what your MCP client spawns.
+
+    Holds no permissions and speaks to nothing but the helper's socket.
+    """
+    from .shim import main
+
+    return main()
 
 
 def main():
@@ -172,7 +194,16 @@ def main():
     parser = argparse.ArgumentParser(description="MCP server for Apple Music")
     sub = parser.add_subparsers(dest="command", help="Commands")
 
-    sub.add_parser("serve", help="Run the MCP server (your client calls this)")
+    sub.add_parser("serve", help="Run the MCP server on stdio (simple, unscoped)")
+    sub.add_parser(
+        "shim",
+        help="Bridge stdio to the resident helper (what your MCP client spawns "
+        "when permissions are scoped to the app bundle)",
+    )
+    sub.add_parser(
+        "helper",
+        help="Run the resident helper behind a unix socket (launchd starts this)",
+    )
 
     login = sub.add_parser("login", help="Sign in (--dev: Apple Developer token; optional)")
     login.add_argument("--dev", action="store_true", help="Apple Developer token flow (.p8)")
@@ -217,6 +248,10 @@ def main():
         sys.exit(cmd_reset(args))
     elif args.command == "serve":
         cmd_serve(args)
+    elif args.command == "shim":
+        sys.exit(cmd_shim(args))
+    elif args.command == "helper":
+        sys.exit(cmd_helper(args))
     else:
         parser.print_help()
         sys.exit(0)
