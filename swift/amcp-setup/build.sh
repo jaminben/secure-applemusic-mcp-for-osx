@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Build the first-run setup window as a signed .app.
+#
+#   ./build.sh --sign "Developer ID Application: You (TEAMID)"
+#   ./build.sh                      # unsigned: fine, it needs no permissions
+#
+# Unlike the MusicKit helper, nothing here depends on the signature: this
+# process draws a window, prints JSON and exits. It is signed only so the
+# containing app's signature stays valid, and so Gatekeeper sees one coherent
+# bundle rather than an unsigned executable inside a signed app.
+#
+# It IS a real .app rather than a bare binary, because AppKit needs a bundle to
+# put a window on screen properly -- an activation policy, a name in the menu
+# bar, and focus when it opens.
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
+BUNDLE_ID="io.github.jaminben.secure-applemusic-mcp.setup"
+APP="AMCPSetup.app"
+SIGN=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --sign) SIGN="${2:?--sign needs an identity}"; shift 2 ;;
+    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+swiftc -O -target arm64-apple-macosx12.0 -o amcp-setup main.swift
+
+rm -rf "$APP"
+mkdir -p "${APP}/Contents/MacOS"
+mv amcp-setup "${APP}/Contents/MacOS/AMCPSetup"
+
+cat > "${APP}/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key><string>${BUNDLE_ID}</string>
+    <key>CFBundleName</key><string>Apple Music MCP Setup</string>
+    <key>CFBundleDisplayName</key><string>Apple Music MCP Setup</string>
+    <key>CFBundleExecutable</key><string>AMCPSetup</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>1.0</string>
+    <key>LSMinimumSystemVersion</key><string>12.0</string>
+</dict>
+</plist>
+PLIST
+plutil -lint "${APP}/Contents/Info.plist" >/dev/null
+
+if [[ -n "$SIGN" ]]; then
+  codesign --force --timestamp --options runtime --sign "$SIGN" "$APP"
+  codesign --verify --strict "$APP"
+  echo "built and signed: $(pwd)/$APP"
+else
+  echo "built (unsigned): $(pwd)/$APP"
+fi

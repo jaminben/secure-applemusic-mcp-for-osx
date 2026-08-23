@@ -122,6 +122,25 @@ else
   echo "          need a developer token instead" >&2
 fi
 
+# The first-run wizard. Optional: without it setup falls back to a chain of
+# plain dialogs, which works but is markedly worse.
+SETUP_SRC="${REPO}/swift/amcp-setup/AMCPSetup.app"
+if [[ -d "$SETUP_SRC" ]]; then
+  mkdir -p "${APP}/Contents/Helpers"
+  ditto "$SETUP_SRC" "${APP}/Contents/Helpers/AMCPSetup.app"
+  echo "    bundled the setup wizard"
+else
+  echo "    note: no setup wizard (swift/amcp-setup/build.sh) — first run will use" >&2
+  echo "          plain dialogs instead" >&2
+fi
+
+ICON_SRC="${REPO}/tools/icon/AppleMusicMCP.icns"
+if [[ -f "$ICON_SRC" ]]; then
+  mkdir -p "${RES}"
+  cp "$ICON_SRC" "${RES}/AppleMusicMCP.icns"
+  echo "    bundled the app icon"
+fi
+
 # --- 3. launcher + Info.plist ------------------------------------------------
 cat > "${APP}/Contents/MacOS/${APP_NAME}" <<'LAUNCHER'
 #!/bin/sh
@@ -155,6 +174,7 @@ cat > "${APP}/Contents/Info.plist" <<PLIST
     <key>CFBundleShortVersionString</key><string>${VERSION}</string>
     <key>CFBundleVersion</key><string>${VERSION}</string>
     <key>LSMinimumSystemVersion</key><string>12.0</string>
+    <key>CFBundleIconFile</key><string>AppleMusicMCP</string>
     <!-- Background agent: no Dock icon. Setup still shows native dialogs. -->
     <key>LSUIElement</key><true/>
     <!-- Shown verbatim in the Automation permission prompt. -->
@@ -204,10 +224,12 @@ if [[ -n "$SIGN_ID" ]]; then
 
   # The MusicKit helper is its own bundle: signed as a unit, after its contents
   # and before the bundle that contains it.
-  if [[ -d "${APP}/Contents/Helpers/AMCPMusicKit.app" ]]; then
-    codesign --force "${SIGN_OPTS[@]}" --sign "$SIGN_ID" \
-      "${APP}/Contents/Helpers/AMCPMusicKit.app"
-  fi
+  for nested in AMCPMusicKit AMCPSetup; do
+    if [[ -d "${APP}/Contents/Helpers/${nested}.app" ]]; then
+      codesign --force "${SIGN_OPTS[@]}" --sign "$SIGN_ID" \
+        "${APP}/Contents/Helpers/${nested}.app"
+    fi
+  done
 
   codesign --force "${SIGN_OPTS[@]}" --sign "$SIGN_ID" "$APP"
   codesign --verify --deep --strict "$APP" && echo "    signature verifies"

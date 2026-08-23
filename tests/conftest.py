@@ -24,6 +24,24 @@ def _reset_throttle_state():
 
 
 @pytest.fixture(autouse=True)
+def _never_open_the_setup_window(request, monkeypatch):
+    """No test may put a window on screen.
+
+    app_setup.main() prefers the native wizard, and in a source checkout the
+    built AMCPSetup.app is right there -- so without this the suite opens real
+    windows and blocks until a human clicks through them. Neutralised by
+    default; a test that wants the wizard must ask for it with the ui_live
+    marker and drive it itself.
+    """
+    if request.node.get_closest_marker("ui_live"):
+        return
+    from applemusic_mcp import setup_ui
+
+    monkeypatch.setattr(setup_ui, "window_path", lambda: None)
+    monkeypatch.setattr(setup_ui, "run_wizard", lambda plan, handler: None)
+
+
+@pytest.fixture(autouse=True)
 def _block_external_network(request):
     """Hard guarantee: no test outside the explicit live gates (`ui` / `ui_live`)
     may open a real external socket. Apple's API is external, so this proves the

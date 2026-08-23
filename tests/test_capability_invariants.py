@@ -58,10 +58,13 @@ SUBPROCESS_ALLOWED = {
     # and a source checkout), so it is exempt from the literal-name check below
     # and covered by test_musickit_helper_path_is_constrained instead.
     "musickit.py": {"<computed: AMCPMusicKit>"},
+    # The first-run window: our own signed AppKit app, whose path likewise
+    # differs between the packaged app and a source checkout.
+    "setup_ui.py": {"<computed: AMCPSetup>"},
 }
 
 # Modules whose argv[0] cannot be a literal, each with a dedicated test.
-COMPUTED_ARGV0 = {"musickit.py"}
+COMPUTED_ARGV0 = {"musickit.py", "setup_ui.py"}
 
 
 def _source(path: Path) -> str:

@@ -28,7 +28,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from . import clients, ipc
+from . import clients, ipc, setup_ui
 
 APP_NAME = "AppleMusicMCP"
 BUNDLE_ID = ipc.BUNDLE_ID
@@ -391,11 +391,213 @@ _STEP_PERMISSION = (
 )
 
 
+def _client_options() -> list[dict]:
+    options = []
+    for client in clients.detected():
+        option = {
+            "id": client.key,
+            "label": client.label,
+            "checked": True,
+            "detail": _tilde(client.config),
+        }
+        app = clients._app_path(client)
+        if app is not None:
+            option["iconPath"] = str(app)
+        else:
+            option["symbol"] = "terminal"
+        if client.caveat:
+            option["note"] = client.caveat
+        elif clients.is_running(client):
+            option["note"] = "Running — will be quit and reopened"
+        options.append(option)
+    return options
+
+
+def _build_plan() -> dict:
+    """The wizard: a splash saying what will happen, then one page per step.
+
+    Order matters. The helper must exist before macOS can be asked to trust it,
+    the permission must be granted before a client is pointed at something that
+    cannot yet work, and the clients come last so the thing they are told about
+    is already functioning.
+
+    Each page says why the step is needed, what it grants, and — the part
+    installers usually leave out — what it does not. A permission dialog with
+    no stated limit is one the user has to take on faith.
+    """
+    return {
+        "title": "Apple Music MCP Setup",
+        "icon": setup_ui.icon_path(),
+        "pages": [
+            {
+                "id": "splash",
+                "title": "Apple Music MCP",
+                "body": (
+                    "This lets your AI assistants control the Music app on this "
+                    "Mac — play something, search your library, build a playlist.\n\n"
+                    "It asks for one macOS permission, and only one: the ability "
+                    "to send commands to Music. Not to your files, not to your "
+                    "browser, not to other apps.\n\n"
+                    "Here is what setup will do. Nothing has changed yet."
+                ),
+                "bullets": [
+                    {
+                        "label": "1.  Install a background helper",
+                        "detail": "So the permission belongs to this app, not to your terminal.",
+                        "symbol": "gearshape.fill",
+                    },
+                    {
+                        "label": "2.  Ask macOS for permission to control Music",
+                        "detail": "One app. Revocable at any time in System Settings.",
+                        "iconPath": "/System/Applications/Music.app",
+                    },
+                    {
+                        "label": "3.  Add it to your AI assistants",
+                        "detail": "You choose which ones. Each config is backed up first.",
+                        "symbol": "app.badge.checkmark",
+                    },
+                ],
+                "next": "Continue",
+            },
+            {
+                "id": "helper",
+                "title": "Background helper",
+                "body": (
+                    "WHY  macOS grants app-control permission to whichever program "
+                    "starts the process. If your AI client launched the server, the "
+                    "permission would land on your client — or on your terminal, "
+                    "which would then hold it for everything you ever run there.\n\n"
+                    "Letting launchd start this helper makes it answerable for "
+                    "itself, so the permission lands on this app alone.\n\n"
+                    "WHAT IT ADDS  One LaunchAgent file, which starts the helper "
+                    "at login:\n"
+                    "    ~/Library/LaunchAgents/{bundle}.plist\n\n"
+                    "WHAT IT DOES NOT DO  It has no window and no menu bar item. "
+                    "It listens on a private socket inside your home folder and "
+                    "nothing else — no network port, nothing reachable from "
+                    "outside this Mac.\n\n"
+                    "TO REMOVE  Delete that file, or move this app to the Trash."
+                ).format(bundle=BUNDLE_ID),
+                "action": "Install",
+            },
+            {
+                "id": "permission",
+                "title": "Permission to control Music",
+                "body": (
+                    "WHY  Everything this does — play, pause, skip, search your "
+                    "library, edit playlists — is done by sending commands to the "
+                    "Music app, the same way an AppleScript would. macOS requires "
+                    "your consent for that, per app.\n\n"
+                    "WHAT YOU ARE GRANTING  Permission for this app to send "
+                    "commands to Music. That is the entire scope: macOS tracks it "
+                    "per target application, so it conveys nothing about any other "
+                    "app on this Mac.\n\n"
+                    "WHAT IT IS NOT  This is not Accessibility. Accessibility "
+                    "would allow typing and clicking into any application, cannot "
+                    "be limited to one app, and is what a keylogger needs. This "
+                    "app never asks for it, and is built so it cannot use it.\n\n"
+                    "It also grants no access to your files, your browser, your "
+                    "messages or your keychain.\n\n"
+                    "TO REVOKE  System Settings → Privacy & Security → Automation. "
+                    "Turning it off stops this app; nothing else breaks."
+                ),
+                "action": "Ask macOS",
+            },
+            {
+                "id": "clients",
+                "title": "Add to your AI assistants",
+                "body": (
+                    "WHY  Each client needs one line of configuration telling it "
+                    "how to start the server.\n\n"
+                    "WHAT CHANGES  A single 'apple-music' entry per client. Your "
+                    "other MCP servers and settings are untouched, and a "
+                    "timestamped backup is written next to each file first.\n\n"
+                    "WORTH KNOWING  The entry points at a shim that holds no "
+                    "permission of its own — it just relays to the helper over "
+                    "that private socket. So your AI client never inherits the "
+                    "Music permission, and revoking it in System Settings still "
+                    "works."
+                ),
+                "options": _client_options(),
+                "action": "Add",
+            },
+            {
+                "id": "summary",
+                "title": "Setup finished",
+                "body": (
+                    "Any client that was already running needs a restart to pick "
+                    "up the server.\n\n"
+                    "You can review or revoke the Music permission at any time in "
+                    "System Settings → Privacy & Security → Automation."
+                ),
+                "next": "Done",
+            },
+        ],
+    }
+
+
+def _tilde(path: Path) -> str:
+    try:
+        return "~/" + str(path.relative_to(Path.home()))
+    except ValueError:
+        return str(path)
+
+
+def _run_step(page: str, selected: list) -> "tuple[bool, list[str]]":
+    """Carry out one wizard page. Never raises: a failure is a reported line."""
+    try:
+        if page == "helper":
+            install_launch_agent()
+            if load_agent():
+                return True, ["✓ Background helper installed and running"]
+            return False, [f"✗ Helper failed to start — see {LOG_DIR / 'helper.log'}"]
+
+        if page == "clients":
+            lines, configured = [], []
+            for client in clients.detected():
+                if client.key not in selected:
+                    continue
+                ok, msg = clients.configure(
+                    client, client.entry(str(helper_executable()), ["shim"])
+                )
+                lines.append(("✓ " if ok else "✗ ") + msg)
+                if ok:
+                    configured.append(client)
+            if not lines:
+                return True, ["• No clients selected"]
+            lines.extend(_offer_restart(configured))
+            return all(not ln.startswith("✗") for ln in lines), lines
+
+        if page == "permission":
+            ok, msg = prime_permission()
+            return ok, [("✓ " if ok else "✗ ") + msg]
+    except Exception as exc:  # noqa: BLE001 - a step must not kill the wizard
+        _log(f"step {page} failed: {exc}")
+        return False, [f"✗ {exc}"]
+    return True, []
+
+
+def _run_with_window() -> "Optional[int]":
+    """The wizard. Returns an exit code, or None to fall back to dialogs."""
+    outcome = setup_ui.run_wizard(_build_plan(), _run_step)
+    if outcome is None:
+        return None
+    if not outcome:
+        _log("cancelled by user")
+        return 1
+    return 0
+
+
 def main() -> int:
     if sys.platform != "darwin":
         _log("macOS only.")
         return 1
 
+    code = _run_with_window()
+    if code is not None:
+        return code
+
+    # No window in this build: ask with plain dialogs instead. Never assume.
     if _dialog(_INTRO, buttons=("Quit", "Continue"), default=2) != "Continue":
         _log("cancelled by user before any changes")
         return 1
