@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Managed capability: only honoured when the binary is signed with a
+         provisioning profile whose App ID has MusicKit enabled. This entitlement
+         is what replaces a shipped developer token — MusicKit signs the API
+         calls itself, so nothing secret is distributed with the app. -->
+    <key>com.apple.developer.musickit</key>
+    <true/>
+</dict>
+</plist>

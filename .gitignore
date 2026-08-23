@@ -52,3 +52,6 @@ apple-music-credentials.md
 PLAN.md
 .claude/settings.local.json
 docs/plans/
+
+# compiled Swift helper (built by swift/amcp-musickit/build.sh)
+swift/amcp-musickit/amcp-musickit

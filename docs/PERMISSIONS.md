@@ -159,41 +159,76 @@ Accessibility, treat it as a bug and file it.
 
 ---
 
-# Rejected: native MusicKit (Swift) instead of a developer token
+# Native MusicKit (Swift) instead of a shipped developer token
 
-Worth recording, because it is the obvious idea and it does not work on macOS.
+This is the answer to "how do we ship catalog-add without putting a credential
+in the app". It took two passes to get right, and the first conclusion was wrong,
+so both are recorded.
 
-**The appeal.** A Swift helper using Apple's `MusicKit` framework would need no
-developer token in the app at all: the `com.apple.developer.musickit` entitlement
-plus the user's consent replaces it, so nothing secret is ever distributed. It
-would also swap the localhost browser-authorization page for a native dialog.
+## What does not work on macOS
 
-**Why it fails.** MusicKit on macOS is read-and-play-in-process only. Checked by
-compiling against the real SDK (macOS 15.7, Swift 6.2, target macOS 14):
+Checked by compiling against the real SDK (macOS 15.7, Swift 6.2, target 14):
 
 | API | macOS |
 |---|---|
 | `MusicAuthorization` | available |
-| `MusicCatalogResourceRequest` (catalog reads) | available |
-| `MusicLibraryRequest` (library reads) | available |
+| `MusicCatalogResourceRequest` / `MusicLibraryRequest` | available |
 | `ApplicationMusicPlayer` (in-process player) | available |
-| `SystemMusicPlayer` (drives Music.app) | **`@available(macOS, unavailable)`** |
-| `MusicLibrary.shared.edit` / `.add` | **`@available(macOS, unavailable)`** |
+| **`SystemMusicPlayer`** (drives Music.app) | **`@available(macOS, unavailable)`** |
+| **`MusicLibrary.shared.edit`** | **`@available(macOS, unavailable)`** |
 
-So the one thing we wanted — add a catalog track to the library — is not
-expressible in MusicKit on macOS at all. Apple gates library mutation to iOS.
+So MusicKit's *Swift* library-mutation and system-player APIs are iOS-only. On
+that evidence the approach looked dead: `ApplicationMusicPlayer` can play an
+unowned track, but it is a second in-process player that Music.app transport
+cannot reach — the two-engine split this fork removed with the browser player.
 
-`ApplicationMusicPlayer` *can* play an unowned catalog track without a token,
-but it is an in-process player, not Music.app: transport (`pause`, `next`,
-`now_playing`) would not reach it, reintroducing exactly the two-engine split
-this fork removed with the browser player — and the process would have to stay
-resident to hold the audio.
+**Trap:** `swiftc -parse` does NOT evaluate availability, so a parse-only probe
+compiles all of the above and reads as a green light. Use `-typecheck`.
 
-**Note for anyone re-checking this:** `swiftc -parse` does NOT evaluate
-availability, so a parse-only probe compiles all of the above cleanly and looks
-like a green light. Use `-typecheck` or a real build.
+## What does work: MusicDataRequest
 
-**What to do instead.** The REST rail (`POST /me/library` with a developer token,
-then play by name over Apple Events) does the whole job in about 8 seconds and
-keeps a single player. For distribution the token question is answered by a
-broker, not by MusicKit — see the shipping options in the README.
+`MusicDataRequest` **is** available on macOS, and it is the whole answer. It
+performs an authenticated Apple Music API call with MusicKit supplying *both*
+the developer token and the Music User Token itself, derived from the app's
+`com.apple.developer.musickit` entitlement plus the user's consent:
+
+```swift
+var components = URLComponents(string: "https://api.music.apple.com/v1/me/library")!
+components.queryItems = [URLQueryItem(name: "ids[songs]", value: id)]
+var request = URLRequest(url: components.url!)
+request.httpMethod = "POST"
+let response = try await MusicDataRequest(urlRequest: request).response()
+```
+
+Consequences, and they are large:
+
+* **No developer token is shipped** — nothing to extract from the app.
+* **No `.p8` leaves the developer machine.**
+* **No token-broker service** has to exist, be hosted, be paid for, or be trusted.
+* **No 6-month expiry cliff** — entitlements do not expire, so a shipped build
+  does not silently stop working months later.
+* The Music User Token is minted and held by MusicKit, never by us.
+
+Playback stays on Apple Events to Music.app, so there is still exactly one
+player: the Swift helper only performs the library add, then the existing
+add-then-play path takes over.
+
+The helper lives in `swift/amcp-musickit/` — three verbs, JSON on stdout,
+numeric ids only, no filesystem access and no shell.
+
+## What it still needs
+
+The entitlement is a *managed capability*, so the binary must be signed with a
+provisioning profile that carries it:
+
+1. Portal → Identifiers → **App IDs** → new, with the **MusicKit** capability,
+   bundle id matching the app.
+2. Portal → Profiles → **Developer ID** profile for that App ID (macOS,
+   distribution outside the App Store).
+3. Embed at `Contents/embedded.provisionprofile`.
+4. Sign with an entitlements plist containing
+   `com.apple.developer.musickit`.
+
+Unsigned, `add` fails with `Permission denied` — which is the expected and
+correct behaviour, not a bug in the helper.
+
