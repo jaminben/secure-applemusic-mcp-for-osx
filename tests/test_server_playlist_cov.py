@@ -33,8 +33,6 @@ def _write_tokens(config_dir, dev_token: str, user_token: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-
-
 # ---------------------------------------------------------------------------
 # _safe_single_match  (lines 1015-1025)
 # ---------------------------------------------------------------------------
@@ -73,17 +71,9 @@ class TestSafeSingleMatch:
 # ---------------------------------------------------------------------------
 
 
-
-
-
-
-
-
 # ---------------------------------------------------------------------------
 # _playlist_remove_api  (lines 1028-1051)
 # ---------------------------------------------------------------------------
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -91,15 +81,9 @@ class TestSafeSingleMatch:
 # ---------------------------------------------------------------------------
 
 
-
-
-
-
 # ---------------------------------------------------------------------------
 # _playlist_move_api  (lines 1073-1094)
 # ---------------------------------------------------------------------------
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -107,13 +91,9 @@ class TestSafeSingleMatch:
 # ---------------------------------------------------------------------------
 
 
-
-
 # ---------------------------------------------------------------------------
 # _library_remove_api  (lines 1151-1179)
 # ---------------------------------------------------------------------------
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +117,6 @@ class TestFindApiPlaylistByName:
         )
         pid, fuzzy = server._find_api_playlist_by_name("Summer Hits")
         assert pid == "p.found1"
-
 
     @responses_lib.activate
     def test_api_error_returns_none(self, mock_config_dir, mock_developer_token, mock_user_token):
@@ -349,7 +328,6 @@ class TestFindTrackInList:
         matches = server._find_track_in_list(tracks, "Hey Jude", "Beatles")
         assert len(matches) == 1
         assert "Beatles" in matches[0]
-
 
     def test_artist_filter_no_match(self):
         tracks = [{"name": "Hey Jude", "artist": "Beatles", "id": "t1"}]
@@ -1551,8 +1529,6 @@ class TestPlaylistDispatcher:
         assert "Created" in result
         assert "New PL" in result
 
-
-
     def test_action_create_folder_only_native(self, monkeypatch):
         monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
         monkeypatch.setattr(server, "_engine", lambda: "native")
@@ -1571,9 +1547,6 @@ class TestPlaylistDispatcher:
         result = server.playlist(action="create", name="New PL", folder="Summer")
         assert "Created" in result
         assert "New PL" in result
-
-
-
 
     def test_action_add_api_engine_with_album_falls_back(self, monkeypatch):
         """API engine with album param falls through to _playlist_add."""
@@ -1647,14 +1620,9 @@ class TestPlaylistDispatcher:
         result = server.playlist(action="copy", source="Source PL", new_name="Copy PL")
         assert "Copy PL" in result
 
-
-
     def test_action_delete_no_name_error(self, monkeypatch):
         result = server.playlist(action="delete")
         assert "Error" in result
-
-
-
 
     def test_action_delete_folder_native_success(self, monkeypatch):
         monkeypatch.setattr(server, "_engine", lambda: "native")
@@ -1672,7 +1640,6 @@ class TestPlaylistDispatcher:
         result = server.playlist(action="delete", name="Old PL")
         assert "Deleted" in result
 
-
     def test_action_rename_no_new_name_error(self, monkeypatch):
         result = server.playlist(action="rename", playlist="Old PL")
         assert "Error" in result
@@ -1681,7 +1648,6 @@ class TestPlaylistDispatcher:
     def test_action_rename_no_playlist_error(self, monkeypatch):
         result = server.playlist(action="rename", new_name="New PL")
         assert "Error" in result
-
 
     def test_action_rename_folder_macos_only(self, monkeypatch):
         monkeypatch.setattr(server, "_engine", lambda: "native")
@@ -1708,11 +1674,9 @@ class TestPlaylistDispatcher:
         result = server.playlist(action="rename", playlist="Old PL", new_name="New PL")
         assert "Renamed" in result
 
-
     def test_action_create_folder_no_name_error(self, monkeypatch):
         result = server.playlist(action="create_folder")
         assert "Error" in result
-
 
     def test_action_create_folder_native_success(self, monkeypatch):
         monkeypatch.setattr(server, "_engine", lambda: "native")
@@ -1721,12 +1685,10 @@ class TestPlaylistDispatcher:
         result = server.playlist(action="create_folder", name="Summer Folder")
         assert "Created" in result
 
-
     def test_action_move_no_playlist_error(self, monkeypatch):
         result = server.playlist(action="move")
         assert "Error" in result
         assert "playlist" in result.lower()
-
 
     def test_action_move_native_to_folder(self, monkeypatch):
         monkeypatch.setattr(server, "_engine", lambda: "native")
@@ -1748,7 +1710,6 @@ class TestPlaylistDispatcher:
         result = server.playlist(action="move", playlist="My PL", allow_duplicates=True)
         assert "root" in result.lower() or "Moved" in result
 
-
     def test_action_path_with_target(self, monkeypatch):
         monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
         monkeypatch.setattr(server.asc, "get_playlist_path", lambda name: (True, "Summer/Chill"))
@@ -1766,11 +1727,6 @@ class TestPlaylistDispatcher:
         result = server.playlist(action="frobnicate")
         assert "Unknown action" in result
         assert "frobnicate" in result
-
-
-
-
-
 
     # --- create_folder backward compat with alias ---
     def test_action_create_folder_alias_via_create(self, monkeypatch):
@@ -1793,8 +1749,6 @@ class TestPlaylistDispatcher:
 # ---------------------------------------------------------------------------
 # Additional edge cases for better coverage
 # ---------------------------------------------------------------------------
-
-
 
 
 class TestPlaylistListOutputFormats:
@@ -1962,8 +1916,6 @@ class TestResolvePlaylistApplescriptEmpty:
         resolved = server._resolve_playlist("NonExistentPlaylist")
         # Falls back to raw (fuzzy match returns None for very different names)
         assert resolved.error is None
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -5067,8 +5019,6 @@ def test_action_folders_shows_tree(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-
-
 class TestPlaylistAddDryRun:
     """dry_run previews resolution + duplicates and writes NOTHING. The guarantee
     that matters most is the second half."""
@@ -5086,9 +5036,6 @@ class TestPlaylistAddDryRun:
             monkeypatch.setattr(
                 server, "_find_matching_catalog_song", lambda n, a: (song, None, fuzzy)
             )
-
-
-
 
     def test_says_so_when_duplicates_are_unknowable(self, monkeypatch):
         """No api_id means no diff — claiming 'no duplicates' would be a lie."""
@@ -5109,9 +5056,6 @@ class TestPlaylistAddDryRun:
         )
         assert "duplicates aren't accounted for" in result
 
-
-
-
     def test_requires_a_track(self, monkeypatch):
         assert "dry_run needs" in server.playlist(
             action="add", playlist="My Playlist", album="Abbey Road", dry_run=True
@@ -5121,10 +5065,6 @@ class TestPlaylistAddDryRun:
         assert "playlist parameter required" in server.playlist(
             action="add", track="Yesterday", dry_run=True
         )
-
-
-
-
 
 
 class TestCatalogResolveNaming:
@@ -5205,10 +5145,8 @@ class TestPickResolvedSong:
         assert server._pick_resolved_song([], "Anything") == (None, "")
 
 
-
 class TestDryRunFidelity:
     """A dry run that doesn't predict the real run is worse than no dry run."""
-
 
     def _preview_stub(self, monkeypatch, existing=None, lib=None, catalog=None):
         monkeypatch.setattr(
@@ -5223,9 +5161,6 @@ class TestDryRunFidelity:
                 server, "_find_matching_catalog_song", lambda n, a: (catalog, None, None)
             )
 
-
-
-
     def test_cap_message_names_the_parameter_that_works(self, monkeypatch):
         monkeypatch.setattr(
             server,
@@ -5235,7 +5170,3 @@ class TestDryRunFidelity:
         result = server.catalog(action="resolve", tracks=",".join(f"T{i}" for i in range(30)))
         assert "max_tracks" in result
         assert "raise `limit`" not in result
-
-
-
-

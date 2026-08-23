@@ -157,8 +157,6 @@ class TestLibraryDispatcher:
         assert called
         assert "OK" in result
 
-
-
     def test_snapshot_new_routes_correctly(self, monkeypatch):
         monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
         monkeypatch.setattr(server, "get_user_preferences", lambda: _default_prefs())
@@ -2262,9 +2260,3 @@ def test_unverified_rating_is_never_cached(monkeypatch):
         False,
     )
     assert writes == [], "an Unknown rating must not be written to the cache"
-
-
-
-
-
-

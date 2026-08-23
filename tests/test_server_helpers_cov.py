@@ -700,12 +700,10 @@ class TestEngine:
         monkeypatch.setenv("APPLEMUSIC_FORCE_API_MODE", "1")
         assert server._engine() == "api"
 
-
     def test_mode_native_with_applescript(self, monkeypatch):
         monkeypatch.setattr(server, "get_user_preferences", lambda: {"mode": "native"})
         monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
         assert server._engine() == "native"
-
 
     def test_mode_auto_with_applescript(self, monkeypatch):
         monkeypatch.setattr(server, "get_user_preferences", lambda: {"mode": "auto"})
@@ -713,13 +711,9 @@ class TestEngine:
         assert server._engine() == "native"
 
 
-
-
 # ---------------------------------------------------------------------------
 # _use_browser_playback
 # ---------------------------------------------------------------------------
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -735,10 +729,6 @@ class TestWriteRail:
         monkeypatch.setattr(server, "get_user_preferences", lambda: {"mode": "web"})
         for op in ("create", "delete", "rename", "move", "remove"):
             assert server._write_rail(op) == "native"
-
-
-
-
 
     def test_label_write_appends_only_on_success(self):
         assert (
@@ -1677,7 +1667,6 @@ class TestSmartAsAddTrackToPlaylist:
 
 class TestAutoSearchAndAddToPlaylist:
 
-
     @responses.activate
     def test_catalog_search_not_found(self, mock_config_dir, mock_developer_token, mock_user_token):
         _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
@@ -1726,9 +1715,6 @@ class TestAutoSearchAndAddToPlaylist:
         )
         ok, msg, steps = server._auto_search_and_add_to_playlist("Song", "Artist", "Playlist")
         assert ok is False
-
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -1850,8 +1836,6 @@ class TestRateSongApi:
 # ---------------------------------------------------------------------------
 # _browser_play
 # ---------------------------------------------------------------------------
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -2374,8 +2358,6 @@ class TestRateLimitSurfacing:
     resolvers swallow non-200 into [], so a 429 has to be surfaced explicitly or
     it reads as "no such song"."""
 
-
-
     def test_api_error_without_a_response_still_renders(self):
         msg = server._api_error(requests.exceptions.ConnectionError("connection refused"))
         assert msg == "API Error: connection refused"
@@ -2394,8 +2376,6 @@ class TestRateLimitSurfacing:
         )
         result = server.catalog(action="search", query="Money")
         assert "429" in result and "rolling" in result
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -2561,7 +2541,6 @@ class TestCatalogResolveIsrc:
         assert "Malformed, not sent (1)" in result
         assert "junk" in result
 
-
     @responses.activate
     def test_429_in_json_format_sets_the_flag(
         self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
@@ -2604,7 +2583,6 @@ class TestCatalogResolveIsrc:
         )
         result = server.catalog(action="resolve", query="GBAYM9500001")
         assert "Resolved 1/1" in result
-
 
     @responses.activate
     def test_unknown_action_lists_the_canonical_name(self, mock_config_dir):
@@ -2755,7 +2733,6 @@ class TestCatalogMatchTracks:
         result = server.catalog(action="match", tracks="A,B,C", max_tracks=1)
         assert "Matched 1/1" in result
 
-
     def test_json_format(self, monkeypatch):
         monkeypatch.setattr(
             server,
@@ -2843,7 +2820,6 @@ class TestThrottleHonesty:
     """Fixing the advice in one place and leaving it stale elsewhere would have the
     tool contradicting its own docs."""
 
-
     def test_no_stale_wait_a_moment_advice_anywhere(self):
         """Apple's window is rolling; 'wait a moment and retry' is wrong AND makes
         it worse. Guard against it creeping back in."""
@@ -2858,10 +2834,7 @@ class TestThrottleHonesty:
         ]
         assert offenders == []
 
-
-
     def test_titles_sent_to_resolve_isrc_point_at_match(self):
         result = server.catalog(action="resolve_isrc", isrcs="Yesterday, Wonderwall")
         assert "action='match'" in result
         assert "USABC1234567" in result  # shows what an ISRC looks like
-

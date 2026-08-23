@@ -1777,10 +1777,6 @@ class TestCatalogDispatcher:
         result = server.catalog(action="nonexistent_action")
         assert "Unknown action" in result
 
-
-
-
-
     def test_search_no_query_no_applescript(self, mock_config_dir, monkeypatch):
         """No query and no AppleScript returns token required (APPLESCRIPT guard False)."""
         monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)

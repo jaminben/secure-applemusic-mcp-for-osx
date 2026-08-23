@@ -25,32 +25,10 @@ def _args(**kw):
 # --- login (web) -----------------------------------------------------------
 
 
-
-
-
-
-
-
 # --- login --dev -----------------------------------------------------------
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # --- logout ----------------------------------------------------------------
-
-
 
 
 # --- reset -----------------------------------------------------------------
@@ -211,7 +189,3 @@ def test_dunder_main_entrypoint(monkeypatch):
     monkeypatch.setattr(cli, "cmd_status", lambda args: 0)
     with pytest.raises(SystemExit):
         runpy.run_module("applemusic_mcp.cli", run_name="__main__")
-
-
-
-

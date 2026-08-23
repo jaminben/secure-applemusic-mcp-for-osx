@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """Assert every version surface in the repo agrees with pyproject.toml.
 
-A release touches SEVEN places, and two of them silently resist the obvious
+A release touches several places, and one of them silently resists the obvious
 bump method:
 
-  * ``server.json`` is the MCP registry manifest. No workflow reads or writes it,
-    so nothing notices when it drifts — it sat at ``1.0.0`` while the package
-    shipped 0.16.0, which would have advertised a 1.0 that does not exist.
   * ``uv.lock`` does NOT follow an edit to pyproject. It only changes when ``uv``
-    itself runs, which can happen after you commit — 0.18.0 shipped with the
-    lockfile still naming 0.17.0.
+    itself runs, which can happen after you commit — upstream shipped 0.18.0 with
+    the lockfile still naming 0.17.0.
+
+(``server.json``, the MCP registry manifest, was dropped in this fork along with
+the publish workflow — this build is installed from source, not advertised to
+the registry.)
 
 Both are cosmetic right up until they aren't, and neither is visible in a diff you
 weren't already looking at. So: check them mechanically, in the pre-release gate
@@ -20,7 +21,6 @@ Exit 0 if consistent, 1 otherwise, listing every mismatch rather than the first.
 
 from __future__ import annotations
 
-import json
 import re
 import sys
 from pathlib import Path
@@ -48,17 +48,13 @@ def _surfaces(expected: str) -> list[tuple[str, str | None]]:
 
     # The lockfile records the editable package's own version in its stanza.
     m = re.search(
-        r'\[\[package\]\]\nname = "applemusic-mcp"\nversion = "([^"]+)"', _read("uv.lock")
+        r'\[\[package\]\]\nname = "secure-applemusic-mcp-for-osx"\nversion = "([^"]+)"',
+        _read("uv.lock"),
     )
-    out.append(("uv.lock applemusic-mcp stanza", m.group(1) if m else None))
+    out.append(("uv.lock package stanza", m.group(1) if m else None))
 
     m = re.search(r"^version: (.+)$", _read("SKILL.md"), re.M)
     out.append(("SKILL.md frontmatter", m.group(1).strip() if m else None))
-
-    server = json.loads(_read("server.json"))
-    out.append(("server.json version", server.get("version")))
-    packages = server.get("packages") or [{}]
-    out.append(("server.json packages[0].version", packages[0].get("version")))
 
     # The changelog needs a section for this version or release.yml silently falls
     # back to auto-generated notes.

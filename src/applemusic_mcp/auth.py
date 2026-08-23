@@ -3,17 +3,13 @@
 import json
 import logging
 import os
-import re
-import sys
 import time
-import webbrowser
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qs
 
 import jwt
-import requests
 
 from . import paths
 
@@ -24,48 +20,21 @@ DEFAULT_CONFIG_DIR = paths.config_dir()
 
 def _write_private(path, text: str) -> None:
     """Write ``text`` to ``path`` created 0600 from the start — no world-readable
-    window on POSIX. The old ``open(w)`` + ``chmod`` pattern left the secret
-    readable between create and chmod; ``os.open`` with the mode closes that
-    TOCTOU gap. NOTE: POSIX mode bits don't restrict access on Windows — that's
-    why Windows defaults ``secure_storage`` to the keychain (see
-    ``get_user_preferences``)."""
+    window. The old ``open(w)`` + ``chmod`` pattern left the secret readable
+    between create and chmod; ``os.open`` with the mode closes that TOCTOU gap."""
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(text)
 
 
-# --- Secret store: OS keychain with a 0600-file fallback --------------------
-# Tokens live in the OS keychain (macOS Keychain / Windows Credential Locker /
-# Linux Secret Service) when a backend is available, else a 0600 JSON file (the
-# same filenames/format as before, so existing installs and headless servers
-# keep working). The stored VALUE is always the JSON blob the file used to hold,
-# so callers parse it identically regardless of backend.
-
-try:  # keyring is a dependency, but import defensively
-    import keyring as _keyring
-except Exception:  # pragma: no cover - keyring import failure
-    _keyring = None  # type: ignore
-
-_KEYRING_SERVICE = "applemusic-mcp"
-
-
-def _keyring_ok() -> bool:
-    """True when the OS keychain should be used. Auto-decided by platform, no
-    user knob: Windows uses the Credential Locker (POSIX 0600 file bits are a
-    no-op there, so a token file would be readable by other local accounts);
-    macOS and Linux use 0600 files, because the keychain's per-process ACL is
-    unreliable across this tool's separate CLI and server processes. The
-    APPLEMUSIC_NO_KEYRING=1 test guard forces files everywhere."""
-    if os.environ.get("APPLEMUSIC_NO_KEYRING") == "1" or _keyring is None:
-        return False
-    if sys.platform != "win32":
-        return False
-    try:
-        kr = _keyring.get_keyring()
-        name = f"{type(kr).__module__}.{type(kr).__name__}".lower()
-        return "fail" not in name and "null" not in name
-    except Exception:
-        return False
+# --- Secret store: 0600 files ------------------------------------------------
+# The optional developer-token credentials live in 0600 files under the config
+# dir (itself 0700). Upstream also supported the OS keychain, but only ever
+# used it on Windows — `_keyring_ok()` returned False on macOS and Linux
+# because the keychain's per-process ACL is unreliable across this tool's
+# separate CLI and server processes. This build is macOS-only, so that branch
+# was unreachable; removing it drops the `keyring` dependency (and its
+# transitive tree) from the supply chain entirely.
 
 
 def _secret_file(key: str) -> Path:
@@ -74,72 +43,28 @@ def _secret_file(key: str) -> Path:
 
 
 def secret_set(key: str, value: str) -> None:
-    """Persist a secret blob under ``key``. Invariant: the secret lives in exactly
-    ONE place. Keychain write deletes the file; file write (keychain unavailable)
-    best-effort deletes any keychain copy. Combined with file-precedence in
-    ``secret_get``, this prevents a stale keychain value from shadowing a newer
-    file token (the SSH-writes-file / GUI-writes-keychain flap)."""
-    if _keyring_ok():
-        try:
-            _keyring.set_password(_KEYRING_SERVICE, key, value)
-            _secret_file(key).unlink(missing_ok=True)
-            return
-        except Exception:  # pragma: no cover - backend write failure → fall back
-            pass
-    # File path: drop any now-stale keychain copy so reads don't shadow this write.
-    if _keyring is not None:
-        try:
-            _keyring.delete_password(_KEYRING_SERVICE, key)
-        except Exception:  # pragma: no cover
-            pass
-    # On Windows the secret SHOULD live in the Credential Locker; if we're here, that
-    # backend was unavailable and we're writing a plain file — say so, don't hide it.
-    if sys.platform == "win32":
-        logger.warning(
-            "Windows Credential Locker unavailable — storing %r in a local file "
-            "(%s) instead of the OS keychain.",
-            key,
-            _secret_file(key),
-        )
+    """Persist a secret blob under ``key`` in a 0600 file."""
     _write_private(_secret_file(key), value)
 
 
 def secret_get(key: str) -> Optional[str]:
-    """Read a secret blob. A file's EXISTENCE means it was the most recent write
-    (keychain writes always delete the file), so the file wins and is migrated
-    back into the keychain when one is available; otherwise read the keychain."""
+    """Read a secret blob, or None if it isn't stored."""
     f = _secret_file(key)
-    if f.exists():
-        try:
-            data = f.read_text()
-        except OSError:
-            data = None
-        if data is not None:
-            if _keyring_ok():  # migrate the newer file value into the keychain
-                try:
-                    _keyring.set_password(_KEYRING_SERVICE, key, data)
-                    f.unlink(missing_ok=True)
-                except Exception:  # pragma: no cover
-                    pass
-            return data
-    if _keyring_ok():
-        try:
-            return _keyring.get_password(_KEYRING_SERVICE, key)
-        except Exception:  # pragma: no cover
-            pass
-    return None
+    if not f.exists():
+        return None
+    try:
+        return f.read_text()
+    except OSError:
+        return None
 
 
 def secret_delete(key: str) -> bool:
-    """Forget a secret from both the keychain and the file. Returns True only if
-    the secret is actually gone afterward (so logout/reset can't report success
-    while a locked keychain still holds it)."""
-    if _keyring_ok():
-        try:
-            _keyring.delete_password(_KEYRING_SERVICE, key)
-        except Exception:  # not present, or a real backend error — verify below
-            pass
-    _secret_file(key).unlink(missing_ok=True)
+    """Forget a secret. Returns True only if it is actually gone afterward, so
+    logout/reset can never report success while the credential survives."""
+    try:
+        _secret_file(key).unlink(missing_ok=True)
+    except OSError:
+        pass
     return secret_get(key) is None
 
 
@@ -160,121 +85,38 @@ def developer_token_info() -> Optional[dict]:
         return None
 
 
-# --- Harvested (fallback) developer token -----------------------------------
-# Apple ships a public developer token (issuer "AMPWebPlay") to every browser
-# that loads music.apple.com, embedded in the web player's JS bundle. It's the
-# fallback dev-token source for users WITHOUT a generated (paid) token — the
-# generated token always takes precedence (legit, 6-month).
-_HARVEST_UA = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
-_HARVEST_BROWSE_URL = "https://music.apple.com/us/browse"
-_HARVEST_ORIGIN = "https://music.apple.com"
-_HARVEST_TIMEOUT = 15
-# The web player's main JS chunk, e.g. /assets/index~6da982354d.js
-_BUNDLE_RE = re.compile(r"/assets/index~[A-Za-z0-9]+\.js")
-# A complete JWT whose payload segment begins with the AMPWebPlay issuer claim.
-_AMP_TOKEN_RE = re.compile(
-    r"eyJ0eXAiOiJKV1Q[A-Za-z0-9_-]+\.eyJpc3MiOiJBTVBXZWJQbGF5[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
-)
-
-
-def extract_developer_token(bundle_js: str) -> str:
-    """Pure extraction step (no network) — split out for testability. Given the
-    web-player bundle's JS source, return the embedded AMPWebPlay JWT. Raises
-    RuntimeError if not found."""
-    m = _AMP_TOKEN_RE.search(bundle_js)
-    if not m:
-        raise RuntimeError("AMPWebPlay developer token not found in web-player bundle")
-    return m.group(0)
-
-
-def harvest_developer_token() -> str:
-    """Fetch music.apple.com's web-player bundle and extract its public
-    developer token. Network call; raises on failure."""
-    browse = requests.get(_HARVEST_BROWSE_URL, headers=_HARVEST_UA, timeout=_HARVEST_TIMEOUT)
-    m = _BUNDLE_RE.search(browse.text)
-    if not m:
-        raise RuntimeError("Could not locate the web-player JS bundle on music.apple.com")
-    bundle = requests.get(
-        _HARVEST_ORIGIN + m.group(0), headers=_HARVEST_UA, timeout=_HARVEST_TIMEOUT
-    )
-    return extract_developer_token(bundle.text)
-
-
-def _harvested_token_file() -> Path:
-    return get_config_dir() / "harvested_token.json"
-
-
-# Re-harvest the web token once it's within this many days of expiry. Sparse
-# usage means we want plenty of runway, so a fresh token is fetched well before
-# the old one dies rather than at the last minute.
-_HARVEST_REFRESH_DAYS = 15
-
-
-def _load_harvested_token() -> Optional[str]:
-    """Return the cached harvested token only if it has more than
-    ``_HARVEST_REFRESH_DAYS`` of life left; otherwise return None so
-    ``resolve_developer_token`` fetches a fresh one."""
-    raw = secret_get("harvested_token")
-    if not raw:
-        return None
-    try:
-        data = json.loads(raw)
-        if data.get("expires", 0) > time.time() + _HARVEST_REFRESH_DAYS * 86400:
-            return data["token"]
-    except (json.JSONDecodeError, ValueError, KeyError):
-        return None
-    return None
-
-
-def _save_harvested_token(token: str) -> None:
-    try:
-        claims = jwt.decode(token, options={"verify_signature": False})
-        exp = int(claims.get("exp", time.time() + 30 * 86400))
-    except Exception:
-        exp = int(time.time() + 30 * 86400)
-    secret_set(
-        "harvested_token", json.dumps({"token": token, "expires": exp, "source": "harvested"})
-    )
+# --- Developer token ---------------------------------------------------------
+# Upstream had a SECOND source here: it fetched music.apple.com's web-player JS
+# bundle and regex-extracted the public "AMPWebPlay" developer token Apple ships
+# to every browser, caching it as `harvested_token`. That token is what made the
+# unofficial amp-api rail work without an Apple Developer account.
+#
+# Removed. It was a silent fallback — `resolve_developer_token()` returned it
+# when no generated token existed, so a caller believing it was on the official
+# API could be scraping a credential out of Apple's JS bundle instead. In this
+# build the only developer token is one YOU generate from your own .p8, and its
+# absence is reported rather than papered over.
 
 
 def resolve_developer_token() -> str:
-    """Return a usable developer token, **preferring the generated (paid) one**.
+    """Return the generated (Apple Developer) token, or raise.
 
-    Order: valid generated token → valid cached harvested token → harvest fresh.
-    The generated token is the legit, recommended path; harvesting is the
-    fallback so users without an Apple Developer account still work.
+    There is deliberately no fallback: upstream silently substituted a token
+    scraped from Apple's web-player bundle here. Raising means a caller that
+    needs the official API learns it has no credential instead of being
+    quietly moved onto an unofficial one.
     """
-    try:
-        return get_developer_token()  # generated (paid) — preferred
-    except (FileNotFoundError, ValueError):
-        pass
-    return resolve_web_token()
-
-
-def resolve_web_token() -> str:
-    """A developer token accepted by ``amp-api.music.apple.com`` (the web player's
-    host). This is ALWAYS the harvested ``AMPWebPlay`` token — amp-api rejects a
-    generated (Apple Developer) token with 401, even though it works on the public
-    ``api.music.apple.com``. So every amp-api call uses this, not
-    ``resolve_developer_token`` (which prefers the generated token)."""
-    cached = _load_harvested_token()
-    if cached:
-        return cached
-    token = harvest_developer_token()
-    _save_harvested_token(token)
-    return token
+    return get_developer_token()
 
 
 def has_any_developer_token() -> bool:
-    """True if a developer token is obtainable from either source (generated or
-    harvestable). Used for API-vs-fallback feature detection."""
+    """True if a generated developer token is available (or mintable from a .p8
+    configured). Used for feature detection."""
     try:
         resolve_developer_token()
         return True
     except Exception as exc:
-        # Don't let a network blip during harvest look identical to "no credentials":
-        # log it so a silently-downgraded write rail is at least visible in the logs.
-        logger.warning("has_any_developer_token: couldn't obtain a developer token: %s", exc)
+        logger.debug("has_any_developer_token: no developer token available: %s", exc)
         return False
 
 
@@ -353,9 +195,8 @@ def get_user_preferences() -> dict:
         # "api" is accepted as a back-compat alias for "web". Playback always
         # follows the engine, so there is no separate playback preference.
         "mode": prefs.get("mode", "auto"),
-        # Token storage location is auto-decided by platform (see _keyring_ok),
-        # not a user preference: Windows uses the Credential Locker, macOS/Linux
-        # use 0600 files.
+        # Token storage is not a user preference: secrets live in 0600 files
+        # under the 0700 config dir.
     }
 
 
@@ -401,7 +242,7 @@ def generate_developer_token(expiry_days: int = 180) -> str:
 # The MCP may be used only occasionally, so a passive "expiring soon" warning
 # can arrive after the token has already died. Whenever the generated token is
 # within this many days of expiry AND the signing key (.p8) is present, mint a
-# fresh one on use — the same self-healing the harvested web token already has.
+# fresh one on use, rather than failing on a token that expired while unused.
 _DEV_TOKEN_RENEW_DAYS = 30
 
 
@@ -423,9 +264,9 @@ def get_developer_token() -> str:
     """Get the generated developer token, auto-renewing it when it's within
     ``_DEV_TOKEN_RENEW_DAYS`` of expiry and the signing key is available.
 
-    Raises FileNotFoundError/ValueError when there's no usable token and none can
-    be minted — callers (``resolve_developer_token``) then fall back to the
-    harvested web token."""
+    Raises FileNotFoundError/ValueError when there's no usable token and none
+    can be minted. Callers surface that as "this needs a developer token"; there
+    is no fallback credential in this build."""
     data = developer_token_info()
     if data is not None:
         try:
@@ -720,19 +561,21 @@ def run_auth_server(port: int = 8765) -> Optional[str]:
             self.send_header("Access-Control-Allow-Headers", "Content-Type")
             self.end_headers()
 
+    url = f"http://localhost:{port}/auth.html"
     print(f"Starting authorization server on http://localhost:{port}")
-    print("Opening browser for Apple Music authorization...")
     print()
-    print("1. Click 'Authorize with Apple Music' in the browser")
-    print("2. Sign in with your Apple ID if prompted")
-    print("3. The token will be saved automatically")
+    print("1. Open this URL in your browser:")
+    print(f"       {url}")
+    print("2. Click 'Authorize with Apple Music', and sign in if prompted")
+    print("3. The token is saved automatically, then you can close the tab")
     print()
+    # Deliberately NOT webbrowser.open(): this build never hands a URL to the
+    # operating system's handler. It is one copy-paste in a one-time setup, and
+    # it keeps "never opens a URL" an absolute, testable property rather than a
+    # rule with an exception in it.
 
     server = HTTPServer(("localhost", port), AuthHandler)
     server.timeout = 1  # 1 second timeout for checking stop flag
-
-    # Open browser
-    webbrowser.open(f"http://localhost:{port}/auth.html")
 
     print("Waiting for authorization... (Ctrl+C to cancel)")
     print()

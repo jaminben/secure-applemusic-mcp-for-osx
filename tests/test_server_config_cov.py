@@ -106,7 +106,6 @@ class TestSetPrefGaps:
         assert "preference must be one of" in out and "secure_storage" not in out.split(":")[-1]
 
 
-
 # ---------------------------------------------------------------------------
 # list-storefronts
 # ---------------------------------------------------------------------------
@@ -1022,16 +1021,10 @@ class TestClearCredentials:
 
 class TestAuthActionGaps:
 
-
-
-
-
     def test_unknown_auth_action(self):
         out = server._auth_action("teleport")
         assert "Unknown action" in out
         assert "teleport" in out
-
-
 
     def test_config_action_auth_status_alias(self, mock_config_dir):
         """config(action='auth_status') is also handled."""

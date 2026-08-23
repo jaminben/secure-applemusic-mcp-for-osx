@@ -20,6 +20,22 @@ import os
 from pathlib import Path
 
 
+def _private(path: Path) -> Path:
+    """Create ``path`` 0700 and return it.
+
+    Upstream chmod'd only the config dir and the Chrome profile. The cache root
+    holds the audit log (every library mutation and play), library snapshots,
+    and CSV/JSON exports of the user's library — created 0755/0644, so any other
+    local account could read them. Same treatment for all roots now.
+    """
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        os.chmod(path, 0o700)
+    except OSError:
+        pass
+    return path
+
+
 def _home() -> Path:
     base = os.environ.get("APPLEMUSIC_MCP_HOME")
     return Path(base).expanduser() if base else Path.home()
@@ -34,13 +50,13 @@ def config_dir() -> Path:
 def data_dir() -> Path:
     """Durable app data — the Chrome profile (the signed-in Apple Music session)."""
     env = os.environ.get("APPLEMUSIC_DATA_DIR")
-    return Path(env).expanduser() if env else _home() / ".applemusic-mcp"
+    return _private(Path(env).expanduser() if env else _home() / ".applemusic-mcp")
 
 
 def cache_dir() -> Path:
     """Regenerable state — track cache, exports, snapshots, audit log."""
     env = os.environ.get("APPLEMUSIC_CACHE_DIR")
-    return Path(env).expanduser() if env else _home() / ".cache" / "applemusic-mcp"
+    return _private(Path(env).expanduser() if env else _home() / ".cache" / "applemusic-mcp")
 
 
 def all_state_dirs() -> list[Path]:

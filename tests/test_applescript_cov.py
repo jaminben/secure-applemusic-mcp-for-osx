@@ -543,6 +543,9 @@ def test_delete_folder_and_playlist_and_rename(monkeypatch):
     setrun(monkeypatch, const(True, "ERROR:Folder not found: F"))
     assert asc.delete_folder("F") == (False, "Folder not found: F")
 
+    # delete_playlist now pre-flights an ambiguity check via get_playlists().
+    # With a constant stub the listing comes back unparseable (no rows), which
+    # the guard treats as "couldn't enumerate" and passes through.
     setrun(monkeypatch, const(True, "Deleted playlist: P"))
     assert asc.delete_playlist("P") == (True, "Deleted playlist: P")
     setrun(monkeypatch, const(True, "ERROR:Playlist not found"))
@@ -592,7 +595,9 @@ def test_remove_track_from_playlist(monkeypatch):
 
 def test_remove_from_library(monkeypatch):
     assert asc.remove_from_library() == (False, "Must provide track_name or track_id")
-    setrun(monkeypatch, const(True, "Removed from library: T by A"))
+    # remove_from_library now enumerates matches first and refuses if >1. A
+    # constant stub yields one parseable row, so the removal proceeds.
+    setrun(monkeypatch, const(True, "T|||A"))
     assert asc.remove_from_library("T")[0] is True
     setrun(monkeypatch, const(True, "ERROR:Track not found in library"))
     assert asc.remove_from_library(track_id="X") == (False, "Track not found in library")
@@ -646,41 +651,11 @@ def test_play_track(monkeypatch):
     assert asc.play_track("T") == (False, "Track not found: T")
 
 
-
-
-
-
-
-
-
-
-
-
 def test_check_playing(monkeypatch):
     setrun(monkeypatch, const(True, "playing"))
     assert asc._check_playing() is True
     setrun(monkeypatch, const(True, "paused"))
     assert asc._check_playing() is False
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # ===========================================================================
@@ -793,36 +768,6 @@ def test_get_library_stats(monkeypatch):
     assert ok and stats["track_count"] == 100 and stats["shuffle"] is True
     setrun(monkeypatch, const(True, "only|||three|||parts"))
     assert asc.get_library_stats()[0] is False
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # ===========================================================================

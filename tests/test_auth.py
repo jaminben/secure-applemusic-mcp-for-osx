@@ -11,8 +11,6 @@ import pytest
 from applemusic_mcp import auth
 
 # Captured before conftest's autouse stub replaces it, so these tests can
-# exercise the REAL resolve_web_token logic.
-_REAL_RESOLVE_WEB = auth.resolve_web_token
 
 
 class TestGetConfigDir:
@@ -203,123 +201,20 @@ class TestDeveloperTokenAutoRenew:
         assert auth.get_developer_token()  # mints one instead of raising
 
 
-class _FakeKeyring:
-    """Minimal in-memory stand-in for the keyring module."""
+class TestSecretStoreFiles:
+    """Secrets are 0600 files under the 0700 config dir.
 
-    def __init__(self):
-        self.d = {}
-
-    def get_keyring(self):
-        class _Backend:  # name isn't fail/null → treated as usable
-            pass
-
-        return _Backend()
-
-    def set_password(self, service, key, value):
-        self.d[(service, key)] = value
-
-    def get_password(self, service, key):
-        return self.d.get((service, key))
-
-    def delete_password(self, service, key):
-        self.d.pop((service, key), None)
-
-
-class TestSecretStoreKeychain:
-    """The keychain path of the secret store (file path is covered everywhere else)."""
-
-    def _enable(self, monkeypatch):
-        # Keychain is auto-selected on Windows only (0600 file bits are a no-op
-        # there). Simulate Windows + a working backend.
-        monkeypatch.delenv("APPLEMUSIC_NO_KEYRING", raising=False)
-        monkeypatch.setattr(auth.sys, "platform", "win32")
-        fake = _FakeKeyring()
-        monkeypatch.setattr(auth, "_keyring", fake)
-        return fake
-
-    def test_keychain_off_on_posix_even_with_backend(self, mock_config_dir, monkeypatch):
-        """On macOS/Linux a working backend is still NOT used (per-process ACL is
-        unreliable): the token must be written to a FILE, not the keychain."""
-        monkeypatch.delenv("APPLEMUSIC_NO_KEYRING", raising=False)
-        monkeypatch.setattr(auth.sys, "platform", "darwin")
-        fake = _FakeKeyring()
-        monkeypatch.setattr(auth, "_keyring", fake)
-        auth.secret_set("music_user_token", '{"music_user_token": "x"}')
-        assert auth._secret_file("music_user_token").exists()
-        assert ("applemusic-mcp", "music_user_token") not in fake.d
-
-    def test_round_trip_uses_keychain_not_file(self, mock_config_dir, monkeypatch):
-        fake = self._enable(monkeypatch)
-        auth.secret_set("music_user_token", '{"music_user_token": "tok"}')
-        assert ("applemusic-mcp", "music_user_token") in fake.d
-        # no plaintext file written when the keychain holds it
-        assert not auth._secret_file("music_user_token").exists()
-        assert auth.get_user_token() == "tok"
-        auth.secret_delete("music_user_token")
-        assert auth.secret_get("music_user_token") is None
-
-    def test_migrates_existing_file_into_keychain(self, mock_config_dir, monkeypatch):
-        # Pre-existing plaintext file (an upgrade from the old file-based storage).
-        auth._write_private(auth._secret_file("harvested_token"), '{"token": "h", "expires": 0}')
-        self._enable(monkeypatch)
-        # First read migrates it off disk and into the keychain.
-        assert auth.secret_get("harvested_token") is not None
-        assert not auth._secret_file("harvested_token").exists()
+    Upstream also had a keychain backend, selected on Windows only (POSIX mode
+    bits are a no-op there). This build is macOS-only, so that path was
+    unreachable and both it and the `keyring` dependency were removed. The
+    env guard is kept as a no-op so existing configs/scripts don't break.
+    """
 
     def test_disabled_by_env_uses_file(self, mock_config_dir, monkeypatch):
         monkeypatch.setenv("APPLEMUSIC_NO_KEYRING", "1")
         auth.secret_set("music_user_token", '{"music_user_token": "f"}')
         assert auth._secret_file("music_user_token").exists()
         assert auth.get_user_token() == "f"
-
-    def test_file_wins_over_stale_keychain(self, mock_config_dir, monkeypatch):
-        """The token-loss bug: keychain holds an OLD value (A) and a newer FILE
-        value (B) exists from a keychain-unavailable write. A file's existence
-        means it was the most recent write, so secret_get must return B, not A —
-        and migrate B back into the keychain."""
-        fake = self._enable(monkeypatch)
-        fake.d[("applemusic-mcp", "k")] = "A-stale"
-        auth._write_private(auth._secret_file("k"), "B-newer")
-        assert auth.secret_get("k") == "B-newer"
-        # B was migrated into the keychain and the file removed (single copy).
-        assert fake.d[("applemusic-mcp", "k")] == "B-newer"
-        assert not auth._secret_file("k").exists()
-
-    def test_secret_delete_reports_failure_when_backend_errors(self, mock_config_dir, monkeypatch):
-        """A locked keychain that can't delete must NOT report success."""
-
-        class _StuckKeyring(_FakeKeyring):
-            def delete_password(self, service, key):
-                pass  # pretend it succeeded but the value stays
-
-            def get_password(self, service, key):
-                return self.d.get((service, key))
-
-        monkeypatch.delenv("APPLEMUSIC_NO_KEYRING", raising=False)
-        monkeypatch.setattr(auth.sys, "platform", "win32")  # keychain path (Windows)
-        stuck = _StuckKeyring()
-        stuck.d[("applemusic-mcp", "k")] = "stuck"
-        monkeypatch.setattr(auth, "_keyring", stuck)
-        assert auth.secret_delete("k") is False  # still present → reports failure
-
-
-class TestResolveWebToken:
-    """amp-api needs the harvested web token, never the generated one (which it
-    401s). resolve_web_token must return harvested even when a generated token
-    exists."""
-
-    def test_returns_cached_harvested(self, mock_config_dir, monkeypatch):
-        monkeypatch.setattr(auth, "resolve_web_token", _REAL_RESOLVE_WEB)
-        auth._save_harvested_token("h.token")  # plenty of life left
-        monkeypatch.setattr(
-            auth, "harvest_developer_token", lambda: pytest.fail("should not harvest")
-        )
-        assert auth.resolve_web_token() == "h.token"
-
-    def test_harvests_when_no_cache(self, mock_config_dir, monkeypatch):
-        monkeypatch.setattr(auth, "resolve_web_token", _REAL_RESOLVE_WEB)
-        monkeypatch.setattr(auth, "harvest_developer_token", lambda: "fresh.harvest")
-        assert auth.resolve_web_token() == "fresh.harvest"
 
 
 class TestGetUserToken:

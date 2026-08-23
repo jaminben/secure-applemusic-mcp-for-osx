@@ -743,7 +743,7 @@ def format_output(
         # CSV response inline
         output = io.StringIO()
         if items and "duration" in items[0]:
-            csv_fields = ["name", "duration", "artist", "album", "year", "genre", "id"]
+            csv_fields = ["name", "duration", "artist", "album", "year", "genre", "explicit", "id"]
             if full:
                 csv_fields += [
                     "track_number",
@@ -797,7 +797,16 @@ def format_output(
             file_path = cache_dir / f"{file_prefix}_{timestamp}.csv"
             # Determine fields based on full flag
             if items and "duration" in items[0]:
-                csv_fields = ["name", "duration", "artist", "album", "year", "genre", "id"]
+                csv_fields = [
+                    "name",
+                    "duration",
+                    "artist",
+                    "album",
+                    "year",
+                    "genre",
+                    "explicit",
+                    "id",
+                ]
                 if full:
                     csv_fields += [
                         "track_number",
@@ -836,6 +845,9 @@ def format_output(
                                     "album",
                                     "year",
                                     "genre",
+                                    # Carried so an exported file can still tell a
+                                    # verified-clean track from an unverified one.
+                                    "explicit",
                                     "id",
                                     "track_count",
                                     "release_date",
@@ -910,14 +922,30 @@ def list_exports() -> str:
 
 @mcp.resource("exports://{filename}")
 def read_export(filename: str) -> str:
-    """Read an exported file from the cache directory."""
-    cache_dir = get_cache_dir()
-    file_path = cache_dir / filename
-    if not file_path.exists():
+    """Read an exported file from the cache directory.
+
+    Upstream's containment check was ``(cache_dir / filename).is_relative_to(
+    cache_dir)`` — which is purely lexical, so ``../../.ssh/id_rsa`` passes
+    (the parts still start with cache_dir) — and it ran AFTER ``.exists()``.
+    It was marked unreachable on the assumption that the MCP SDK's URI template
+    never matches a slash. That may hold today, but it is an external control
+    this server does not own, so the check is done properly here: resolve both
+    sides, reject anything absolute or containing '..', and confirm the real
+    path is inside the export directory.
+    """
+    cache_dir = get_cache_dir().resolve()
+    candidate = Path(filename)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        return "Invalid path"
+    file_path = (cache_dir / candidate).resolve()
+    if file_path != cache_dir and cache_dir not in file_path.parents:
+        return "Invalid path"
+    if not file_path.is_file():
         return f"File not found: {filename}"
-    if not file_path.is_relative_to(cache_dir):
-        return "Invalid path"  # pragma: no cover  # unreachable: file_path is always cache_dir/filename, never outside cache_dir
-    return file_path.read_text(encoding="utf-8")
+    try:
+        return file_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return f"Could not read {filename}: {exc}"
 
 
 def get_token_expiration_warning() -> str | None:
@@ -1091,8 +1119,6 @@ def _mode_pinned_native() -> bool:
     return True
 
 
-
-
 # Writes choose their rail by capability: local Music.app for everything it can
 # do, the official API only for a catalog add. There is no unofficial rail.
 # Human labels for the suffix that tells the user which rail a write took.
@@ -1139,14 +1165,6 @@ def _label_write(result: str, rail: str) -> str:
 
 
 # --- playlist mutations over the API engine (cross-platform, no AppleScript) ---
-
-
-
-
-
-
-
-
 
 
 _SESSION_EXPIRED_MSG = (
@@ -1344,14 +1362,6 @@ def _safe_single_match(matches: list[dict], term: str) -> tuple[dict, int]:
     return chosen, len(matches) - 1
 
 
-
-
-
-
-
-
-
-
 def _pick_resolved_song(
     candidates: list[dict], name: str, artist: str = ""
 ) -> tuple[Optional[dict], str]:
@@ -1385,12 +1395,6 @@ def _pick_resolved_song(
             if cn and (nl in cn or cn in nl):
                 return c, "partial"
     return None, ""
-
-
-
-
-
-
 
 
 def _format_applescript_error(raw: str, operation: str = "") -> str:
@@ -5959,6 +5963,15 @@ def _with_clean_note(out: str, note: str, format: str) -> str:
     return f"{note}\n\n{out}"
 
 
+# Columns that must survive into CSV/JSON whenever a clean filter ran. Upstream
+# suppressed the "N could NOT be verified" note for those formats on the grounds
+# that each row carries `explicit` — true for inline JSON, but the CSV field list
+# and the JSON *export file* both dropped the column, so a caller asking for
+# clean_only + csv got a list that reads as vetted with no way to see which rows
+# were never checked.
+_CLEAN_FILTER_FIELDS = ("explicit",)
+
+
 # Cap on catalog lookups per call when verifying content ratings. Web sign-in
 # uses Apple's shared public quota, so an unbounded sweep over a large result
 # set can trip HTTP 429 and leave every remaining track unverified. Better to
@@ -8170,19 +8183,6 @@ def _auth_action(action: str = "status", confirm: bool = False) -> str:
     return f"Unknown action: {action}. Use: status, signin, logout, reset"
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 # =============================================================================
 # Playback transport (local Music.app, macOS)
 # =============================================================================
@@ -8351,8 +8351,6 @@ def _convert_song_url_to_album(url: str) -> Optional[str]:
     except Exception:
         pass
     return None
-
-
 
 
 def _catalog_miss_play(name: str, artist: str, url: str, reveal: bool) -> str:
@@ -9187,8 +9185,6 @@ def _playback_airplay(device_name: str = "") -> str:
         if not devices:
             return "No AirPlay devices found"
         return f"AirPlay devices ({len(devices)}):\n" + "\n".join(f"  - {d}" for d in devices)
-
-
 
 
 def main():

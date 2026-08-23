@@ -7,19 +7,7 @@ import applemusic_mcp.server as server
 # -- HIGH: destructive web ops must not destroy the wrong playlist ----------
 
 
-
-
-
-
-
-
-
-
 # -- HIGH: in-MCP signin must offer the macOS Safari path -------------------
-
-
-
-
 
 
 # -- MEDIUM: off-macOS playlist add must de-dup + honor auto_add -------------
@@ -29,12 +17,6 @@ import types  # noqa: E402
 
 def _ri(input_type, value, artist="", error=None):
     return types.SimpleNamespace(input_type=input_type, value=value, artist=artist, error=error)
-
-
-
-
-
-
 
 
 # -- MEDIUM: native catalog->playlist attach must `duplicate` AT MOST ONCE ---
@@ -86,10 +68,6 @@ def _stub_attach(monkeypatch, add_calls, verify):
 
     monkeypatch.setattr(server, "_smart_as_add_track_to_playlist", fake_add)
     monkeypatch.setattr(server, "_verify_track_in_playlist", verify)
-
-
-
-
 
 
 # -- task #6: native control confirms real state (no false "paused") --------
@@ -174,10 +152,6 @@ def _fake_resolved(api_id="p.1", name="Jazz"):
     import types as _t
 
     return _t.SimpleNamespace(api_id=api_id, applescript_name=name, error=None, fuzzy_match=None)
-
-
-
-
 
 
 def test_confirm_swap_track_requires_exact_name(monkeypatch):

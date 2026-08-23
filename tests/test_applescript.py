@@ -1262,10 +1262,6 @@ class TestUISearchParsing:
             cx, cy = [float(v) for v in pos_str.strip().split(",")]
 
 
-
-
-
-
 class TestIsScreenLocked:
     """Unit tests for is_screen_locked() — mocks Quartz so they run anywhere."""
 
@@ -1278,11 +1274,6 @@ class TestIsScreenLocked:
         monkeypatch.setitem(sys.modules, "Quartz", fake)
 
 
-
-
-
-
-
 class TestGetSearchField:
     """Unit tests for the _get_search_field() dual-path probe."""
 
@@ -1291,11 +1282,6 @@ class TestGetSearchField:
         import applemusic_mcp.applescript as asc
 
         asc._search_field_cache = None
-
-
-
-
-
 
 
 class TestUIPrimitives:
@@ -1315,28 +1301,15 @@ class TestUIPrimitives:
 
     # --- _focus_search_field -------------------------------------------------
 
-
-
-
     # --- _wait_for_top_results ----------------------------------------------
-
-
 
     # --- _parse_top_results -------------------------------------------------
 
-
-
     # --- _find_top_result_position ------------------------------------------
-
-
 
     # --- _hover_then_click_subelement ---------------------------------------
 
-
-
     # --- _verify_track_playing ----------------------------------------------
-
-
 
 
 class TestPopoverSongRowScoring:
@@ -1357,18 +1330,6 @@ class TestPopoverSongRowScoring:
         import applemusic_mcp.applescript as asc
 
         monkeypatch.setattr(asc, "run_applescript", lambda *_a, **_k: (True, fixture))
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 @pytest.mark.skipif(
@@ -1660,5 +1621,3 @@ end tell"""
             f"'Talking Heads', got {resolved_artist!r}. Disambiguation "
             f"may have picked a different artist's 'Heaven'."
         )
-
-

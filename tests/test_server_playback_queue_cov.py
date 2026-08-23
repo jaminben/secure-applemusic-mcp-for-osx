@@ -62,8 +62,6 @@ def _resolved_name(value="Strobe", artist="deadmau5"):
 # ===========================================================================
 
 
-
-
 # ===========================================================================
 # Playback dispatcher — remaining uncovered branches
 # ===========================================================================
@@ -76,8 +74,6 @@ class TestPlaybackDispatcher:
         monkeypatch.setattr(server, "_playback_play", lambda *a, **k: "native result")
         assert server.playback(action="play", track="X") == "native result"
 
-
-
     def test_engine_override_invalid_value_errors(self, monkeypatch):
         _native(monkeypatch)
         out = server.playback(action="play", track="X", engine="bogus")
@@ -88,8 +84,6 @@ class TestPlaybackDispatcher:
         _native(monkeypatch)
         out = server.playback(action="control")
         assert "control param" in out.lower() or "Error" in out
-
-
 
     def test_control_no_applescript_needs_browser(self, monkeypatch):
         """control with the native engine active but no AppleScript → needs web."""
@@ -104,17 +98,6 @@ class TestPlaybackDispatcher:
         monkeypatch.setattr(server, "_playback_control", lambda a, s=0: "Playback: play")
         out = server.playback(action="control", control="play")
         assert "Playback: play" in out
-
-
-
-
-
-
-
-
-
-
-
 
     def test_settings_no_applescript(self, monkeypatch):
         """settings with the native engine active but no AppleScript → needs web."""
@@ -135,9 +118,6 @@ class TestPlaybackDispatcher:
         _native(monkeypatch)
         out = server.playback(action="reveal")
         assert "required" in out.lower()
-
-
-
 
     def test_reveal_native_routes(self, monkeypatch):
         """Lines 7055-7057: reveal in native macOS mode."""
@@ -305,8 +285,6 @@ class TestConvertSongUrlToAlbum:
 # ===========================================================================
 
 
-
-
 # ===========================================================================
 # _catalog_miss_play  (lines 7169-7212)
 # ===========================================================================
@@ -314,16 +292,10 @@ class TestConvertSongUrlToAlbum:
 
 class TestCatalogMissPlay:
 
-
     def test_no_url_returns_found_message(self):
         """Line 7185: no url -> found message without playing."""
         out = server._catalog_miss_play("Strobe", "deadmau5", "", reveal=False)
         assert "Strobe" in out and "deadmau5" in out
-
-
-
-
-
 
 
 # ===========================================================================
@@ -342,12 +314,6 @@ class TestPlaybackPlay:
         self._setup(monkeypatch)
         out = server.playback(action="play", url="https://music.apple.com/...", track="Song")
         assert "Error" in out and "url" in out.lower()
-
-
-
-
-
-
 
     # --- target count checks ---
 
@@ -642,7 +608,6 @@ class TestPlaybackPlay:
         out = server.playback(action="play", track="X")
         assert "Error" in out and "resolve" in out.lower()
 
-
     def test_catalog_id_track_catalog_miss(self, monkeypatch):
         """Line 7429: catalog ID -> UI play fails -> catalog_miss_play."""
         self._setup(monkeypatch)
@@ -773,8 +738,6 @@ class TestPlaybackPlay:
         out = server.playback(action="play", track="Strobe")
         assert "not found" in out.lower()
 
-
-
     def test_track_in_catalog_ui_none_catalog_miss(self, monkeypatch):
         """Lines 7513-7514: UI returns (False, None) -> fall through to _catalog_miss_play."""
         self._setup(monkeypatch)
@@ -897,7 +860,6 @@ class TestPlaybackPlay:
         )
         server.playback(action="play", track="Strobe", add_to_library=True, reveal=True)
         assert len(revealed) == 1
-
 
     def test_track_not_found_anywhere(self, monkeypatch):
         """Line 7525: not found in library, catalog, or UI."""
@@ -2024,7 +1986,6 @@ class TestRemainingCoverage:
         assert "not found" in out.lower()
 
     # --- Lines 7470, 7477: catalog song filter continues ---
-
 
     def test_track_catalog_artist_mismatch_skips(self, monkeypatch):
         """Line 7477: catalog song name matches but artist doesn't -> continue."""

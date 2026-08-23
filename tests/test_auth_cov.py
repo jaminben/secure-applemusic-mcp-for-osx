@@ -25,8 +25,6 @@ from applemusic_mcp import auth
 
 # Captured before conftest's autouse stub replaces it, so these tests can drive
 # the REAL resolve_web_token / harvest logic.
-_REAL_RESOLVE_WEB = auth.resolve_web_token
-_REAL_HARVEST = auth.harvest_developer_token
 
 
 def _write_signing_config(config_dir):
@@ -49,36 +47,10 @@ def _write_signing_config(config_dir):
     )
 
 
-class _FakeKeyring:
-    """Minimal in-memory stand-in for the keyring module."""
-
-    def __init__(self):
-        self.d = {}
-
-    def get_keyring(self):
-        class _Backend:  # name isn't fail/null → treated as usable
-            pass
-
-        return _Backend()
-
-    def set_password(self, service, key, value):
-        self.d[(service, key)] = value
-
-    def get_password(self, service, key):
-        return self.d.get((service, key))
-
-    def delete_password(self, service, key):
-        self.d.pop((service, key), None)
-
-
-def _enable_keychain(monkeypatch, fake=None):
-    """Flip the secret store onto an in-memory keychain backend. Keychain is
-    auto-selected on Windows only, so simulate win32."""
-    monkeypatch.delenv("APPLEMUSIC_NO_KEYRING", raising=False)
-    monkeypatch.setattr(auth.sys, "platform", "win32")
-    fake = fake or _FakeKeyring()
-    monkeypatch.setattr(auth, "_keyring", fake)
-    return fake
+# (Upstream's _FakeKeyring stand-in and _enable_keychain helper lived here. The
+# keyring backend was Windows-only and this build is macOS-only, so the code
+# they exercised — and the `keyring` dependency — were removed. Secrets are
+# 0600 files under the 0700 config dir; see TestWritePrivate and TestSecretStore.)
 
 
 # --------------------------------------------------------------------------- #
@@ -99,58 +71,6 @@ class TestWritePrivate:
         auth._write_private(p, "x")
         assert p.read_text() == "x"
         assert (p.stat().st_mode & 0o777) == 0o600
-
-
-# --------------------------------------------------------------------------- #
-# _keyring_ok — the opt-in gate and its except branch                          #
-# --------------------------------------------------------------------------- #
-class TestKeyringOk:
-    def test_false_when_env_guard_set(self, mock_config_dir, monkeypatch):
-        monkeypatch.setenv("APPLEMUSIC_NO_KEYRING", "1")
-        assert auth._keyring_ok() is False
-
-    def test_false_when_keyring_module_missing(self, mock_config_dir, monkeypatch):
-        monkeypatch.delenv("APPLEMUSIC_NO_KEYRING", raising=False)
-        monkeypatch.setattr(auth, "_keyring", None)
-        assert auth._keyring_ok() is False
-
-    def test_false_on_posix_even_with_backend(self, mock_config_dir, monkeypatch):
-        # macOS/Linux always use files (per-process ACL is unreliable), even with
-        # a working backend present.
-        monkeypatch.delenv("APPLEMUSIC_NO_KEYRING", raising=False)
-        monkeypatch.setattr(auth.sys, "platform", "darwin")
-        monkeypatch.setattr(auth, "_keyring", _FakeKeyring())
-        assert auth._keyring_ok() is False
-
-    def test_false_when_backend_is_fail_or_null(self, mock_config_dir, monkeypatch):
-        monkeypatch.delenv("APPLEMUSIC_NO_KEYRING", raising=False)
-        monkeypatch.setattr(auth.sys, "platform", "win32")
-
-        class _NullKeyring(_FakeKeyring):
-            def get_keyring(self):
-                class fail_Backend:  # name contains "fail" → treated as unusable
-                    pass
-
-                return fail_Backend()
-
-        monkeypatch.setattr(auth, "_keyring", _NullKeyring())
-        assert auth._keyring_ok() is False
-
-    def test_false_when_get_keyring_raises(self, mock_config_dir, monkeypatch):
-        """The except branch: a backend probe that blows up → file."""
-        monkeypatch.delenv("APPLEMUSIC_NO_KEYRING", raising=False)
-        monkeypatch.setattr(auth.sys, "platform", "win32")
-
-        class _BoomKeyring:
-            def get_keyring(self):
-                raise RuntimeError("backend exploded")
-
-        monkeypatch.setattr(auth, "_keyring", _BoomKeyring())
-        assert auth._keyring_ok() is False
-
-    def test_true_with_usable_backend(self, mock_config_dir, monkeypatch):
-        _enable_keychain(monkeypatch)
-        assert auth._keyring_ok() is True
 
 
 # --------------------------------------------------------------------------- #
@@ -180,34 +100,6 @@ class TestSecretStore:
         monkeypatch.setattr(Path, "read_text", boom)
         assert auth.secret_get("k") is None
 
-    def test_set_drops_stale_keychain_copy_on_file_write(self, mock_config_dir, monkeypatch):
-        """Keychain not used for write (POSIX) but a keyring exists: the
-        now-stale keychain copy is best-effort deleted."""
-        monkeypatch.delenv("APPLEMUSIC_NO_KEYRING", raising=False)
-        monkeypatch.setattr(auth.sys, "platform", "darwin")
-        fake = _FakeKeyring()
-        fake.d[("applemusic-mcp", "k")] = "stale"
-        monkeypatch.setattr(auth, "_keyring", fake)
-
-        auth.secret_set("k", "fresh")
-
-        assert auth._secret_file("k").read_text() == "fresh"
-        assert ("applemusic-mcp", "k") not in fake.d  # stale keychain copy purged
-
-    def test_delete_swallows_backend_error(self, mock_config_dir, monkeypatch):
-        """delete_password raising is caught (lines 125-126); deletion still
-        verified by the post-read, which returns None → True."""
-
-        class _RaiseOnDelete(_FakeKeyring):
-            def delete_password(self, service, key):
-                raise RuntimeError("locked")
-
-            def get_password(self, service, key):
-                return None  # nothing there once we look
-
-        fake = _enable_keychain(monkeypatch, _RaiseOnDelete())
-        assert auth.secret_delete("k") is True
-
 
 class TestHasUserToken:
     def test_true_when_present(self, mock_config_dir):
@@ -231,147 +123,19 @@ class TestDeveloperTokenInfo:
         assert auth.developer_token_info() is None
 
 
-# --------------------------------------------------------------------------- #
-# Harvested (fallback) developer token                                         #
-# --------------------------------------------------------------------------- #
-_VALID_AMP = "eyJ0eXAiOiJKV1QabcDEF123_-.eyJpc3MiOiJBTVBXZWJQbGF5xyz789_-.SiGnAtUrE_-0"
-
-
-class TestExtractDeveloperToken:
-    def test_extracts_amp_token(self):
-        bundle = f"var x=1; const t='{_VALID_AMP}'; doStuff();"
-        assert auth.extract_developer_token(bundle) == _VALID_AMP
-
-    def test_raises_when_absent(self):
-        with pytest.raises(RuntimeError, match="not found"):
-            auth.extract_developer_token("no token in here")
-
-
 class _FakeResp:
     def __init__(self, text):
         self.text = text
-
-
-class TestHarvestDeveloperToken:
-    def test_full_harvest_flow(self, monkeypatch):
-        monkeypatch.setattr(auth, "harvest_developer_token", _REAL_HARVEST)
-        calls = []
-
-        def fake_get(url, headers=None, timeout=None):
-            calls.append(url)
-            if url == auth._HARVEST_BROWSE_URL:
-                return _FakeResp("<script src='/assets/index~deadbeef99.js'></script>")
-            return _FakeResp(f"chunk; tok='{_VALID_AMP}';")
-
-        monkeypatch.setattr(auth.requests, "get", fake_get)
-        assert auth.harvest_developer_token() == _VALID_AMP
-        assert calls == [
-            auth._HARVEST_BROWSE_URL,
-            auth._HARVEST_ORIGIN + "/assets/index~deadbeef99.js",
-        ]
-
-    def test_raises_when_bundle_not_found(self, monkeypatch):
-        monkeypatch.setattr(auth, "harvest_developer_token", _REAL_HARVEST)
-        monkeypatch.setattr(
-            auth.requests, "get", lambda *a, **k: _FakeResp("<html>no bundle</html>")
-        )
-        with pytest.raises(RuntimeError, match="web-player JS bundle"):
-            auth.harvest_developer_token()
-
-
-class TestHarvestedTokenFile:
-    def test_path_name(self, mock_config_dir):
-        assert auth._harvested_token_file() == mock_config_dir / "harvested_token.json"
-
-
-class TestLoadHarvestedToken:
-    def test_none_when_absent(self, mock_config_dir):
-        assert auth._load_harvested_token() is None
-
-    def test_returns_token_with_runway(self, mock_config_dir):
-        exp = time.time() + 60 * 86400  # 60 days out — well past the 15-day floor
-        auth.secret_set("harvested_token", json.dumps({"token": "good", "expires": exp}))
-        assert auth._load_harvested_token() == "good"
-
-    def test_none_when_near_expiry(self, mock_config_dir):
-        exp = time.time() + 5 * 86400  # inside the 15-day refresh window
-        auth.secret_set("harvested_token", json.dumps({"token": "stale", "expires": exp}))
-        assert auth._load_harvested_token() is None
-
-    def test_none_on_malformed_json(self, mock_config_dir):
-        auth.secret_set("harvested_token", "{bad json")
-        assert auth._load_harvested_token() is None
-
-    def test_none_on_missing_token_key(self, mock_config_dir):
-        # expires far out, but no "token" key → KeyError → None (line 208-210).
-        auth.secret_set("harvested_token", json.dumps({"expires": time.time() + 99 * 86400}))
-        assert auth._load_harvested_token() is None
-
-
-class TestSaveHarvestedToken:
-    def test_uses_jwt_exp_claim(self, mock_config_dir):
-        exp = int(time.time() + 100 * 86400)
-        token = jwt.encode({"iss": "AMPWebPlay", "exp": exp}, "secret", algorithm="HS256")
-        auth._save_harvested_token(token)
-        stored = json.loads(auth.secret_get("harvested_token"))
-        assert stored["token"] == token
-        assert stored["expires"] == exp
-        assert stored["source"] == "harvested"
-
-    def test_falls_back_to_30_days_on_bad_token(self, mock_config_dir):
-        """jwt.decode blows up on garbage → 30-day fallback exp (lines 216-218)."""
-        before = time.time()
-        auth._save_harvested_token("not-a-jwt")
-        stored = json.loads(auth.secret_get("harvested_token"))
-        days = (stored["expires"] - before) / 86400
-        assert 29 < days < 31
 
 
 # --------------------------------------------------------------------------- #
 # resolve_developer_token / resolve_web_token / has_any_developer_token        #
 # --------------------------------------------------------------------------- #
 class TestResolveTokens:
-    def test_resolve_dev_prefers_generated(self, mock_config_dir, monkeypatch):
-        _write_signing_config(mock_config_dir)
-        monkeypatch.setattr(auth, "resolve_web_token", lambda: pytest.fail("should not fall back"))
-        tok = auth.resolve_developer_token()
-        # Real ES256 JWT minted from our throwaway key.
-        hdr = jwt.get_unverified_header(tok)
-        assert hdr["alg"] == "ES256" and hdr["kid"] == "KEY1234567"
-
-    def test_resolve_dev_falls_back_to_web(self, mock_config_dir, monkeypatch):
-        # No generated token, no signing key → FileNotFoundError → web token.
-        monkeypatch.setattr(auth, "resolve_web_token", _REAL_RESOLVE_WEB)
-        monkeypatch.setattr(auth, "harvest_developer_token", lambda: "WEBTOK")
-        assert auth.resolve_developer_token() == "WEBTOK"
-
-    def test_resolve_web_returns_cached(self, mock_config_dir, monkeypatch):
-        monkeypatch.setattr(auth, "resolve_web_token", _REAL_RESOLVE_WEB)
-        auth._save_harvested_token(
-            jwt.encode({"exp": int(time.time() + 99 * 86400)}, "s", algorithm="HS256")
-        )
-        monkeypatch.setattr(auth, "harvest_developer_token", lambda: pytest.fail("no harvest"))
-        assert auth.resolve_web_token()  # served from cache
-
-    def test_resolve_web_harvests_when_empty(self, mock_config_dir, monkeypatch):
-        monkeypatch.setattr(auth, "resolve_web_token", _REAL_RESOLVE_WEB)
-        monkeypatch.setattr(auth, "harvest_developer_token", lambda: "FRESH")
-        assert auth.resolve_web_token() == "FRESH"
-        # Saved for next time.
-        assert json.loads(auth.secret_get("harvested_token"))["token"] == "FRESH"
 
     def test_has_any_true(self, mock_config_dir, monkeypatch):
         _write_signing_config(mock_config_dir)
         assert auth.has_any_developer_token() is True
-
-    def test_has_any_false_when_all_sources_fail(self, mock_config_dir, monkeypatch):
-        monkeypatch.setattr(auth, "resolve_web_token", _REAL_RESOLVE_WEB)
-
-        def boom():
-            raise RuntimeError("offline")
-
-        monkeypatch.setattr(auth, "harvest_developer_token", boom)
-        assert auth.has_any_developer_token() is False
 
 
 # --------------------------------------------------------------------------- #
@@ -550,7 +314,6 @@ class TestRunAuthServer:
         """Drive every handler branch against a real running server, then post a
         valid token to stop it and assert the captured return value."""
         _write_signing_config(mock_config_dir)  # so get_developer_token() mints one
-        monkeypatch.setattr(auth.webbrowser, "open", lambda *a, **k: None)
 
         port = _free_port()
         host = f"localhost:{port}".encode()
@@ -666,7 +429,6 @@ class TestRunAuthServer:
     def test_keyboard_interrupt_returns_none(self, mock_config_dir, monkeypatch):
         """Ctrl-C during the serve loop → None, and auth.html is still cleaned up."""
         _write_signing_config(mock_config_dir)
-        monkeypatch.setattr(auth.webbrowser, "open", lambda *a, **k: None)
 
         class _KIServer:
             def __init__(self, addr, handler):
@@ -685,7 +447,6 @@ class TestRunAuthServer:
     def test_auth_html_unlink_oserror_is_swallowed(self, mock_config_dir, monkeypatch):
         """A wedged FS that can't remove auth.html must not crash teardown (727-728)."""
         _write_signing_config(mock_config_dir)
-        monkeypatch.setattr(auth.webbrowser, "open", lambda *a, **k: None)
 
         class _KIServer:
             def __init__(self, addr, handler):

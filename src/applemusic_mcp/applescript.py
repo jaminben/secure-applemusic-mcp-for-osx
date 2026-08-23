@@ -489,8 +489,6 @@ def get_current_track() -> tuple[bool, dict]:
     return True, track_info
 
 
-
-
 def get_volume() -> tuple[bool, int | str]:
     """Get current volume (0-100).
 
@@ -510,10 +508,6 @@ def set_volume(volume: int) -> tuple[bool, str]:
     """Set volume (0-100)."""
     volume = max(0, min(100, volume))
     return run_applescript(f'tell application "Music" to set sound volume to {volume}')
-
-
-
-
 
 
 def get_shuffle() -> tuple[bool, bool | str]:
@@ -1173,6 +1167,50 @@ def delete_folder(folder_path: str) -> tuple[bool, str]:
     return success, output
 
 
+def resolve_playlist_exact_or_unique(name: str) -> tuple[bool, str]:
+    """Resolve a playlist name to ONE unambiguous playlist, or refuse.
+
+    Destructive operations must not act on a guess. ``_find_playlist_applescript``
+    falls back to ``name contains``, which picks the FIRST substring match — so
+    "delete Work" could delete "Workout". Upstream's (now-removed) web rail
+    refused an ambiguous delete and listed the candidates; the native rail never
+    did. This is that guard, ported.
+
+    Returns ``(True, exact_name)`` when there is an exact case-insensitive match
+    or exactly one substring match, else ``(False, message)`` naming the
+    candidates so the caller can pick one.
+    """
+    wanted = (name or "").strip().lower()
+    if not wanted:
+        return False, "No playlist name given"
+    ok, playlists = get_playlists()
+    names = (
+        [p.get("name", "") for p in playlists if p.get("name")]
+        if ok and isinstance(playlists, list)
+        else []
+    )
+    if not names:
+        # Couldn't enumerate (Music not running, automation denied, empty read).
+        # Pass through and let the operation's own script report the real error
+        # rather than inventing a "not found" from a failed listing. Ambiguity
+        # needs two or more matches, so passing through is never less safe.
+        return True, name
+    exact = [n for n in names if n.strip().lower() == wanted]
+    if exact:
+        return True, exact[0]
+    partial = [n for n in names if wanted in n.strip().lower()]
+    if len(partial) == 1:
+        return True, partial[0]
+    if not partial:
+        return False, f"No playlist matching '{name}'"
+    shown = ", ".join(f"'{n}'" for n in sorted(partial)[:10])
+    more = f" (and {len(partial) - 10} more)" if len(partial) > 10 else ""
+    return False, (
+        f"'{name}' matches multiple playlists: {shown}{more}. "
+        "Pass the exact name — a destructive action won't guess."
+    )
+
+
 def delete_playlist(playlist_name: str) -> tuple[bool, str]:
     """Delete a playlist by name.
 
@@ -1182,7 +1220,10 @@ def delete_playlist(playlist_name: str) -> tuple[bool, str]:
     Returns:
         Tuple of (success, message or error)
     """
-    safe_name = _escape_for_applescript(playlist_name)
+    ok, resolved = resolve_playlist_exact_or_unique(playlist_name)
+    if not ok:
+        return False, resolved
+    safe_name = _escape_for_applescript(resolved)
     script = f"""
     tell application "Music"
 {_find_playlist_applescript(safe_name)}
@@ -1207,7 +1248,10 @@ def rename_playlist(playlist_name: str, new_name: str) -> tuple[bool, str]:
     Returns:
         Tuple of (success, message or error)
     """
-    safe_old = _escape_for_applescript(playlist_name)
+    ok, resolved = resolve_playlist_exact_or_unique(playlist_name)
+    if not ok:
+        return False, resolved
+    safe_old = _escape_for_applescript(resolved)
     safe_new = _escape_for_applescript(new_name)
     script = f"""
     tell application "Music"
@@ -1385,15 +1429,58 @@ def remove_track_from_playlist(
     return success, output
 
 
+def find_library_tracks_matching(
+    track_name: str, artist: Optional[str] = None, limit: int = 11
+) -> tuple[bool, list[dict]]:
+    """List library tracks whose name contains ``track_name`` (+ optional artist).
+
+    Used to detect ambiguity BEFORE a permanent removal. Returns
+    ``(ok, [{name, artist}])``; capped at ``limit`` because the caller only
+    needs to know "one, or more than one".
+    """
+    clause = _track_filter_clause(track_name, artist)
+    if clause is None:
+        return False, []
+    script = f"""
+    tell application "Music"
+        set out to ""
+        set n to 0
+        repeat with t in (every track of library playlist 1 {clause})
+            set out to out & (name of t) & "|||" & (artist of t) & linefeed
+            set n to n + 1
+            if n >= {int(limit)} then exit repeat
+        end repeat
+        return out
+    end tell
+    """
+    ok, output = run_applescript(script)
+    if not ok:
+        return False, []
+    rows = []
+    for line in (output or "").split("\n"):
+        line = line.strip()
+        if not line or "|||" not in line:
+            continue
+        name, _, art = line.partition("|||")
+        rows.append({"name": name, "artist": art})
+    return True, rows
+
+
 def remove_from_library(
     track_name: str = "", artist: Optional[str] = None, track_id: Optional[str] = None
 ) -> tuple[bool, str]:
-    """Remove a track from the library entirely.
+    """Remove a track from the library entirely. PERMANENT.
 
     Args:
-        track_name: Name of the track to remove (partial match)
+        track_name: Name of the track (see ambiguity note below)
         artist: Optional artist name to disambiguate (partial match)
         track_id: Optional persistent ID (exact match, overrides name/artist)
+
+    Ambiguity: the underlying selector is ``name contains``, which takes the
+    FIRST match — so removing "Love" could permanently delete an unrelated
+    track. Before deleting by name we enumerate the matches and refuse if there
+    is more than one, listing them so the caller can be specific. A
+    ``track_id`` is exact and skips the check.
 
     Returns:
         Tuple of (success, message or error)
@@ -1401,6 +1488,19 @@ def remove_from_library(
     track_filter = _track_filter_clause(track_name, artist, track_id)
     if track_filter is None:
         return False, "Must provide track_name or track_id"
+
+    if not track_id:
+        ok, matches = find_library_tracks_matching(track_name, artist)
+        if ok and len(matches) > 1:
+            shown = "; ".join(f"{m['name']} - {m['artist']}" for m in matches[:10])
+            more = " (and more)" if len(matches) > 10 else ""
+            return False, (
+                f"'{track_name}' matches {len(matches)} library tracks: {shown}{more}. "
+                "Removing from your library is permanent, so pass the exact track name "
+                "(and artist), or a persistent ID."
+            )
+        if ok and not matches:
+            return False, "Track not found in library"
 
     script = f"""
     tell application "Music"
@@ -1631,42 +1731,10 @@ def play_track(track_name: str, artist: Optional[str] = None) -> tuple[bool, str
     return success, output
 
 
-
-
-
-
-
-
-
-
 def _check_playing() -> bool:
     """Check if Music is currently playing."""
     ok, state = run_applescript('tell application "Music" to get player state')
     return ok and state.strip() == "playing"
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # =============================================================================
@@ -2265,6 +2333,7 @@ def get_library_stats() -> tuple[bool, dict]:
 # =============================================================================
 # Library snapshot / diff
 # =============================================================================
+
 
 def library_snapshot() -> tuple[bool, dict]:
     """Capture a full snapshot of the Music library for integrity checking.

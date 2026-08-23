@@ -136,8 +136,6 @@ class TestGetLibraryPlaylists:
         assert "API Error" in result or "401" in result
 
 
-
-
 @pytest.mark.skipif(
     sys.platform != "darwin",
     reason="_playlist_rename is defined inside `if APPLESCRIPT_AVAILABLE:` "
@@ -163,7 +161,6 @@ class TestRenamePlaylist:
         assert "Renamed" in result
         assert "Old Name" in result
         assert "New Name" in result
-
 
     def test_requires_new_name(self, monkeypatch):
         """Should error when new_name not provided."""
@@ -191,7 +188,6 @@ class TestCreateFolder:
         assert "My Folder" in result
         assert "ABCD1234" in result
 
-
     def test_requires_name(self, monkeypatch):
         """Should error when name not provided."""
         monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
@@ -217,7 +213,6 @@ class TestMoveToFolder:
 
         assert "My Playlist" in result
         assert "My Folder" in result
-
 
     def test_requires_playlist_name(self, monkeypatch):
         """Should error when playlist name not provided."""
@@ -474,7 +469,6 @@ class TestCheckAuthStatus:
         assert "Developer Token" in result
 
 
-
 class TestAuthTool:
     """The conversational `auth` tool: status / signin / logout / reset."""
 
@@ -483,7 +477,6 @@ class TestAuthTool:
             json.dumps({"token": dev, "expires": time.time() + 86400 * 60})
         )
         (d / "music_user_token.json").write_text(json.dumps({"music_user_token": user}))
-
 
     def test_status_flags_forced_tokenless(
         self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
@@ -502,12 +495,9 @@ class TestAuthTool:
         out = server.library(action="add", track="Some Song")
         assert "FORCE_TOKENLESS" in out and "Unset it" in out
 
-
     def test_status_not_signed_in(self, mock_config_dir):
         out = server.config(action="status")
         assert "signin" in out.lower()
-
-
 
     def test_logout_requires_confirm(self, mock_config_dir, mock_developer_token, mock_user_token):
         self._tokens(mock_config_dir, mock_developer_token, mock_user_token)
@@ -516,13 +506,11 @@ class TestAuthTool:
         # nothing deleted without confirm
         assert (mock_config_dir / "music_user_token.json").exists()
 
-
     def test_reset_requires_confirm(self, mock_config_dir, mock_developer_token, mock_user_token):
         self._tokens(mock_config_dir, mock_developer_token, mock_user_token)
         out = server.config(action="reset")
         assert "confirm=True" in out
         assert (mock_config_dir / "developer_token.json").exists()
-
 
     def test_unknown_action(self):
         assert "Unknown action" in server.config(action="bogus")
@@ -532,13 +520,10 @@ class TestModePreference:
     """The single engine mode (playback follows it) must be switchable via the
     tool, not just by hand-editing config.json."""
 
-
-
     def test_playback_pref_removed(self, mock_config_dir):
         # The separate playback knob is gone; setting it is rejected.
         out = server.config(action="set-pref", preference="playback", string_value="browser")
         assert "must be one of" in out.lower() or "preference must be" in out.lower()
-
 
     def test_mode_missing_value_lists_choices(self, mock_config_dir):
         out = server.config(action="set-pref", preference="mode")
@@ -1706,7 +1691,6 @@ class TestUserJourneyAPIOnly:
         assert "Favorites" in result
         assert "Workout Mix" in result
 
-
     @responses.activate
     def test_first_10_actions_regular_user(
         self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
@@ -1830,7 +1814,6 @@ class TestUserJourneyAPIOnly:
 
 class TestUserJourneyFuzzyMatching:
     """Integration tests for fuzzy matching across all entity types."""
-
 
     @responses.activate
     def test_fuzzy_track_search_in_catalog(
@@ -2102,9 +2085,6 @@ class TestApiModeReadRouting:
         result = server.library(action="rate", rate_action="get", track="Money")
         assert "native" in result.lower()
         mock_asc.get_rating.assert_not_called()
-
-
-
 
 
 class TestAlbumDisambiguation:

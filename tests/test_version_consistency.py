@@ -3,7 +3,7 @@
 `scripts/check_versions.py` guards the pre-release gate and `release.yml`, but both
 of those fire late — at release time, when a mismatch is already committed. Running
 it here means CI catches drift on every PR instead, which is where it actually slips
-in: 0.18.0 shipped with `uv.lock` still at 0.17.0, and `server.json` sat at `1.0.0`
+in: upstream 0.18.0 shipped with `uv.lock` still at 0.17.0
 through several releases before anyone looked.
 
 The second half of the file checks the checker. A guard that cannot fail is worse
@@ -36,7 +36,6 @@ def test_repo_version_surfaces_agree():
     "path_fragment,label",
     [
         ("uv.lock", "uv.lock"),
-        ("server.json", "server.json"),
         ("SKILL.md", "SKILL.md"),
         ("__init__.py", "__init__.py"),
     ],
@@ -75,10 +74,8 @@ def test_reports_every_mismatch_not_just_the_first(capsys):
     real_read = mod._read
     ver = mod._pyproject_version()
     mod._read = lambda rel: (
-        real_read(rel).replace(ver, "0.0.1-stale")
-        if ("uv.lock" in rel or "server.json" in rel)
-        else real_read(rel)
+        real_read(rel).replace(ver, "0.0.1-stale") if "uv.lock" in rel else real_read(rel)
     )
     assert mod.main() == 1
     err = capsys.readouterr().err
-    assert "uv.lock" in err and "server.json" in err
+    assert "uv.lock" in err

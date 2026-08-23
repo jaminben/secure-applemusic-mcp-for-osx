@@ -3,14 +3,15 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "applemusic-mcp"
-version = "0.19.1"
-description = "MCP server for Apple Music — cross-platform library, playlists, and playback; no Apple Developer account required"
+name = "secure-applemusic-mcp-for-osx"
+version = "0.1.0"
+description = "Hardened macOS-only MCP server for Apple Music: no Accessibility, no browser automation, no stored credentials by default"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [
-    { name = "Eric Pheterson" }
+    { name = "Eric Pheterson" },  # original author of applemusic-mcp
+    { name = "jaminben" },
 ]
 keywords = ["mcp", "apple-music", "musickit", "playlist", "claude"]
 classifiers = [
@@ -19,8 +20,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Operating System :: MacOS",
-    "Operating System :: Microsoft :: Windows",
-    "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -38,29 +37,9 @@ dependencies = [
     "pyjwt[crypto]>=2.8.0",
     "requests>=2.31.0",
     "cryptography>=41.0.0",
-    # Browser engine for sign-in / token capture / web playback (drives a local
-    # Chrome against music.apple.com). REQUIRED off macOS — it's the only path there
-    # (no Music.app, no Safari harvest). On macOS it's OPTIONAL: Safari sign-in
-    # (`login --safari`), native Music.app playback, and the API cover everything, so
-    # the default Mac install skips the ~500 MB Playwright download. Mac users who
-    # want the Chrome web player install the `browser` extra (see optional-deps).
-    "playwright>=1.44.0; sys_platform != 'darwin'",
-    # OS keychain for token storage (macOS Keychain / Windows Credential Locker /
-    # Linux Secret Service). Falls back to a 0600 file when no backend is available
-    # (e.g. headless servers), so this never blocks the API path.
-    "keyring>=24.0.0",
-    # macOS only: Quartz powers the canonical screen-locked / no-active-console
-    # detection (CGSessionCopyCurrentDictionary). Without it that check silently
-    # degrades to an AppleScript heuristic. macOS-gated so it never touches
-    # Windows/Linux installs.
-    "pyobjc-framework-Quartz>=10.0; sys_platform == 'darwin'",
 ]
 
 [project.optional-dependencies]
-# macOS users who want the Chrome web player (instead of Safari sign-in + native
-# Music.app playback) install this: `pip install 'applemusic-mcp[browser]'`.
-# Off macOS, Playwright is a hard dependency (above) and this extra is redundant.
-browser = ["playwright>=1.44.0"]
 dev = [
     "pytest>=7.0.0",
     "pytest-mock>=3.0.0",
@@ -72,12 +51,13 @@ dev = [
 ]
 
 [project.scripts]
-applemusic-mcp = "applemusic_mcp.cli:main"
+secure-applemusic-mcp = "applemusic_mcp.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/epheterson/applemusic-mcp"
-Repository = "https://github.com/epheterson/applemusic-mcp"
-Issues = "https://github.com/epheterson/applemusic-mcp/issues"
+Homepage = "https://github.com/jaminben/secure-applemusic-mcp-for-osx"
+Repository = "https://github.com/jaminben/secure-applemusic-mcp-for-osx"
+Issues = "https://github.com/jaminben/secure-applemusic-mcp-for-osx/issues"
+"Upstream project" = "https://github.com/epheterson/applemusic-mcp"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/applemusic_mcp"]
