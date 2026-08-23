@@ -16,11 +16,11 @@ def _reset_throttle_state():
     """The 429 marker is module-level process state (it has to be — it outlives a
     single call). Clear it between tests so a throttle asserted in one test can't
     make the next one's genuine "not found" report as rate-limited."""
-    from applemusic_mcp import amp_api
+    from applemusic_mcp import rate_limit
 
-    amp_api.reset_throttle_state()
+    rate_limit.reset_throttle_state()
     yield
-    amp_api.reset_throttle_state()
+    rate_limit.reset_throttle_state()
 
 
 @pytest.fixture(autouse=True)

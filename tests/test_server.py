@@ -136,42 +136,6 @@ class TestGetLibraryPlaylists:
         assert "API Error" in result or "401" in result
 
 
-class TestCreatePlaylist:
-    """Tests for create_playlist function (API path)."""
-
-    @responses.activate
-    def test_creates_playlist_successfully(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Should create playlist via API and return ID."""
-        # Disable AppleScript to test API path
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-
-        # Setup tokens
-        dev_token_file = mock_config_dir / "developer_token.json"
-        with open(dev_token_file, "w") as f:
-            json.dump({"token": mock_developer_token, "expires": time.time() + 86400 * 60}, f)
-
-        user_token_file = mock_config_dir / "music_user_token.json"
-        with open(user_token_file, "w") as f:
-            json.dump({"music_user_token": mock_user_token}, f)
-
-        # With a developer token, off-macOS create takes the SANCTIONED rail
-        # (api.music.apple.com), not the grey amp-api host.
-        responses.add(
-            responses.POST,
-            "https://api.music.apple.com/v1/me/library/playlists",
-            json={"data": [{"id": "p.newplaylist123"}]},
-            status=201,
-        )
-
-        result = server.playlist(
-            action="create", name="My New Playlist", description="A description"
-        )
-
-        assert "My New Playlist" in result
-        assert "p.newplaylist123" in result
-        assert "Apple Music API" in result  # sanctioned-rail label
 
 
 @pytest.mark.skipif(
@@ -200,16 +164,6 @@ class TestRenamePlaylist:
         assert "Old Name" in result
         assert "New Name" in result
 
-    def test_off_macos_routes_to_web(self, monkeypatch):
-        """Off macOS, rename routes to the web rail (no longer a macOS-only error)."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-        monkeypatch.setattr(server, "_write_rail", lambda *a, **k: "web")
-        monkeypatch.setattr(server.amp_api, "resolve_playlist_id", lambda name, **k: "p.r1")
-        monkeypatch.setattr(server.amp_api, "rename_playlist", lambda pid, new: (True, "ok"))
-
-        result = server.playlist(action="rename", playlist="Old Name", new_name="New Name")
-
-        assert "Renamed" in result and "macOS" not in result
 
     def test_requires_new_name(self, monkeypatch):
         """Should error when new_name not provided."""
@@ -237,17 +191,6 @@ class TestCreateFolder:
         assert "My Folder" in result
         assert "ABCD1234" in result
 
-    def test_off_macos_routes_to_web(self, monkeypatch):
-        """Off macOS, folder create routes to the web rail (no macOS-only error)."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-        monkeypatch.setattr(server, "_write_rail", lambda *a, **k: "web")
-        monkeypatch.setattr(
-            server.amp_api, "create_folder", lambda name, parent_id=None: (True, "f.fld1")
-        )
-
-        result = server.playlist(action="create_folder", name="My Folder")
-
-        assert "My Folder" in result and "macOS" not in result
 
     def test_requires_name(self, monkeypatch):
         """Should error when name not provided."""
@@ -275,19 +218,6 @@ class TestMoveToFolder:
         assert "My Playlist" in result
         assert "My Folder" in result
 
-    def test_off_macos_routes_to_web(self, monkeypatch):
-        """Off macOS, move routes to the web rail (no longer a macOS-only error)."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-        monkeypatch.setattr(server, "_write_rail", lambda *a, **k: "web")
-        monkeypatch.setattr(server.amp_api, "resolve_playlist_id", lambda name, **k: "p.abc")
-        monkeypatch.setattr(server.amp_api, "resolve_folder_id", lambda name: "f.fld1")
-        monkeypatch.setattr(
-            server.amp_api, "move_playlist_to_folder", lambda pid, fid: (True, "ok")
-        )
-
-        result = server.playlist(action="move", playlist="My Playlist", name="My Folder")
-
-        assert "Moved" in result and "macOS" not in result
 
     def test_requires_playlist_name(self, monkeypatch):
         """Should error when playlist name not provided."""
@@ -543,22 +473,6 @@ class TestCheckAuthStatus:
         assert "OK" in result
         assert "Developer Token" in result
 
-    def test_reports_expiring_token(self, mock_config_dir, mock_developer_token, mock_user_token):
-        """Should warn about expiring token."""
-        # Setup expiring token
-        dev_token_file = mock_config_dir / "developer_token.json"
-        with open(dev_token_file, "w") as f:
-            json.dump({"token": mock_developer_token, "expires": time.time() + 86400 * 10}, f)
-
-        user_token_file = mock_config_dir / "music_user_token.json"
-        with open(user_token_file, "w") as f:
-            json.dump({"music_user_token": mock_user_token}, f)
-
-        result = server.config(action="auth-status")
-
-        # Keyless generated token (no .p8 to auto-renew) → escalating nudge.
-        assert "expires in" in result.lower()
-        assert "login --dev" in result
 
 
 class TestAuthTool:
@@ -570,19 +484,6 @@ class TestAuthTool:
         )
         (d / "music_user_token.json").write_text(json.dumps({"music_user_token": user}))
 
-    def test_status_ready(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        self._tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        # The verdict now hinges on the real mutation path (amp-api), so control it.
-        monkeypatch.setattr(server.amp_api, "session_status", lambda: "ok")
-        with patch.object(server, "get_headers", return_value={}):
-            with patch("requests.get") as mg:
-                mg.return_value.status_code = 200
-                out = server.config(action="status")
-        assert "Mode:" in out and "Ready" in out
-        assert "Web fallback writes" in out and "OK" in out
-        assert "Writes:" in out  # resolved write rail is surfaced
 
     def test_status_flags_forced_tokenless(
         self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
@@ -601,22 +502,6 @@ class TestAuthTool:
         out = server.library(action="add", track="Some Song")
         assert "FORCE_TOKENLESS" in out and "Unset it" in out
 
-    def test_status_tokens_present_but_mutations_unauthorized(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        # The exact trap on the WEB rail: tokens look fine, reads work, but the
-        # write path 401s. Status must NOT claim add works. Force the web rail
-        # (off macOS, no generated dev token) so the verdict hinges on the session.
-        self._tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-        monkeypatch.setattr(server, "_has_developer_token", lambda: False)
-        monkeypatch.setattr(server.amp_api, "session_status", lambda: "expired")
-        with patch.object(server, "get_headers", return_value={}):
-            with patch("requests.get") as mg:
-                mg.return_value.status_code = 200
-                out = server.config(action="status")
-        assert "Ready" not in out
-        assert "unauthorized" in out.lower() and "signin" in out.lower()
 
     def test_status_not_signed_in(self, mock_config_dir):
         out = server.config(action="status")
@@ -1821,204 +1706,6 @@ class TestUserJourneyAPIOnly:
         assert "Favorites" in result
         assert "Workout Mix" in result
 
-    @responses.activate
-    def test_first_5_actions_basic_playlist_workflow(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Getting started: search, list playlists, get tracks, add to playlist."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-        self._setup_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-
-        # 1. Search catalog
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/catalog/us/search",
-            json={
-                "results": {
-                    "songs": {
-                        "data": [
-                            {
-                                "id": "song1",
-                                "attributes": {
-                                    "name": "Bohemian Rhapsody",
-                                    "artistName": "Queen",
-                                    "albumName": "A Night at the Opera",
-                                    "durationInMillis": 354000,
-                                    "releaseDate": "1975-10-31",
-                                    "genreNames": ["Rock"],
-                                },
-                            }
-                        ]
-                    }
-                }
-            },
-            status=200,
-        )
-        result = server.catalog(action="search", query="Bohemian Rhapsody")
-        assert "Bohemian Rhapsody" in result
-
-        # 2. List playlists
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/me/library/playlists",
-            json={
-                "data": [
-                    {"id": "p.rock", "attributes": {"name": "Classic Rock", "canEdit": True}},
-                ]
-            },
-            status=200,
-        )
-        result = server.playlist(action="list")
-        assert "Classic Rock" in result
-
-        # 3. Get playlist tracks
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/me/library/playlists",
-            json={
-                "data": [
-                    {"id": "p.rock", "attributes": {"name": "Classic Rock", "canEdit": True}},
-                ]
-            },
-            status=200,
-        )
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/me/library/playlists/p.rock/tracks",
-            json={
-                "data": [
-                    {
-                        "id": "i.track1",
-                        "attributes": {
-                            "name": "Stairway to Heaven",
-                            "artistName": "Led Zeppelin",
-                            "albumName": "Led Zeppelin IV",
-                            "durationInMillis": 482000,
-                        },
-                    }
-                ]
-            },
-            status=200,
-        )
-        result = server.playlist(action="tracks", playlist="Classic Rock")
-        assert "Stairway to Heaven" in result
-
-        # 4. Search library
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/me/library/search",
-            json={
-                "results": {
-                    "library-songs": {
-                        "data": [
-                            {
-                                "id": "i.lib1",
-                                "attributes": {
-                                    "name": "Hotel California",
-                                    "artistName": "Eagles",
-                                    "albumName": "Hotel California",
-                                    "durationInMillis": 391000,
-                                },
-                            }
-                        ]
-                    }
-                }
-            },
-            status=200,
-        )
-        result = server.library(action="search", query="Hotel California")
-        assert "Hotel California" in result
-
-        # 5. Add track to playlist (via catalog search + add)
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/me/library/playlists",
-            json={
-                "data": [{"id": "p.rock", "attributes": {"name": "Classic Rock", "canEdit": True}}]
-            },
-            status=200,
-        )
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/catalog/us/search",
-            json={
-                "results": {
-                    "songs": {
-                        "data": [
-                            {
-                                "id": "cat123",
-                                "attributes": {
-                                    "name": "Dream On",
-                                    "artistName": "Aerosmith",
-                                    "albumName": "Aerosmith",
-                                    "durationInMillis": 267000,
-                                    "releaseDate": "1973-01-01",
-                                    "genreNames": ["Rock"],
-                                },
-                            }
-                        ]
-                    }
-                }
-            },
-            status=200,
-        )
-        responses.add(
-            responses.POST,
-            "https://api.music.apple.com/v1/me/library",
-            json={},
-            status=202,
-        )
-        responses.add(
-            responses.POST,
-            "https://api.music.apple.com/v1/me/library/playlists/p.rock/tracks",
-            json={},
-            status=201,
-        )
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/me/library/playlists/p.rock/tracks",
-            json={
-                "data": [
-                    {
-                        "id": "i.track1",
-                        "attributes": {"name": "Dream On", "artistName": "Aerosmith"},
-                    }
-                ]
-            },
-            status=200,
-        )
-        # api engine adds over amp-api: resolve playlist, catalog search, add tracks
-        _AMP = "https://amp-api.music.apple.com/v1"
-        responses.add(
-            responses.GET,
-            f"{_AMP}/me/library/playlists",
-            json={
-                "data": [{"id": "p.rock", "attributes": {"name": "Classic Rock", "canEdit": True}}]
-            },
-            status=200,
-        )
-        responses.add(
-            responses.GET,
-            f"{_AMP}/catalog/us/search",
-            json={
-                "results": {
-                    "songs": {
-                        "data": [
-                            {
-                                "id": "cat123",
-                                "attributes": {"name": "Dream On", "artistName": "Aerosmith"},
-                            }
-                        ]
-                    }
-                }
-            },
-            status=200,
-        )
-        responses.add(responses.POST, f"{_AMP}/me/library/playlists/p.rock/tracks", status=204)
-        result = server.playlist(
-            action="add", playlist="Classic Rock", track="Dream On", artist="Aerosmith"
-        )
-        assert "Dream On" in result or "Added" in result or "error" not in result.lower()
 
     @responses.activate
     def test_first_10_actions_regular_user(
@@ -2144,126 +1831,6 @@ class TestUserJourneyAPIOnly:
 class TestUserJourneyFuzzyMatching:
     """Integration tests for fuzzy matching across all entity types."""
 
-    @responses.activate
-    def test_fuzzy_playlist_workflow(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """User workflow with fuzzy-named playlist: get tracks, add, remove."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-        self._setup_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-
-        # Playlist has special characters
-        playlist_data = [
-            {"id": "p.fuzzy1", "attributes": {"name": "🎸 Rock & Roll Classics", "canEdit": True}}
-        ]
-
-        # 1. Get tracks from fuzzy-named playlist (typed without emoji, "and" instead of "&")
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/me/library/playlists",
-            json={"data": playlist_data},
-            status=200,
-        )
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/me/library/playlists/p.fuzzy1/tracks",
-            json={
-                "data": [
-                    {
-                        "id": "i.t1",
-                        "attributes": {
-                            "name": "Sweet Child O' Mine",
-                            "artistName": "Guns N' Roses",
-                            "albumName": "Appetite for Destruction",
-                            "durationInMillis": 356000,
-                        },
-                    }
-                ]
-            },
-            status=200,
-        )
-
-        result = server.playlist(action="tracks", playlist="Rock and Roll Classics")
-        assert "Sweet Child" in result
-        assert "Fuzzy match" in result or "fuzzy" in result.lower()
-
-        # 2. Add to fuzzy-named playlist
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/me/library/playlists",
-            json={"data": playlist_data},
-            status=200,
-        )
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/catalog/us/search",
-            json={
-                "results": {
-                    "songs": {
-                        "data": [
-                            {
-                                "id": "cat456",
-                                "attributes": {
-                                    "name": "Back in Black",
-                                    "artistName": "AC/DC",
-                                    "albumName": "Back in Black",
-                                    "durationInMillis": 255000,
-                                    "releaseDate": "1980-07-25",
-                                    "genreNames": ["Rock"],
-                                },
-                            }
-                        ]
-                    }
-                }
-            },
-            status=200,
-        )
-        responses.add(
-            responses.POST,
-            "https://api.music.apple.com/v1/me/library",
-            json={},
-            status=202,
-        )
-        responses.add(
-            responses.POST,
-            "https://api.music.apple.com/v1/me/library/playlists/p.fuzzy1/tracks",
-            json={},
-            status=201,
-        )
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/me/library/playlists/p.fuzzy1/tracks",
-            json={"data": [{"id": "i.new", "attributes": {"name": "Back in Black"}}]},
-            status=200,
-        )
-        # add routes through the api engine: catalog search + add POST hit amp-api
-        responses.add(
-            responses.GET,
-            "https://amp-api.music.apple.com/v1/catalog/us/search",
-            json={
-                "results": {
-                    "songs": {
-                        "data": [
-                            {
-                                "id": "cat456",
-                                "attributes": {"name": "Back in Black", "artistName": "AC/DC"},
-                            }
-                        ]
-                    }
-                }
-            },
-            status=200,
-        )
-        responses.add(
-            responses.POST,
-            "https://amp-api.music.apple.com/v1/me/library/playlists/p.fuzzy1/tracks",
-            status=204,
-        )
-
-        result = server.playlist(
-            action="add", playlist="Rock and Roll Classics", track="Back in Black"
-        )
-        assert "Back in Black" in result or "Added" in result
 
     @responses.activate
     def test_fuzzy_track_search_in_catalog(
@@ -2536,126 +2103,8 @@ class TestApiModeReadRouting:
         assert "native" in result.lower()
         mock_asc.get_rating.assert_not_called()
 
-    @responses.activate
-    def test_remove_in_api_mode_deletes_via_api(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_write_rail", lambda *a, **k: "web")
-        self._setup_tokens(mock_config_dir, mock_developer_token, mock_user_token)
 
-        mock_asc = MagicMock()
-        monkeypatch.setattr(server, "asc", mock_asc)
 
-        responses.add(
-            responses.GET,
-            "https://amp-api.music.apple.com/v1/me/library/search",
-            json={
-                "results": {
-                    "library-songs": {
-                        "data": [
-                            {
-                                "id": "i.toremove",
-                                "attributes": {"name": "Money", "artistName": "Pink Floyd"},
-                            }
-                        ]
-                    }
-                }
-            },
-            status=200,
-        )
-        responses.add(
-            responses.DELETE,
-            "https://amp-api.music.apple.com/v1/me/library/songs/i.toremove",
-            status=204,
-        )
-
-        result = server.library(action="remove", track="Money")
-        assert "Removed" in result and "Money" in result
-        mock_asc.remove_from_library.assert_not_called()
-
-    @responses.activate
-    def test_add_by_ids_in_api_mode(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """api mode: a p.xxx playlist id is used directly (no name lookup) and a
-        library track id is added as type library-songs."""
-        # Off macOS + a web session → the add takes the web (amp-api) rail.
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-        monkeypatch.setattr(server, "_has_developer_token", lambda: False)
-        monkeypatch.setattr(server, "_has_user_token", lambda: True)
-        self._setup_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-
-        responses.add(
-            responses.POST,
-            "https://amp-api.music.apple.com/v1/me/library/playlists/p.rock/tracks",
-            status=204,
-        )
-        # The add now re-reads the playlist to report what actually landed.
-        responses.add(
-            responses.GET,
-            "https://amp-api.music.apple.com/v1/me/library/playlists/p.rock/tracks",
-            json={"data": []},
-            status=200,
-        )
-        result = server.playlist(action="add", playlist="p.rock", track="i.lib1")
-        assert "Added 1 track" in result
-        import json as _json
-
-        post = [c for c in responses.calls if c.request.method == "POST"][-1]
-        body = _json.loads(post.request.body)
-        assert body["data"][0] == {"id": "i.lib1", "type": "library-songs"}
-
-    @responses.activate
-    def test_remove_in_api_mode_never_fans_out(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Data-loss guard: a short/common term that substring-matches many
-        library songs must delete EXACTLY ONE (exact title preferred), not all."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_write_rail", lambda *a, **k: "web")
-        self._setup_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        monkeypatch.setattr(server, "asc", MagicMock())
-
-        # "Love" matches three titles; one is an exact match.
-        responses.add(
-            responses.GET,
-            "https://amp-api.music.apple.com/v1/me/library/search",
-            json={
-                "results": {
-                    "library-songs": {
-                        "data": [
-                            {
-                                "id": "i.1",
-                                "attributes": {"name": "Crazy in Love", "artistName": "Beyoncé"},
-                            },
-                            {
-                                "id": "i.2",
-                                "attributes": {"name": "Love", "artistName": "Lana Del Rey"},
-                            },
-                            {
-                                "id": "i.3",
-                                "attributes": {"name": "Love On Top", "artistName": "Beyoncé"},
-                            },
-                        ]
-                    }
-                }
-            },
-            status=200,
-        )
-        # Only the exact-title song (i.2) may be deleted.
-        deleted = responses.add(
-            responses.DELETE,
-            "https://amp-api.music.apple.com/v1/me/library/songs/i.2",
-            status=204,
-        )
-
-        result = server.library(action="remove", track="Love")
-        # Exactly one DELETE, and it was the exact-title match.
-        delete_calls = [c for c in responses.calls if c.request.method == "DELETE"]
-        assert len(delete_calls) == 1
-        assert "i.2" in delete_calls[0].request.url
-        assert "2 other" in result  # warns about the other matches
 
 
 class TestAlbumDisambiguation:

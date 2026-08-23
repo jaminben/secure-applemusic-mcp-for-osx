@@ -736,32 +736,9 @@ class TestWriteRail:
         for op in ("create", "delete", "rename", "move", "remove"):
             assert server._write_rail(op) == "native"
 
-    def test_macos_catalog_add_needs_api(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.delenv("APPLEMUSIC_FORCE_TOKENLESS", raising=False)
-        monkeypatch.setattr(server, "_has_developer_token", lambda: True)
-        assert server._write_rail("add", catalog=True) == "sanctioned"
-        monkeypatch.setattr(server, "_has_developer_token", lambda: False)
-        assert server._write_rail("add", catalog=True) == "web"
-        # a non-catalog add on macOS stays native (AppleScript)
-        assert server._write_rail("add", catalog=False) == "native"
 
-    def test_off_macos_dev_token_is_sanctioned(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-        monkeypatch.setattr(server, "_has_developer_token", lambda: True)
-        assert server._write_rail("create") == "sanctioned"
-        assert server._write_rail("add") == "sanctioned"
 
-    def test_off_macos_no_dev_token_is_web(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-        monkeypatch.setattr(server, "_has_developer_token", lambda: False)
-        assert server._write_rail("create") == "web"
 
-    def test_off_macos_gap_ops_always_web(self, monkeypatch):
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-        monkeypatch.setattr(server, "_has_developer_token", lambda: True)  # even with a dev token
-        for op in ("delete", "remove", "rename", "move", "create_folder"):
-            assert server._write_rail(op) == "web"
 
     def test_label_write_appends_only_on_success(self):
         assert (
@@ -1699,55 +1676,6 @@ class TestSmartAsAddTrackToPlaylist:
 
 
 class TestAutoSearchAndAddToPlaylist:
-    @responses.activate
-    def test_success_api_created(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        # Catalog search
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/catalog/us/search",
-            json={
-                "results": {
-                    "songs": {
-                        "data": [
-                            {
-                                "id": "cat123",
-                                "attributes": {"name": "Hey Jude", "artistName": "The Beatles"},
-                            }
-                        ]
-                    }
-                }
-            },
-            status=200,
-        )
-        # Add to library
-        responses.add(
-            responses.POST,
-            "https://api.music.apple.com/v1/me/library",
-            status=202,
-        )
-        # Resolve to an API-created playlist → sanctioned dev-token POST
-        monkeypatch.setattr(
-            server.amp_api,
-            "resolve_playlist",
-            lambda name, api_created_only=True: {
-                "id": "p.rock",
-                "name": "Rock Hits",
-                "canEdit": True,
-            },
-        )
-        responses.add(
-            responses.POST,
-            "https://api.music.apple.com/v1/me/library/playlists/p.rock/tracks",
-            status=204,
-        )
-        ok, msg, steps = server._auto_search_and_add_to_playlist(
-            "Hey Jude", "The Beatles", "Rock Hits"
-        )
-        assert ok is True
-        assert "Hey Jude" in msg
 
 
     @responses.activate
@@ -1800,78 +1728,7 @@ class TestAutoSearchAndAddToPlaylist:
         assert ok is False
 
 
-    @responses.activate
-    def test_playlist_id_provided_skips_lookup(
-        self, mock_config_dir, mock_developer_token, mock_user_token
-    ):
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/catalog/us/search",
-            json={
-                "results": {
-                    "songs": {
-                        "data": [
-                            {"id": "c1", "attributes": {"name": "Song", "artistName": "Artist"}}
-                        ]
-                    }
-                }
-            },
-            status=200,
-        )
-        responses.add(
-            responses.POST,
-            "https://api.music.apple.com/v1/me/library",
-            status=202,
-        )
-        responses.add(
-            responses.POST,
-            "https://api.music.apple.com/v1/me/library/playlists/p.known/tracks",
-            status=204,
-        )
-        ok, msg, steps = server._auto_search_and_add_to_playlist(
-            "Song", "Artist", "My Playlist", playlist_id="p.known"
-        )
-        assert ok is True
 
-    @responses.activate
-    def test_add_to_playlist_fails(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        # dev-token POST 500s, then the web-session fallback also fails → error.
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/catalog/us/search",
-            json={
-                "results": {
-                    "songs": {
-                        "data": [
-                            {"id": "c1", "attributes": {"name": "Song", "artistName": "Artist"}}
-                        ]
-                    }
-                }
-            },
-            status=200,
-        )
-        responses.add(
-            responses.POST,
-            "https://api.music.apple.com/v1/me/library",
-            status=202,
-        )
-        responses.add(
-            responses.POST,
-            "https://api.music.apple.com/v1/me/library/playlists/p.known/tracks",
-            status=500,
-        )
-        monkeypatch.setattr(
-            server.amp_api, "add_tracks", lambda pid, items: (False, "status 403: forbidden")
-        )
-        ok, msg, steps = server._auto_search_and_add_to_playlist(
-            "Song", "Artist", "My Playlist", playlist_id="p.known"
-        )
-        assert ok is False
-        assert "Failed to add to playlist" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -2517,23 +2374,7 @@ class TestRateLimitSurfacing:
     resolvers swallow non-200 into [], so a 429 has to be surfaced explicitly or
     it reads as "no such song"."""
 
-    def test_api_error_maps_429_to_the_real_explanation(self):
-        """A raw "429 Client Error" implies retrying works. It doesn't."""
-        resp = requests.Response()
-        resp.status_code = 429
-        exc = requests.exceptions.HTTPError("429 Client Error: Too Many Requests", response=resp)
-        msg = server._api_error(exc)
-        assert "rolling" in msg and "--dev" in msg
-        assert "Client Error" not in msg
-        assert server.amp_api.throttled_recently() is True
 
-    def test_api_error_passes_other_failures_through(self):
-        resp = requests.Response()
-        resp.status_code = 500
-        exc = requests.exceptions.HTTPError("500 Server Error", response=resp)
-        msg = server._api_error(exc)
-        assert msg == "API Error: 500 Server Error"
-        assert server.amp_api.throttled_recently() is False
 
     def test_api_error_without_a_response_still_renders(self):
         msg = server._api_error(requests.exceptions.ConnectionError("connection refused"))
@@ -2554,20 +2395,7 @@ class TestRateLimitSurfacing:
         result = server.catalog(action="search", query="Money")
         assert "429" in result and "rolling" in result
 
-    def test_catalog_miss_reason_prefers_the_throttle(self):
-        assert server._catalog_miss_reason("Not found in catalog") == "Not found in catalog"
-        server.amp_api.note_status(429)
-        assert "429" in server._catalog_miss_reason("Not found in catalog")
 
-    def test_catalog_miss_reason_costs_no_request(self, monkeypatch):
-        """On the miss path of a bulk loop, a probe per miss is exactly what you
-        can't afford while throttled — so it must not call session_status()."""
-        monkeypatch.setattr(
-            server.amp_api,
-            "session_status",
-            lambda: pytest.fail("_catalog_miss_reason must not spend a request"),
-        )
-        assert server._catalog_miss_reason("Not found in catalog") == "Not found in catalog"
 
 
 # ---------------------------------------------------------------------------
@@ -2733,31 +2561,6 @@ class TestCatalogResolveIsrc:
         assert "Malformed, not sent (1)" in result
         assert "junk" in result
 
-    @responses.activate
-    def test_429_stops_early_and_keeps_partial_results(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """Later batches can only extend the window — stop, but don't throw away
-        the work that already succeeded."""
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        monkeypatch.setattr(server, "get_storefront", lambda: "us")
-        isrcs = [f"GBAYM95{i:05d}" for i in range(75)]
-        responses.add(
-            responses.GET,
-            _ISRC_URL,
-            json={"data": [_isrc_song(i, f"id{i}", f"Track {i}") for i in isrcs[:25]]},
-            status=200,
-        )
-        responses.add(responses.GET, _ISRC_URL, json={"errors": []}, status=429)
-        result = server.catalog(action="resolve_isrc", isrcs=",".join(isrcs))
-        assert "Resolved 25/75" in result
-        assert "429" in result
-        # 50 unknown: the batch that 429'd, plus the batch never sent.
-        assert "50 ISRC(s) were never asked about" in result
-        assert "UNKNOWN, not 'not in the catalog'" in result
-        assert "Not in the us catalog" not in result  # never-asked != absent
-        assert len(responses.calls) == 2  # stopped; did not attempt the third batch
-        assert server.amp_api.throttled_recently() is True
 
     @responses.activate
     def test_429_in_json_format_sets_the_flag(
@@ -2802,31 +2605,6 @@ class TestCatalogResolveIsrc:
         result = server.catalog(action="resolve", query="GBAYM9500001")
         assert "Resolved 1/1" in result
 
-    @responses.activate
-    def test_resolved_ids_feed_straight_into_playlist_add(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """The output is only useful if the IDs are directly addable."""
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        monkeypatch.setattr(server, "get_storefront", lambda: "us")
-        responses.add(
-            responses.GET,
-            _ISRC_URL,
-            json={"data": [_isrc_song("GBAYM9500001", "1234567890", "Wonderwall")]},
-            status=200,
-        )
-        payload = json.loads(
-            server.catalog(action="resolve_isrc", isrcs="GBAYM9500001", format="json")
-        )
-        catalog_id = payload["resolved"]["GBAYM9500001"]["id"]
-        added = []
-        monkeypatch.setattr(server.amp_api, "get_tracks", lambda pid: [])
-        monkeypatch.setattr(
-            server.amp_api, "add_tracks", lambda pid, items: (added.extend(items), (True, "ok"))[1]
-        )
-        result = server._playlist_add_api("p.abc123", catalog_id, "", auto_add=True)
-        assert "Added" in result
-        assert added == [catalog_id]
 
     @responses.activate
     def test_unknown_action_lists_the_canonical_name(self, mock_config_dir):
@@ -2977,21 +2755,6 @@ class TestCatalogMatchTracks:
         result = server.catalog(action="match", tracks="A,B,C", max_tracks=1)
         assert "Matched 1/1" in result
 
-    def test_throttle_stops_and_marks_the_rest_unknown(self, monkeypatch):
-        """Never-asked is UNKNOWN, not 'not in the catalog' — the whole point of #42."""
-        calls = []
-
-        def throttled(n, a):
-            calls.append(n)
-            server.amp_api.note_status(429)
-            return None, server._THROTTLED_REASON, None
-
-        monkeypatch.setattr(server, "_find_matching_catalog_song", throttled)
-        result = server.catalog(action="match", tracks="A Song,B Song,C Song")
-        assert len(calls) == 1  # stopped immediately
-        assert "Never asked (3)" in result
-        assert "UNKNOWN, not absent" in result
-        assert "429" in result
 
     def test_json_format(self, monkeypatch):
         monkeypatch.setattr(
@@ -3080,11 +2843,6 @@ class TestThrottleHonesty:
     """Fixing the advice in one place and leaving it stale elsewhere would have the
     tool contradicting its own docs."""
 
-    def test_server_search_records_the_api_rail(self, monkeypatch, mock_config_dir):
-        """server.py talks to api.music.apple.com, not amp-api."""
-        server.amp_api.note_status(429, server.amp_api.API)
-        assert server.amp_api.throttled_recently(rail=server.amp_api.API) is True
-        assert server.amp_api.throttled_recently(rail=server.amp_api.WEB) is False
 
     def test_no_stale_wait_a_moment_advice_anywhere(self):
         """Apple's window is rolling; 'wait a moment and retry' is wrong AND makes
@@ -3100,57 +2858,10 @@ class TestThrottleHonesty:
         ]
         assert offenders == []
 
-    def test_401_while_throttled_admits_it_cannot_tell(self, monkeypatch):
-        """session_status() short-circuits to 'throttled' without a probe, so the
-        expired-vs-unwritable check genuinely can't run — say that instead of
-        confidently blaming the playlist's origin."""
-        monkeypatch.setattr(server.amp_api, "get_tracks", lambda pid: [])
-        monkeypatch.setattr(
-            server.amp_api, "add_tracks", lambda pid, items: (False, "status 403 — nope")
-        )
-        monkeypatch.setattr(
-            server.amp_api,
-            "search_catalog_songs",
-            lambda q, n: [{"id": "1", "name": "Some Song", "artist": "A"}],
-        )
-        server.amp_api.note_status(429, server.amp_api.WEB)
-        result = server._playlist_add_api("p.abc123", "Some Song", "", auto_add=True)
-        assert "Can't tell whether your session expired" in result
-        assert "created in Music.app" not in result
 
-    def test_401_when_not_throttled_still_diagnoses(self, monkeypatch):
-        monkeypatch.setattr(server.amp_api, "get_tracks", lambda pid: [])
-        monkeypatch.setattr(
-            server.amp_api, "add_tracks", lambda pid, items: (False, "status 403 — nope")
-        )
-        monkeypatch.setattr(
-            server.amp_api,
-            "search_catalog_songs",
-            lambda q, n: [{"id": "1", "name": "Some Song", "artist": "A"}],
-        )
-        monkeypatch.setattr(server.amp_api, "session_status", lambda: "ok")
-        result = server._playlist_add_api("p.abc123", "Some Song", "", auto_add=True)
-        assert "created in Music.app" in result
 
     def test_titles_sent_to_resolve_isrc_point_at_match(self):
         result = server.catalog(action="resolve_isrc", isrcs="Yesterday, Wonderwall")
         assert "action='match'" in result
         assert "USABC1234567" in result  # shows what an ISRC looks like
 
-    def test_remove_path_401_while_throttled_admits_it_cannot_tell(self, monkeypatch):
-        """Same ambiguity as add — the remove path got the same fix."""
-        monkeypatch.setattr(
-            server.amp_api, "resolve_playlist_id", lambda n, api_created_only: "p.1"
-        )
-        monkeypatch.setattr(
-            server.amp_api,
-            "get_tracks",
-            lambda pid: [{"relationship_id": "i.1", "name": "Some Song", "artist": "X"}],
-        )
-        monkeypatch.setattr(
-            server.amp_api, "remove_track", lambda pid, rid: (False, "status 401 — nope")
-        )
-        server.amp_api.note_status(429, server.amp_api.WEB)
-        result = server._playlist_remove_api("My Playlist", "Some Song")
-        assert "Can't tell whether your session expired" in result
-        assert "created in Music.app" not in result

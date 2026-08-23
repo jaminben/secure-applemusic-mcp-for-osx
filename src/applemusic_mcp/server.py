@@ -44,7 +44,7 @@ from .auth import (
     secret_delete,
 )
 from . import applescript as asc
-from . import amp_api
+from . import rate_limit
 from .track_cache import get_track_cache, get_cache_dir
 from . import audit_log
 from . import __version__ as _pkg_version
@@ -1093,54 +1093,40 @@ def _mode_pinned_native() -> bool:
 
 
 
-# Writes choose their rail by CREDENTIAL + capability, independent of the playback
-# `mode`. Choosing web *playback* must not force writes onto the grey rail when the
-# user holds a developer token.
-#
-# Ops whose only non-web (legit) implementation is macOS AppleScript — off macOS
-# the public API can't do them (delete 401s, move/rename have no public endpoint),
-# so they fall to the web (amp-api) rail there.
-_WEB_ONLY_OFF_MAC_OPS = {
-    "delete",
-    "remove",
-    "rename",
-    "move",
-    "create_folder",
-    "delete_folder",
-    "rename_folder",
-}
-
+# Writes choose their rail by capability: local Music.app for everything it can
+# do, the official API only for a catalog add. There is no unofficial rail.
 # Human labels for the suffix that tells the user which rail a write took.
 _RAIL_LABELS = {
     "native": "via Music.app",
     "sanctioned": "via Apple Music API",
-    "web": "via web player",
 }
 
 
 def _write_rail(op: str, *, catalog: bool = False) -> str:
-    """Pick the write rail for ``op`` — INDEPENDENT of the playback mode.
+    """Pick the write rail for ``op``.
 
     Returns one of:
-      ``native``     – AppleScript on macOS (tokenless, local, fully legit)
-      ``sanctioned`` – Apple Music API with a generated developer token (official)
-      ``web``        – amp-api with the harvested web token (community path; used
-                       only for ops the public API can't do, or with no dev token)
+      ``native``     – Apple Events to the local Music.app (tokenless, local)
+      ``sanctioned`` – the official Apple Music API with a generated developer
+                       token, used only for adding a catalog track the user
+                       does not already own
+      ``none``       – the operation cannot be performed in this configuration
 
-    Prefers the most official rail available. ``catalog=True`` marks an add of a
-    song not already in the library (it needs the API even on macOS)."""
-    if _forced_tokenless() and APPLESCRIPT_AVAILABLE:
+    Upstream had a third rail, ``web``: amp-api.music.apple.com driven by the
+    AMPWebPlay token scraped out of Apple's web-player bundle plus a harvested
+    media-user-token cookie. It was removed with the rest of the credential
+    harvesting, so there is no unofficial rail to silently fall back to — an
+    operation that needs the API and has no developer token now says so.
+    """
+    if not APPLESCRIPT_AVAILABLE:
+        return "none"
+    if _forced_tokenless():
         return "native"
-    if APPLESCRIPT_AVAILABLE:
-        # macOS: local Music.app handles tokenless writes. Only a catalog add (a
-        # song not yet in the library) needs the API.
-        if catalog and op in ("add", "library_add"):
-            return "sanctioned" if _has_developer_token() else "web"
-        return "native"
-    # off macOS — no AppleScript:
-    if op in _WEB_ONLY_OFF_MAC_OPS:
-        return "web"
-    return "sanctioned" if _has_developer_token() else "web"
+    # A catalog add (a song not yet in the library) is the one write the local
+    # Music.app cannot do; everything else stays local and tokenless.
+    if catalog and op in ("add", "library_add"):
+        return "sanctioned" if _has_developer_token() else "none"
+    return "native"
 
 
 def _label_write(result: str, rail: str) -> str:
@@ -1155,65 +1141,12 @@ def _label_write(result: str, rail: str) -> str:
 # --- playlist mutations over the API engine (cross-platform, no AppleScript) ---
 
 
-def _playlist_create_api(name: str, description: str = "") -> str:
-    ok, res = amp_api.create_playlist(name, description)
-    if ok:
-        audit_log.log_action("create_playlist", {"name": name, "via": "api"})
-        return f"Created playlist '{name}' (ID: {res})"
-    return f"Error: {res}"
 
 
-def _resolve_playlist_for_write(name: str):
-    """Resolve a playlist for a DESTRUCTIVE web op (delete/rename). Exact
-    (case-insensitive) match wins; a SINGLE substring match is allowed; MULTIPLE
-    substring matches are refused — never silently destroy the wrong playlist on a
-    short/common name. Returns ``(pl_or_None, error_or_None)``; callers must echo
-    ``pl['name']`` (the resolved name), not the requested one."""
-    try:
-        pls = amp_api.list_playlists()
-    except Exception:
-        pls = []
-    if pls:
-        tl = name.strip().lower()
-        exact = [p for p in pls if p.get("name", "").strip().lower() == tl]
-        if exact:
-            return exact[0], None
-        loose = [p for p in pls if tl in p.get("name", "").strip().lower()]
-        if len(loose) == 1:
-            return loose[0], None
-        if len(loose) > 1:
-            names = ", ".join(repr(p.get("name", "")) for p in loose[:6])
-            return None, (
-                f"Error: '{name}' matches multiple playlists ({names}) — "
-                "use the exact name so the right one is affected."
-            )
-        return None, None  # genuinely not found — caller renders _resolve_failure_msg
-    # No library listing available (offline / empty) — fall back to id resolution.
-    pid = amp_api.resolve_playlist_id(name, api_created_only=False)
-    return ({"id": pid, "name": name} if pid else None), None
 
 
-def _playlist_delete_api(name: str) -> str:
-    pl, err = _resolve_playlist_for_write(name)
-    if err:
-        return err
-    if not pl:
-        return _resolve_failure_msg(f"playlist {name!r} not found in your library")
-    ok, msg = amp_api.delete_playlist(pl["id"])
-    if ok:
-        audit_log.log_action("delete_playlist", {"name": pl["name"], "via": "api"})
-        return f"Deleted playlist: {pl['name']}"
-    return f"Error: {msg}"
 
 
-def _playlist_rename_api(name: str, new_name: str) -> str:
-    pl, err = _resolve_playlist_for_write(name)
-    if err:
-        return err
-    if not pl:
-        return _resolve_failure_msg(f"playlist {name!r} not found in your library")
-    ok, msg = amp_api.rename_playlist(pl["id"], new_name)
-    return f"Renamed '{pl['name']}' to '{new_name}'" if ok else f"Error: {msg}"
 
 
 _SESSION_EXPIRED_MSG = (
@@ -1243,7 +1176,7 @@ def _api_error(e: Exception) -> str:
     resp = getattr(e, "response", None)
     code = getattr(resp, "status_code", None)
     if code is not None:
-        amp_api.note_status(code, amp_api.API)
+        rate_limit.note_status(code, rate_limit.API)
         if code == 429:
             return _SESSION_THROTTLED_MSG
     return f"API Error: {e}"
@@ -1255,14 +1188,142 @@ def _catalog_miss_reason(not_found_msg: str) -> str:
     false negative (#42). Unlike ``_resolve_failure_msg`` this costs no request:
     on the miss path of a bulk loop, a probe per miss is exactly what you can't
     afford while throttled."""
-    return _THROTTLED_REASON if amp_api.throttled_recently() else not_found_msg
+    return _THROTTLED_REASON if rate_limit.throttled_recently() else not_found_msg
+
+
+def _api_session_status() -> str:
+    """One-request probe of the official API session: ok | expired | throttled | error.
+
+    Replaces upstream's ``amp_api.session_status``, which probed the web-player
+    host with a harvested token. Reads swallow errors and return empty, so a
+    resolver can't tell "genuinely not found" from "your token expired"; this
+    turns a misleading not-found into the real cause at the cost of one GET.
+    A recent 429 answers without spending that request — during a rolling-window
+    throttle the probe would both fail and extend the window.
+    """
+    if rate_limit.throttled_recently():
+        return "throttled"
+    try:
+        r = requests.get(
+            f"{BASE_URL}/me/library/playlists",
+            headers=get_headers(),
+            params={"limit": 1},
+            timeout=REQUEST_TIMEOUT,
+        )
+    except (FileNotFoundError, ValueError):
+        return "error"
+    except requests.exceptions.RequestException:
+        return "error"
+    rate_limit.note_status(r.status_code)
+    if r.status_code == 200:
+        return "ok"
+    if r.status_code in (401, 403):
+        return "expired"
+    if r.status_code == 429:
+        return "throttled"
+    return "error"
+
+
+def _api_playlist_kind(playlist_id: str) -> str:
+    """Classify a library playlist by origin: 'api' | 'user' | 'apple'.
+
+    Ported from ``amp_api.playlist_kind`` onto the official host. 'apple' means
+    an Apple-curated playlist added to the library, which NO rail can write.
+    """
+    try:
+        r = requests.get(
+            f"{BASE_URL}/me/library/playlists/{playlist_id}",
+            headers=get_headers(),
+            timeout=REQUEST_TIMEOUT,
+        )
+        rate_limit.note_status(r.status_code)
+        if r.status_code != 200:
+            return "user"
+        data = r.json().get("data", [])
+        if not data:
+            return "user"
+        attrs = data[0].get("attributes", {})
+    except (requests.exceptions.RequestException, ValueError, FileNotFoundError):
+        return "user"
+    if attrs.get("canEdit", True):
+        return "api"
+    gid = (attrs.get("playParams") or {}).get("globalId") or ""
+    if gid and not gid.startswith("pl.u-"):
+        return "apple"
+    return "user"
+
+
+def _api_playlist_tracks(playlist_id: str) -> list[dict]:
+    """Playlist tracks as flat {relationship_id, name, artist, catalog_id} dicts.
+
+    Ported from ``amp_api.get_tracks`` onto the official host. Paginates; returns
+    [] on any error (callers treat an empty list as "couldn't diff").
+    """
+    out: list[dict] = []
+    try:
+        headers = get_headers()
+    except (FileNotFoundError, ValueError):
+        return out
+    offset = 0
+    while True:
+        try:
+            r = requests.get(
+                f"{BASE_URL}/me/library/playlists/{playlist_id}/tracks",
+                headers=headers,
+                params={"limit": 100, "offset": offset},
+                timeout=REQUEST_TIMEOUT,
+            )
+            rate_limit.note_status(r.status_code)
+            if r.status_code != 200:
+                break
+            data = r.json()
+        except (requests.exceptions.RequestException, ValueError):
+            break
+        rows = data.get("data", [])
+        for t in rows:
+            a = t.get("attributes", {})
+            pp = a.get("playParams", {})
+            out.append(
+                {
+                    "relationship_id": t.get("id"),
+                    "name": a.get("name", ""),
+                    "artist": a.get("artistName", ""),
+                    "catalog_id": pp.get("catalogId") or pp.get("id"),
+                }
+            )
+        if not data.get("next") or not rows:
+            break
+        offset += len(rows)
+    return out
+
+
+def _library_songs_compact(term: str, limit: int = 25) -> list[dict]:
+    """Library search as flat {id, name, artist, catalog_id} dicts.
+
+    Ported from ``amp_api.search_library_songs`` onto the official host; shares
+    the raw read with ``_search_library_songs`` and just flattens the shape the
+    preview path expects.
+    """
+    out = []
+    for song in _search_library_songs(term, limit):
+        a = song.get("attributes", {})
+        pp = a.get("playParams", {})
+        out.append(
+            {
+                "id": song.get("id"),
+                "name": a.get("name", ""),
+                "artist": a.get("artistName", ""),
+                "catalog_id": pp.get("catalogId") or pp.get("id"),
+            }
+        )
+    return out
 
 
 def _resolve_failure_msg(not_found_msg: str) -> str:
     """A resolve/read came back empty. Disambiguate genuinely-not-found from an
     expired session or a 429 (which the swallow-and-return-empty reads hide) so
     the user sees the real cause and the right fix, not a misleading 'not found'."""
-    st = amp_api.session_status()
+    st = _api_session_status()
     if st == "expired":
         return _SESSION_EXPIRED_MSG
     if st == "throttled":
@@ -1283,96 +1344,12 @@ def _safe_single_match(matches: list[dict], term: str) -> tuple[dict, int]:
     return chosen, len(matches) - 1
 
 
-def _playlist_remove_api(playlist: str, track: str, artist: str = "") -> str:
-    pid = amp_api.resolve_playlist_id(playlist, api_created_only=False)
-    if not pid:
-        return _resolve_failure_msg(f"playlist {playlist!r} not found in your library")
-    tracks = amp_api.get_tracks(pid)
-    tl = track.lower()
-    al = artist.lower()
-    matches = [
-        t for t in tracks if tl in t["name"].lower() and (not artist or al in t["artist"].lower())
-    ]
-    if not matches:
-        # An EMPTY read can mean an expired/throttled session, not a genuinely
-        # absent track — disambiguate instead of lying "not found".
-        if not tracks:
-            return _resolve_failure_msg(f"{track!r} not found in {playlist!r}")
-        return f"Error: {track!r} not found in {playlist!r}"
-    chosen, others = _safe_single_match(matches, track)
-    ok, msg = amp_api.remove_track(pid, chosen["relationship_id"])
-    if not ok:
-        # Same 401/403 ambiguity as add: expired session vs a Music.app-made
-        # playlist the web API can't modify. Surface the real cause, not a flat
-        # "remove failed."
-        if msg.startswith("status 401") or msg.startswith("status 403"):
-            st = amp_api.session_status()
-            if st == "throttled":
-                return (
-                    f"Error: {msg}. Can't tell whether your session expired or this "
-                    "playlist just isn't writable over the web API — you're rate-limited "
-                    "right now, so the check that would distinguish them can't run. "
-                    "Retry once the window clears."
-                )
-            if st == "expired":
-                return f"Error: your web session expired — re-run `applemusic-mcp login`. ({msg})"
-            return (
-                f"Error: couldn't remove from '{playlist}' over the web API ({msg}). This "
-                "playlist was likely created in Music.app, which the web API can't modify "
-                "(on macOS it's edited locally instead)."
-            )
-        return f"Error: remove failed for {track!r}: {msg}"
-    audit_log.log_action("remove_track", {"playlist": playlist, "track": track, "via": "api"})
-    out = f"Removed {chosen['name']} - {chosen['artist']} from {playlist!r}"
-    if others:
-        out += (
-            f"\n({others} other track(s) also matched {track!r} — only that one was "
-            f"removed; pass artist=… or a more exact title to target another.)"
-        )
-    return out
 
 
-def _folder_create_api(name: str) -> str:
-    ok, res = amp_api.create_folder(name)
-    if ok:
-        audit_log.log_action("create_folder", {"name": name, "via": "api"})
-        return f"Created folder '{name}' (ID: {res})"
-    return f"Error: {res}"
 
 
-def _folder_delete_api(name: str) -> str:
-    fid = amp_api.resolve_folder_id(name)
-    if not fid:
-        return f"Error: folder {name!r} not found"
-    ok, msg = amp_api.delete_folder(fid)
-    if ok:
-        audit_log.log_action("delete_folder", {"name": name, "via": "api"})
-        return f"Deleted folder: {name}"
-    return f"Error: {msg}"
 
 
-def _playlist_move_api(playlist: str, folder: str) -> str:
-    pid = amp_api.resolve_playlist_id(playlist, api_created_only=False)
-    if not pid:
-        return _resolve_failure_msg(f"playlist {playlist!r} not found in your library")
-    # Move to root when folder is empty/"root"; else into the folder (create it
-    # if it doesn't exist yet, mirroring the native move-into-folder behavior).
-    if not folder or folder.strip().lower() in ("root", ""):
-        ok, msg = amp_api.move_playlist_to_folder(pid, amp_api.ROOT_FOLDER)
-        return f"Moved '{playlist}' to top level" if ok else f"Error: {msg}"
-    fid = amp_api.resolve_folder_id(folder)
-    if not fid:
-        cok, cres = amp_api.create_folder(folder)
-        if not cok:
-            return f"Error: could not create folder {folder!r}: {cres}"
-        fid = cres
-    ok, msg = amp_api.move_playlist_to_folder(pid, fid)
-    if ok:
-        audit_log.log_action(
-            "move_playlist", {"playlist": playlist, "folder": folder, "via": "api"}
-        )
-        return f"Moved '{playlist}' into folder '{folder}'"
-    return f"Error: {msg}"
 
 
 def _pick_resolved_song(
@@ -1389,7 +1366,7 @@ def _pick_resolved_song(
     is given. Returning ``None`` (caller reports "not found") is strictly better than
     adding a song the user did not ask for.
 
-    Candidates are the flat ``{name, artist, ...}`` dicts the amp_api searches return.
+    Candidates are the flat ``{name, artist, ...}`` dicts the library searches return.
     Returns (chosen, confidence) where confidence is "exact" | "partial" | "".
     """
     nl = name.strip().lower()
@@ -1410,223 +1387,8 @@ def _pick_resolved_song(
     return None, ""
 
 
-def _playlist_add_api(
-    playlist: str,
-    track: str,
-    artist: str = "",
-    allow_duplicates: bool = False,
-    auto_add: Optional[bool] = None,
-) -> str:
-    """Add track(s) to a playlist entirely over the API (cross-platform): resolve
-    the playlist's library id, resolve each track to a catalog id (direct id, or
-    catalog search by name), and POST them. Adds to the library implicitly."""
-    # A bare playlist id (p.XXXXX) is used directly; a name goes through the rich
-    # 3-pass fuzzy matcher (handles &/and, emoji, accents).
-    fuzzy = None
-    if playlist.startswith("p.") and len(playlist) > 2 and playlist[2:].isalnum():
-        pid = playlist
-    else:
-        pid, fuzzy = _find_api_playlist_by_name(playlist)
-        if not pid:
-            pid = amp_api.resolve_playlist_id(playlist, api_created_only=False)
-    if not pid:
-        return _resolve_failure_msg(f"playlist {playlist!r} not found in your library")
-    # Honor the auto_add preference (parity with the native path): when off, a bare
-    # NAME isn't catalog-searched + added — the user opted out of that.
-    if auto_add is None:
-        auto_add = bool(get_user_preferences().get("auto_add"))
-    # De-dup against what's already in the playlist (unless allow_duplicates), so a
-    # repeated add doesn't silently stack copies — the native path does this too.
-    existing_ids: set = set()
-    existing_names: set = set()
-    if not allow_duplicates:
-        for t in amp_api.get_tracks(pid):
-            if t.get("catalog_id"):
-                existing_ids.add(str(t["catalog_id"]))
-            if t.get("name"):
-                existing_names.add(t["name"].strip().lower())
-
-    items: list = []  # str catalog id, or (id, "library-songs") for a library song
-    added_names: list[str] = []
-    errors: list[str] = []
-    skipped: list[str] = []
-
-    def _dup(cid: str = "", nm: str = "") -> bool:
-        return bool(
-            (cid and str(cid) in existing_ids) or (nm and nm.strip().lower() in existing_names)
-        )
-
-    for r in _resolve_track(track, artist):
-        if r.error:
-            errors.append(r.error)
-        elif r.input_type == InputType.CATALOG_ID:
-            if _dup(cid=r.value):
-                skipped.append(f"track {r.value}")
-                continue
-            items.append(r.value)
-            added_names.append(f"track {r.value}")
-            existing_ids.add(str(r.value))
-        elif r.input_type == InputType.LIBRARY_ID:
-            items.append((r.value, "library-songs"))
-            added_names.append(f"library track {r.value}")
-        elif r.input_type in (InputType.NAME, InputType.JSON_OBJECT):
-            q = f"{r.value} {r.artist or artist}".strip()
-            # auto_add controls whether a name NOT already in your library is pulled
-            # from the catalog (parity with native): off → only add it if it's already
-            # in your library; on → search the catalog. Either way, de-dup.
-            hit = None
-            want_artist = r.artist or artist
-            # Fetch several and pick one whose title actually corresponds, rather
-            # than trusting the search's first row — see _pick_resolved_song.
-            if auto_add:
-                songs = amp_api.search_catalog_songs(q, 5)
-                pick, _conf = _pick_resolved_song(songs, r.value, want_artist)
-                hit = {"id": pick["id"], **pick} if pick else None
-            else:
-                libs = amp_api.search_library_songs(q, 5)
-                pick, _conf = _pick_resolved_song(libs, r.value, want_artist)
-                if pick:
-                    hit = {"id": pick.get("catalog_id"), **pick}
-                else:
-                    skipped.append(
-                        f"{r.value} (not in your library — set auto_add=True to add it from the catalog)"
-                    )
-            if hit is None:
-                if auto_add:
-                    # A rate-limited search returns EMPTY, not an error — reporting
-                    # "not found in catalog" here is how a throttle silently becomes
-                    # a run full of false negatives (#42). Name the real cause, and
-                    # stop resolving: more requests inside Apple's rolling window
-                    # only push the recovery further out.
-                    if amp_api.throttled_recently():
-                        errors.append(_THROTTLED_REASON)
-                        break
-                    errors.append(f"{r.value}: not found in catalog")
-            elif _dup(cid=hit.get("id"), nm=hit.get("name")):
-                skipped.append(f"{hit.get('name')} - {hit.get('artist')}")
-            else:
-                cid = hit.get("id")
-                items.append(cid if cid else (hit["id"], "library-songs"))
-                added_names.append(f"{hit.get('name')} - {hit.get('artist')}")
-                if cid:
-                    existing_ids.add(str(cid))
-                existing_names.add((hit.get("name") or "").strip().lower())
-        else:
-            errors.append(f"{r.value}: unsupported id type for add")
-    if not items:
-        if skipped and not errors:
-            return "Nothing added — all already in the playlist or skipped:\n  - " + "\n  - ".join(
-                skipped
-            )
-        msg = "Error: nothing to add"
-        if skipped:
-            msg += "\nSkipped: " + ", ".join(skipped)
-        if errors:
-            msg += "\n" + "\n".join(errors)
-        return msg
-    ok, msg = amp_api.add_tracks(pid, items)
-    if not ok:
-        # A 401/403 is ambiguous: either the web session expired, OR the playlist
-        # was created in Music.app (the web API can't modify those). Disambiguate
-        # with a cheap session probe before blaming origin — otherwise an expired
-        # session gets the wrong cause and the wrong fix.
-        if msg.startswith("status 401") or msg.startswith("status 403"):
-            st = amp_api.session_status()
-            if st == "throttled":
-                return (
-                    f"Error: {msg}. Can't tell whether your session expired or this "
-                    "playlist just isn't writable over the web API — you're rate-limited "
-                    "right now, so the check that would distinguish them can't run. "
-                    "Retry once the window clears."
-                )
-            if st == "expired":
-                return f"Error: your web session expired — re-run `applemusic-mcp login`. ({msg})"
-            return (
-                f"Error: couldn't add to '{playlist}' over the web API ({msg}). This "
-                "playlist was likely created in Music.app, which the web API can't "
-                "modify. On macOS it's edited locally instead; off macOS, add to an "
-                "API-created playlist."
-            )
-        # The amp-api tracks endpoint reliably 500s ("Unable to update tracks",
-        # code 50001) for Music.app-made and Apple-curated playlists — the web API
-        # genuinely can't write them (verified in-page and external, both id forms).
-        # Say so honestly rather than surface a raw 500.
-        if "Unable to update tracks" in msg or msg.startswith("status 500"):
-            return (
-                f"Error: '{playlist}' can't be modified over the Apple Music web API "
-                "— it was created in Music.app (or is Apple-curated). On macOS the "
-                "tool edits it locally through Music.app; off macOS, the API can't "
-                "add to these playlists."
-            )
-        return f"Error: {msg}"
-    # Apple answers 2xx and SILENTLY DROPS ids it won't accept, so len(items) is a
-    # request, not a receipt — reporting it as "Added N" is the #42 pattern again:
-    # a failure presenting as success. Re-read and say what actually landed.
-    # (One extra GET per add, not per track.)
-    dropped: list[str] = []
-    after = {str(t["catalog_id"]) for t in amp_api.get_tracks(pid) if t.get("catalog_id")}
-    if after:  # empty means the re-read itself failed; don't cry wolf on that
-        for it, nm in zip(items, added_names):
-            # Only catalog ids are checkable: a (id, "library-songs") item is a
-            # LIBRARY id, which never equals the catalogId the re-read reports, so
-            # verifying it here would flag every such add as dropped.
-            if isinstance(it, tuple):
-                continue
-            if str(it) not in after:
-                dropped.append(nm)
-    landed = [n for n in added_names if n not in dropped]
-
-    # Surface the playlist fuzzy match (parity with the native path) so the user
-    # knows if "Rock" landed in "Rock & Roll Classics".
-    dest = f"'{fuzzy.matched_name}'" if fuzzy and fuzzy.matched_name else f"'{playlist}'"
-    out = f"Added {len(landed)} track(s) to {dest}:\n" + "\n".join(
-        f"  + {n} (added to library + playlist via the Apple Music web API)" for n in landed
-    )
-    if dropped:
-        out += (
-            f"\n\n⚠️ {len(dropped)} track(s) were NOT added — Apple accepted the request "
-            "but did not store them. This is Apple-side (an unavailable or region-locked "
-            "recording), not a bad id, and it is silent unless checked:\n"
-            + "\n".join(f"  ✗ {n}" for n in dropped)
-        )
-    if fuzzy:
-        out += f"\n{_format_fuzzy_match(fuzzy)}"
-    if skipped:
-        out += "\n" + "\n".join(f"  ~ skipped (already in playlist): {s}" for s in skipped)
-    if errors:
-        out += "\n" + "\n".join(f"  - {e}" for e in errors)
-    return out
 
 
-def _library_remove_api(track: str, artist: str = "") -> str:
-    """Remove track(s) from the user's library over the API (cross-platform):
-    find matching library songs, then DELETE each by its library-song id."""
-    if not track:
-        return "Error: Provide track parameter"
-    term = f"{track} {artist}".strip()
-    songs = amp_api.search_library_songs(term)
-    tl = track.lower()
-    al = artist.lower()
-    matches = [
-        s for s in songs if tl in s["name"].lower() and (not artist or al in s["artist"].lower())
-    ]
-    if not matches:
-        return _resolve_failure_msg(f"{track!r} not found in your library")
-    # Library removal is permanent and not cheaply reversible, so NEVER fan a
-    # fuzzy term across many songs — remove exactly one (exact title preferred),
-    # matching the native path, and tell the user what else matched.
-    chosen, others = _safe_single_match(matches, track)
-    ok, msg = amp_api.remove_from_library(chosen["id"])
-    if not ok:
-        return f"Error: {chosen['name']}: {msg}"
-    audit_log.log_action("remove_from_library", {"track": track, "via": "api"})
-    out = f"Removed from your library: {chosen['name']} - {chosen['artist']}"
-    if others:
-        out += (
-            f"\n({others} other title(s) also matched {track!r} — nothing else was "
-            f"removed; pass artist=… or a more exact title to target another.)"
-        )
-    return out
 
 
 
@@ -2227,7 +1989,7 @@ def _search_catalog_songs(query: str, limit: int = 5) -> list[dict]:
     Returns:
         List of song dicts with 'id', 'attributes' (name, artistName, etc.)
         Empty list on error — including a 429, which is recorded via
-        ``amp_api.note_status`` so callers can say "rate limited" instead of
+        ``rate_limit.note_status`` so callers can say "rate limited" instead of
         the false "not found" an empty list would otherwise imply (#42).
     """
     try:
@@ -2238,7 +2000,7 @@ def _search_catalog_songs(query: str, limit: int = 5) -> list[dict]:
             params={"term": query, "types": "songs", "limit": min(limit, 25)},
             timeout=REQUEST_TIMEOUT,
         )
-        amp_api.note_status(response.status_code, amp_api.API)
+        rate_limit.note_status(response.status_code, rate_limit.API)
         if response.status_code == 200:
             data = response.json()
             return data.get("results", {}).get("songs", {}).get("data", [])
@@ -2266,7 +2028,7 @@ def _search_catalog_albums(query: str, limit: int = 5) -> list[dict]:
             params={"term": query, "types": "albums", "limit": min(limit, 25)},
             timeout=REQUEST_TIMEOUT,
         )
-        amp_api.note_status(response.status_code, amp_api.API)
+        rate_limit.note_status(response.status_code, rate_limit.API)
         if response.status_code == 200:
             data = response.json()
             return data.get("results", {}).get("albums", {}).get("data", [])
@@ -2798,19 +2560,16 @@ def _auto_search_and_add_to_playlist(
         #            these (verified), so on macOS (this path) attach via AppleScript;
         #            the track was just library-added to the cloud, so poll for it to
         #            sync into the local Music.app first.
-        if playlist_id:
-            pl = {"id": playlist_id, "canEdit": True}  # explicit id from caller
-        else:
-            pl = amp_api.resolve_playlist(playlist_name, api_created_only=False)
-        if not pl:
+        if not playlist_id:
+            playlist_id, _fuzzy = _find_api_playlist_by_name(playlist_name)
+        if not playlist_id:
             return (
                 False,
                 f"Could not find playlist '{playlist_name}' in your library "
                 "(a just-created playlist can take a moment to sync before it's addable)",
                 steps,
             )
-        playlist_id = pl["id"]
-        kind = amp_api.playlist_kind(pl)
+        kind = _api_playlist_kind(playlist_id)
 
         if kind == "apple":
             return (
@@ -2843,7 +2602,7 @@ def _auto_search_and_add_to_playlist(
         # kind == "user": macOS-only (off-mac never reaches here). The catalog track
         # was just library-added in the cloud; wait for it to sync down to the LOCAL
         # Music.app, then attach via AppleScript.
-        if not APPLESCRIPT_AVAILABLE:  # pragma: no cover  # off-mac uses _playlist_add_api
+        if not APPLESCRIPT_AVAILABLE:  # pragma: no cover  # macOS-only build
             return (
                 False,
                 f"'{playlist_name}' was created in Music.app; the web API can't modify "
@@ -3736,22 +3495,9 @@ def _playlist_move_to_root(playlist_name: str) -> str:
 
 def _playlist_create_in_folder(name: str, folder: str, description: str = "") -> str:
     """Internal: Create a playlist inside a folder. Creates the folder if it doesn't exist."""
-    # Off-mac there's no AppleScript — route through the web API (folder create +
-    # playlist create + move). The native branch below would silently fail every
-    # osascript call and then falsely claim the playlist was removed.
-    if not APPLESCRIPT_AVAILABLE:
-        _folder_create_api(folder)  # ok if it already exists
-        create_result = _playlist_create_api(name, description)
-        if "Error" in create_result:
-            return create_result
-        move_result = _playlist_move_api(name, folder)
-        if "Error" in move_result:
-            return (
-                f"Created playlist '{name}', but couldn't move it into '{folder}': "
-                f"{move_result}. It's in your library at the top level (NOT removed) — "
-                f"move it manually or retry."
-            )
-        return f"Created playlist '{name}' in folder '{folder}'"
+    # Upstream routed this through amp-api off macOS. This build is macOS-only.
+    if err := _macos_only("create playlist in folder"):
+        return err
 
     # Ensure folder exists (ignore errors — folder may already exist)
     if "/" in folder:
@@ -3842,7 +3588,7 @@ def _playlist_add_preview(
     existing_names: set[str] = set()
     dup_known = False
     if resolved.api_id:
-        for t in amp_api.get_tracks(resolved.api_id):
+        for t in _api_playlist_tracks(resolved.api_id):
             dup_known = True
             if t.get("catalog_id"):
                 existing_ids.add(str(t["catalog_id"]))
@@ -3873,7 +3619,7 @@ def _playlist_add_preview(
             # Mirror the real add: with auto_add off it attaches only what's ALREADY
             # in your library and never pulls from the catalog. Searching the catalog
             # here would promise adds that the real run skips.
-            libs = amp_api.search_library_songs(f"{r.value} {r.artist or artist}".strip(), 5)
+            libs = _library_songs_compact(f"{r.value} {r.artist or artist}".strip(), 5)
             pick, lib_conf = _pick_resolved_song(libs, r.value, r.artist or artist)
             libs = [pick] if pick else []
             if not libs:
@@ -3903,7 +3649,7 @@ def _playlist_add_preview(
 
         song, err, fuzzy = _find_matching_catalog_song(r.value, r.artist or artist)
         if song is None:
-            if amp_api.throttled_recently():
+            if rate_limit.throttled_recently():
                 problems.append(_THROTTLED_REASON)
                 break
             problems.append(f"{r.value}: {err or 'Not found in catalog'}")
@@ -4783,12 +4529,9 @@ def _playlist_swap(
     against native truth; off-mac we re-read the playlist over the API."""
     if not track or not replace:
         return "Error: swap needs both `track` (new) and `replace` (old to remove)"
-    if APPLESCRIPT_AVAILABLE:
-        add_result = _playlist_add(playlist, track, album, artist, allow_duplicates, True, auto_add)
-    elif track and not album:
-        add_result = _playlist_add_api(playlist, track, artist, allow_duplicates, auto_add)
-    else:
-        add_result = _playlist_add(playlist, track, album, artist, allow_duplicates, True, auto_add)
+    if err := _macos_only("swap"):
+        return err
+    add_result = _playlist_add(playlist, track, album, artist, allow_duplicates, True, auto_add)
     if not _add_landed(add_result):
         return (
             f"⚠️ Swap aborted — couldn't confirm '{track}' landed in '{playlist}', so "
@@ -4810,10 +4553,7 @@ def _playlist_swap(
                 f"now in '{playlist}', so '{replace}' was NOT removed (nothing lost). "
                 f"Re-check the playlist, then retry.\n\n{add_result}"
             )
-    if APPLESCRIPT_AVAILABLE:
-        rm = _playlist_remove(playlist, replace, "")
-    else:
-        rm = _playlist_remove_api(playlist, replace, "")
+    rm = _playlist_remove(playlist, replace, "")
     # Be honest if the remove didn't take — don't claim "removed" when the old track
     # may still be there (the add succeeded, so this is not data loss).
     if rm.lower().startswith("error") or "did not" in rm.lower() or "still" in rm.lower():
@@ -4870,15 +4610,11 @@ def playlist(
     elif action == "create":
         if folder and not name:
             rail = _write_rail("create_folder")
-            if rail == "web":
-                return _label_write(_folder_create_api(folder), rail)
             return _label_write(_playlist_create_folder(folder), rail)
         elif folder and name:
             return _playlist_create_in_folder(name, folder, description)
         elif name:
             rail = _write_rail("create")
-            if rail == "web":
-                return _label_write(_playlist_create_api(name, description), rail)
             return _label_write(_playlist_create(name, description), rail)
         else:
             return "Error: name and/or folder required for create"
@@ -4902,28 +4638,19 @@ def playlist(
         # No coarse rail label here: an add can touch two rails (library vs
         # playlist) and a batch can mix per-track methods, so each sub-path
         # attributes its own method in the result instead.
-        if APPLESCRIPT_AVAILABLE:
-            return _playlist_add(playlist, track, album, artist, allow_duplicates, verify, auto_add)
-        # Off macOS: the web rail (amp-api). It now resolves Music.app-made
-        # playlists too and attempts the write; if the web token can't edit one it
-        # surfaces the real error instead of a bogus "not found."
-        if track and not album:
-            return _playlist_add_api(playlist, track, artist, allow_duplicates, auto_add)
+        if err := _macos_only("add"):
+            return err
         return _playlist_add(playlist, track, album, artist, allow_duplicates, verify, auto_add)
     elif action == "copy":
         return _playlist_copy(source, new_name)
     elif action == "remove":
         rail = _write_rail("remove")
-        if rail == "web":
-            return _label_write(_playlist_remove_api(playlist, track, artist), rail)
         if err := _macos_only("remove"):
             return err
         return _label_write(_playlist_remove(playlist, track, artist), rail)
     elif action == "delete":
         if folder:
             rail = _write_rail("delete_folder")
-            if rail == "web":
-                return _label_write(_folder_delete_api(folder), rail)
             if err := _macos_only("delete folder"):
                 return err
             return _label_write(_playlist_delete_folder(folder), rail)
@@ -4931,8 +4658,6 @@ def playlist(
         if not playlist_name:
             return "Error: name, playlist, or folder required for delete"
         rail = _write_rail("delete")
-        if rail == "web":
-            return _label_write(_playlist_delete_api(playlist_name), rail)
         if err := _macos_only("delete"):
             return err
         return _label_write(_playlist_delete(playlist_name), rail)
@@ -4948,8 +4673,6 @@ def playlist(
         if not playlist_name:
             return "Error: playlist, name, or folder required for rename"
         rail = _write_rail("rename")
-        if rail == "web":
-            return _label_write(_playlist_rename_api(playlist_name, new_name), rail)
         if err := _macos_only("rename"):
             return err
         return _label_write(_playlist_rename(playlist_name, new_name), rail)
@@ -4958,8 +4681,6 @@ def playlist(
         if not name:
             return "Error: name required for create_folder"
         rail = _write_rail("create_folder")
-        if rail == "web":
-            return _label_write(_folder_create_api(name), rail)
         if err := _macos_only("create_folder"):
             return err
         return _label_write(_playlist_create_folder(name), rail)
@@ -4968,10 +4689,6 @@ def playlist(
             return "Error: playlist required for move"
         folder_target = folder or name
         rail = _write_rail("move")
-        if rail == "web":
-            # The API moves a playlist into a folder OR back to the top level
-            # directly (the AppleScript path can't move out of folders at all).
-            return _label_write(_playlist_move_api(playlist, folder_target or "root"), rail)
         if err := _macos_only("move"):
             return err
         if not folder_target:
@@ -5056,8 +4773,6 @@ def library(
         return _library_rate(rate_action, track, artist, stars)
     elif action == "remove":
         rail = _write_rail("remove")
-        if rail == "web":
-            return _label_write(_library_remove_api(track, artist), rail)
         if err := _macos_only("remove"):
             return err
         return _label_write(_library_remove(track, artist), rail)
@@ -5799,7 +5514,7 @@ def _catalog_resolve_isrc(isrcs: str, format: str = "text", full: bool = False) 
                 timeout=REQUEST_TIMEOUT,
             )
             requests_made += 1
-            amp_api.note_status(response.status_code, amp_api.API)
+            rate_limit.note_status(response.status_code, rate_limit.API)
             if response.status_code == 429:
                 # Stop immediately: further batches can only extend the window.
                 # Whatever resolved before this point is still good, so report it
@@ -5925,7 +5640,7 @@ def _catalog_match_tracks(
         if song is None:
             # A throttle surfaces here as the rate-limit reason, not "not found"
             # (#42) — stop, and mark the remainder UNKNOWN rather than absent.
-            if amp_api.throttled_recently():
+            if rate_limit.throttled_recently():
                 throttled = True
                 never_asked.extend(x.value or x.raw for x in considered[i:])
                 break
@@ -6251,6 +5966,48 @@ def _with_clean_note(out: str, note: str, format: str) -> str:
 _CLEAN_VERIFY_BUDGET = 40
 
 
+def _catalog_content_ratings(catalog_ids: list[str], storefront: str = "") -> dict[str, str]:
+    """Content ratings for many catalog songs at once: {catalog_id: "Yes"|"No"}.
+
+    Ported from upstream's amp-api version onto the OFFICIAL
+    ``api.music.apple.com`` host, so it rides the developer token instead of a
+    harvested web-player token. Ids the catalog does not answer for are simply
+    ABSENT — the caller must treat a missing id as unverified, never as clean.
+    (The catalog omits ``contentRating`` on clean tracks, so absent-within-a-
+    returned-object means "No"; absent-object means "don't know".)
+
+    Returns {} when no developer token is configured, which the clean filter
+    reports as unverified rather than silently passing tracks through.
+    """
+    out: dict[str, str] = {}
+    ids = [i for i in dict.fromkeys(catalog_ids) if i]
+    if not ids:
+        return out
+    try:
+        headers = get_headers()
+    except (FileNotFoundError, ValueError):
+        return out
+    store = storefront or get_storefront()
+    for start in range(0, len(ids), 250):
+        chunk = ids[start : start + 250]
+        try:
+            r = requests.get(
+                f"{BASE_URL}/catalog/{store}/songs",
+                headers=headers,
+                params={"ids": ",".join(chunk)},
+                timeout=REQUEST_TIMEOUT,
+            )
+            rate_limit.note_status(r.status_code)
+            if not r.ok:
+                continue
+            for d in r.json().get("data", []):
+                rating = d.get("attributes", {}).get("contentRating")
+                out[d.get("id", "")] = "Yes" if rating == "explicit" else "No"
+        except requests.exceptions.RequestException:
+            continue
+    return out
+
+
 def _resolve_explicit_ratings(tracks: list[dict], budget: int = _CLEAN_VERIFY_BUDGET) -> dict:
     """Fill in each track's `explicit` from the cache, then the catalog.
 
@@ -6291,7 +6048,7 @@ def _resolve_explicit_ratings(tracks: list[dict], budget: int = _CLEAN_VERIFY_BU
     by_id = {t.get("catalog_id", ""): t for t in pending if t.get("catalog_id")}
     if by_id:
         try:
-            ratings = amp_api.catalog_content_ratings(list(by_id))
+            ratings = _catalog_content_ratings(list(by_id))
         except Exception:
             ratings = {}
         cache = get_track_cache()
@@ -6389,7 +6146,7 @@ def _apply_clean_filter(tracks: list[dict], clean_only: bool) -> tuple[list[dict
     if unverified:
         # A throttle is the most likely reason a lookup came back empty, and it
         # is the one the user can act on (wait, or sign in with --dev).
-        if not stats.get("blocked") and amp_api.throttled_recently():
+        if not stats.get("blocked") and rate_limit.throttled_recently():
             stats["blocked"] = "rate limited by Apple"
         why = f" ({stats['blocked']})" if stats.get("blocked") else ""
         parts.append(f"{unverified} could NOT be verified{why}")
@@ -7875,7 +7632,7 @@ def config(
 def _config_auth_status(mutation_status: "Optional[str]" = None) -> str:
     """Check if authentication tokens are valid and API is accessible.
 
-    ``mutation_status`` (from ``amp_api.session_status()``) is rendered as a
+    ``mutation_status`` (from ``_api_session_status()``) is rendered as a
     separate line when supplied. It matters because catalog adds, playlist edits,
     and ratings go through ``amp-api.music.apple.com`` with the harvested web
     token, NOT the ``api.music.apple.com`` read path tested below — so the two can
@@ -7951,7 +7708,7 @@ def _config_auth_status(mutation_status: "Optional[str]" = None) -> str:
                     "`applemusic-mcp login` (browser) or `applemusic-mcp login --dev` (dev token)."
                 )
             elif response.status_code == 429:
-                amp_api.note_status(429, amp_api.API)
+                rate_limit.note_status(429, rate_limit.API)
                 status.append(f"API Connection: RATE-LIMITED (429) — {_THROTTLED_REASON}")
             else:
                 status.append(f"API Connection: FAILED ({response.status_code})")
@@ -8292,11 +8049,11 @@ def _auth_action(action: str = "status", confirm: bool = False) -> str:
         # APPLEMUSIC_FORCE_TOKENLESS disables the API write path regardless of
         # tokens. It's a test flag that's easy to leave set, so never green-lit.
         forced = _forced_tokenless()
-        # The verdict must reflect the rail writes ACTUALLY take, not just the
-        # web-session probe: on macOS writes go native (Music.app), so a stale web
-        # session must not be reported as "your writes are broken."
+        # The verdict must reflect the rail writes ACTUALLY take: writes go native
+        # (Music.app), so a stale API session must not be reported as "your writes
+        # are broken."
         rail = _write_rail("add")
-        mut = amp_api.session_status() if (tokens_present and not forced) else None
+        mut = _api_session_status() if (tokens_present and not forced) else None
         body = _config_auth_status(mut)
         if forced:
             body = f"⚠️ {_FORCED_TOKENLESS_MSG}\n\n{body}"
