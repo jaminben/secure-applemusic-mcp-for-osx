@@ -1731,6 +1731,193 @@ def play_track(track_name: str, artist: Optional[str] = None) -> tuple[bool, str
     return success, output
 
 
+_MUSIC_URL_HOST = "music.apple.com"
+
+
+def _is_apple_music_https_url(url: str) -> bool:
+    """True only for an https URL whose host really is Apple Music.
+
+    Deliberately duplicated here rather than trusting the caller. ``open
+    location`` hands the URL to Music.app, which is unsandboxed and will fetch
+    it — so this is a security boundary, and a boundary that depends on every
+    caller remembering to validate is not one. Uses urlparse, never
+    ``startswith``: that is what let ``music.apple.com.attacker.tld`` and
+    ``music.apple.com@attacker.tld`` through upstream.
+    """
+    from urllib.parse import urlparse
+
+    if not url or not isinstance(url, str):
+        return False
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    if parsed.scheme != "https":
+        return False
+    host = (parsed.hostname or "").lower()
+    return host == _MUSIC_URL_HOST or host.endswith("." + _MUSIC_URL_HOST)
+
+
+def _deep_link_forms(https_url: str) -> list[str]:
+    """The URL forms to try, native scheme first.
+
+    ``music://`` is what Music.app handles as a Store deep link; the https form
+    opens the web representation. The ``music://`` form is DERIVED from an
+    already-validated https URL rather than accepted as input — callers can
+    never hand us an arbitrary ``music://`` string (upstream's bug), yet we
+    still get the scheme Music actually wants. ``uo=4`` is an iTunes affiliate
+    parameter, not part of the canonical link, so it is stripped.
+    """
+    from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+    parsed = urlparse(https_url)
+    pairs = [(k, v) for k, v in parse_qsl(parsed.query) if k != "uo"]
+    query = urlencode(pairs)
+    cleaned = parsed._replace(query=query, fragment="")
+    forms = [
+        urlunparse(cleaned._replace(scheme="music")),
+        urlunparse(cleaned),
+    ]
+    # An album URL with ?i=<trackid> opens the ALBUM page; Music then plays the
+    # album (or nothing) rather than the requested track. The /song/<id> form
+    # addresses the track itself, so try it too. Built from the already
+    # validated host and the numeric id only — never from caller-supplied text.
+    track_id = dict(pairs).get("i", "")
+    if track_id.isdigit():
+        segments = [seg for seg in parsed.path.split("/") if seg]
+        store = segments[0] if segments and len(segments[0]) == 2 else "us"
+        song_path = f"/{store}/song/{track_id}"
+        forms.insert(0, urlunparse(cleaned._replace(scheme="music", path=song_path, query="")))
+        forms.append(urlunparse(cleaned._replace(path=song_path, query="")))
+    return forms
+
+
+def open_catalog_location(url: str) -> tuple[bool, str]:
+    """Show an Apple Music URL in Music.app via the scripted ``open location``.
+
+    NOT upstream's ``subprocess.run(["open", url])``, which handed the string to
+    LaunchServices so any scheme reached any registered handler including the
+    browser. ``open location`` is a Music.app verb (``GURLGURL``) on the Apple
+    Events channel we already hold a grant for, so Music is the only app it can
+    reach. The host is validated here regardless of what the caller did.
+    """
+    if not _is_apple_music_https_url(url):
+        return False, f"Refusing to open a non-Apple-Music URL: {url[:120]}"
+    last = ""
+    for candidate in _deep_link_forms(url):
+        safe = _escape_for_applescript(candidate)
+        ok, out = run_applescript(f'tell application "Music" to open location "{safe}"')
+        if ok:
+            return True, "Opened in Music"
+        last = out
+    return False, last
+
+
+def play_selection() -> tuple[bool, str]:
+    """Play whatever Music currently has SELECTED.
+
+    This is the piece that makes deep-linking useful. ``play`` needs an object
+    specifier, and a catalog track you do not own has no library specifier — but
+    Music exposes ``selection`` ("the selected tracks") as a specifier, and a
+    deep link with ``?i=<trackid>`` selects exactly that track. So:
+
+        open location  ->  Music selects the track
+        play selection ->  Music plays that specifier
+
+    No Accessibility, no synthetic clicks, no browser, no developer token —
+    which is the entire reason this is worth trying. Returns the track name it
+    started, or a reason it could not.
+    """
+    ok, out = run_applescript(
+        """
+    tell application "Music"
+        set sel to selection
+        if sel is {} then return "ERROR:nothing selected"
+        set theTrack to item 1 of sel
+        play theTrack
+        return (name of theTrack)
+    end tell
+    """
+    )
+    if not ok:
+        return False, out
+    if out.startswith("ERROR:"):
+        return False, out[6:]
+    return True, out
+
+
+def open_catalog_and_play_selection(
+    url: str, want_name: str = "", per_form: float = 7.0
+) -> tuple[bool, str]:
+    """Deep-link a catalog track and confirm THAT track is what started playing.
+
+    Tries each URL form in turn, verifying after each. Three things learned the
+    hard way:
+
+    * ``open location`` reports success as soon as Music ACCEPTS the URL — not
+      when it played anything. So "no AppleScript error" is not a result, and a
+      loop that stops at the first non-erroring form never reaches the others.
+    * Music often starts the track by itself, but seconds later. A short window
+      reported failure while the track was in fact playing.
+    * Success must be verified BY NAME. A deep link can leave the album loaded
+      and start track 1, and ``selection`` can still hold the previous link's
+      track. Claiming success on "something is playing" would hijack whatever
+      the user had on and then misreport it.
+
+    Confirmed to work on an unowned catalog track (verified: absent from the
+    library, played anyway), so this genuinely avoids Accessibility, the
+    browser, and the developer token — but it is content-dependent, so a miss
+    is reported honestly rather than papered over.
+    """
+    target = _normalize_for_compare(want_name)
+
+    def _matches_and_playing() -> Optional[str]:
+        got_ok, info = get_current_track()
+        if not got_ok or not isinstance(info, dict):
+            return None
+        current = _normalize_for_compare(info.get("name", ""))
+        if not (target and current):
+            return None
+        if not (target in current or current in target):
+            return None
+        if info.get("state") != "playing":
+            return None
+        return f"{info.get('name')} — {info.get('artist', '')}".strip(" —")
+
+    if not _is_apple_music_https_url(url):
+        return False, f"Refusing to open a non-Apple-Music URL: {url[:120]}"
+
+    for candidate in _deep_link_forms(url):
+        safe = _escape_for_applescript(candidate)
+        ok, _out = run_applescript(f'tell application "Music" to open location "{safe}"')
+        if not ok:
+            continue
+        deadline = time.monotonic() + per_form
+        nudged = False
+        while time.monotonic() < deadline:
+            hit = _matches_and_playing()
+            if hit:
+                return True, hit
+            if not nudged and time.monotonic() > deadline - per_form / 2:
+                nudged = True
+                play_selection()  # the track may be selected but not started
+            time.sleep(0.5)
+    return False, "Music opened the page but didn't start the requested track"
+
+
+def _normalize_for_compare(value: str) -> str:
+    """Casefold and strip diacritics/punctuation for a forgiving name match.
+
+    Apple writes JAY-Z as ``JAŸ-Z`` (U+0178), so a plain lowercase comparison
+    misses it — the same diacritic trap the library matcher already folds away.
+    """
+    import unicodedata
+
+    decomposed = unicodedata.normalize("NFKD", value or "")
+    stripped = "".join(c for c in decomposed if not unicodedata.combining(c))
+    return "".join(c for c in stripped.casefold() if c.isalnum() or c.isspace()).strip()
+
+
 def _check_playing() -> bool:
     """Check if Music is currently playing."""
     ok, state = run_applescript('tell application "Music" to get player state')

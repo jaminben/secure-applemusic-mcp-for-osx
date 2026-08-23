@@ -30,6 +30,12 @@ def _no_real_itunes(monkeypatch):
     network guard rightly blocks it. Tests that want catalog hits override this.
     """
     monkeypatch.setattr(server, "_catalog_search_itunes", lambda *a, **k: [])
+    # The catalog-miss path now checks whether Music is playing before it will
+    # consider a deep link, which is real AppleScript. Default to "stopped";
+    # tests that care set their own (monkeypatch is last-wins).
+    monkeypatch.setattr(
+        server.asc, "get_current_track", lambda: (True, {"name": "", "state": "stopped"})
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -2056,3 +2062,45 @@ class TestRemainingCoverage:
         out = server.playback(action="play", track="Strobe", artist="deadmau5", add_to_library=True)
         assert attempt_count[0] == 2
         assert "Playing" in out or "Strobe" in out
+
+
+def test_deep_link_is_skipped_while_music_is_playing(monkeypatch):
+    """A deep link REPLACES what Music is doing, and only lands the right track
+    when it is first in its collection. Attempting it mid-song risks stopping
+    the user's music to play something they didn't ask for."""
+    attempted = []
+    monkeypatch.setattr(server.asc, "is_available", lambda: True)
+    monkeypatch.setattr(
+        server.asc,
+        "get_current_track",
+        lambda: (True, {"name": "Repeat It", "state": "playing"}),
+    )
+    monkeypatch.setattr(
+        server.asc,
+        "open_catalog_and_play_selection",
+        lambda *a, **k: attempted.append(a) or (True, "should not happen"),
+    )
+    monkeypatch.setattr(server, "_can_use_library_api", lambda: False)
+    out = server._catalog_miss_play(
+        "Some Song", "Some Artist", "https://music.apple.com/us/album/x/1?i=2", False
+    )
+    assert attempted == [], "must not interrupt playback"
+    assert "isn't in your library" in out
+
+
+def test_deep_link_is_attempted_when_idle(monkeypatch):
+    attempted = []
+    monkeypatch.setattr(server.asc, "is_available", lambda: True)
+    monkeypatch.setattr(
+        server.asc, "get_current_track", lambda: (True, {"name": "", "state": "stopped"})
+    )
+    monkeypatch.setattr(
+        server.asc,
+        "open_catalog_and_play_selection",
+        lambda *a, **k: attempted.append(a) or (True, "Some Song — Some Artist"),
+    )
+    out = server._catalog_miss_play(
+        "Some Song", "Some Artist", "https://music.apple.com/us/album/x/1?i=2", False
+    )
+    assert attempted, "idle is the safe moment to try"
+    assert "Playing" in out

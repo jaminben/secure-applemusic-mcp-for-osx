@@ -5003,6 +5003,10 @@ def _catalog_search_itunes(query: str, limit: int = 25) -> list[dict]:
                 "explicit": "Yes" if advisory == "explicit" else "No",
                 "id": str(r.get("trackId", "")),
                 "catalog_id": str(r.get("trackId", "")),
+                # music.apple.com deep link. Carried so the play path can try
+                # Music's own `open location` before giving up; validated again
+                # at the AppleScript layer before it is ever used.
+                "url": r.get("trackViewUrl", "") or "",
             }
         )
     return out
@@ -8365,6 +8369,29 @@ def _catalog_miss_play(name: str, artist: str, url: str, reveal: bool) -> str:
     silently doing nothing.
     """
     label = f"{name} by {artist}" if artist else name
+
+    # Deep-link the track so Music SELECTS it, then play that selection.
+    # `play` needs an object specifier and an unowned catalog track has no
+    # library specifier — but `selection` IS a specifier, so this reaches the
+    # track with no Accessibility, no browser and no developer token.
+    # Only when nothing is playing. A deep link REPLACES what Music is doing,
+    # and it succeeds only when the wanted track is first in its collection
+    # (Music plays the collection from the start, not the ?i= selection). So
+    # attempting it mid-song risks stopping the user's music to land on the
+    # wrong track — a bad trade for a best-effort win. Idle, it costs nothing.
+    already_playing = False
+    if asc.is_available():
+        got, info = asc.get_current_track()
+        already_playing = bool(got and isinstance(info, dict) and info.get("state") == "playing")
+
+    if url and asc.is_available() and not already_playing:
+        ok, msg = asc.open_catalog_and_play_selection(url, want_name=name)
+        if ok:
+            audit_log.log_action(
+                "play_track", {"track": name, "artist": artist, "source": "deep_link_selection"}
+            )
+            return f"[Catalog] Playing: {msg}"
+
     if reveal:
         # "Reveal" meant opening a music.apple.com URL in a browser/Music.app.
         # This build never hands a URL to the OS, so report rather than open.
@@ -8707,7 +8734,11 @@ def _playback_play(
         songs = [
             {
                 "id": hit["id"],
-                "attributes": {"name": hit["name"], "artistName": hit["artist"], "url": ""},
+                "attributes": {
+                    "name": hit["name"],
+                    "artistName": hit["artist"],
+                    "url": hit.get("url", ""),
+                },
             }
             for hit in _catalog_search_itunes(search_term, 5)
         ]
