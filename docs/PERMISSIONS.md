@@ -55,10 +55,39 @@ Apple Events happen in the helper, which is the only thing that ever needs
 permission. As a bonus the helper is a single long-lived process, so Music.app
 automation stops re-prompting.
 
-`tools/make-app-bundle.sh` in this repo builds the bundle and prints the
-LaunchAgent plist. The shim/helper split is **not implemented yet** — the script
-currently produces the bundle and the launchd job, which is the part that
-determines TCC identity. Track it in the issues if you want it finished.
+This is implemented. One command sets it all up:
+
+```sh
+./install.sh --scoped                       # or: --scoped --sign "My Cert"
+```
+
+which installs the package, builds and signs the bundle, loads the LaunchAgent,
+waits for the helper to come up, and prints the client config to paste. The
+pieces, if you'd rather do it by hand:
+
+| Piece | What it is |
+|---|---|
+| `secure-applemusic-mcp shim` | what your MCP client spawns. Pure byte pump; imports no Apple Events code and needs no permission. |
+| `secure-applemusic-mcp helper` | what launchd starts from the bundle. Owns the Automation grant; forks one session per connection. |
+| `~/Library/Application Support/<bundle-id>/helper.sock` | the link between them. `0600`, inside a `0700` directory. |
+
+Point your client at the **shim**, never the helper:
+
+```json
+{ "mcpServers": { "apple-music": {
+    "command": "/Users/you/.local/bin/secure-applemusic-mcp",
+    "args": ["shim"] } } }
+```
+
+Remove it all with `./install.sh --uninstall`.
+
+One implementation note, because it cost an afternoon and will bite anyone
+reimplementing this: `dup2`-ing the socket onto fds 0 and 1 is not enough. The
+MCP stdio transport wraps the inherited `sys.stdin.buffer`, whose seekability
+was decided at interpreter startup — and launchd gives the helper a *regular
+file* for stdio, so that cached answer is "seekable". Wrapping it over a socket
+then fails with `ESPIPE: Illegal seek`. The session has to rebuild
+`sys.stdin`/`sys.stdout` from the socket fd.
 
 ### Signing matters more than you'd expect
 

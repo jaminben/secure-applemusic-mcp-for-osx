@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0] - 2026-08-22
 
+### Added — standalone app and scoped permissions
+
+- **`AppleMusicMCP.app`** — a self-contained bundle with its own vendored Python
+  (`tools/build-app.sh`, `make app`). No Python, Homebrew, or command line
+  needed: unzip, drag to /Applications, double-click once. Relocatable by
+  construction — no venv and no absolute paths are baked in.
+- **First-run setup asks before each step** and each is skippable: install the
+  background helper, add the Claude Desktop entry, request the Music permission.
+  The Claude config is *merged* (other servers preserved), backed up first,
+  written atomically, and its mode preserved; an unparseable config is left
+  untouched rather than overwritten. A dialog that fails to display reads as
+  "skip", never as consent.
+- **Scoped permission transport** — `shim` (what the client spawns; no
+  permissions, no Apple Events) talking over a `0600` unix socket to `helper`
+  (started by launchd from the bundle; owns the Automation grant). This is what
+  stops the grant landing on your terminal. See
+  [docs/PERMISSIONS.md](docs/PERMISSIONS.md).
+- `install.sh` for source installs (private `0700` virtualenv, `--scoped`,
+  `--uninstall`), and `make release` producing wheel, sdist, signed `.app`, zip
+  and `SHA256SUMS.txt`.
+
 Forked from [epheterson/applemusic-mcp](https://github.com/epheterson/applemusic-mcp)
 at `0acf697` (v0.18.5+). The goal of the fork is a smaller *capability* surface,
 not more features: everything that let the server reach beyond Apple Music has

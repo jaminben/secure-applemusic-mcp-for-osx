@@ -51,36 +51,80 @@ and playing catalog tracks without owning them and without a developer token
 
 ## Install
 
-Requires macOS with Music.app, signed into your Apple Music account.
+**Requires:** macOS 12+, the Music app signed into your Apple Music account.
+Nothing else — no Python, no Homebrew, no command line.
+
+1. Download `AppleMusicMCP-<version>-macos-<arch>.zip` from
+   [Releases](https://github.com/jaminben/secure-applemusic-mcp-for-osx/releases)
+   and check it against `SHA256SUMS.txt`.
+2. Unzip and drag **AppleMusicMCP.app** to `/Applications`.
+3. Double-click it once.
+
+Setup asks before each step, and each one can be skipped:
+
+| Step | What it does | Why |
+|---|---|---|
+| Background helper | Installs a LaunchAgent that starts the helper at login | Being started by launchd is what gives the app its **own** permission identity |
+| Claude Desktop | Adds one `apple-music` entry to your config | So Claude can reach it. Your other servers are kept and the file is backed up first |
+| Permission | Triggers the macOS "control Music" prompt | Asking now means the grant lands on **this app**, not on whatever spawns your client |
+
+Then restart Claude Desktop. That's it.
+
+The app is self-contained: it carries its own Python runtime, so there's nothing
+to install and nothing on your `PATH` to conflict with.
+
+> **Gatekeeper:** an unsigned download is quarantined — right-click → **Open**
+> once to get past it. Signed builds don't have this problem; if you build it
+> yourself, sign it (see below), because macOS ties the Music permission to the
+> signing identity and an unsigned app re-prompts whenever it changes.
+
+### Why the app, rather than just a command
+
+macOS attributes a permission grant to the **responsible process** — for a
+server your MCP client spawns, that's the *client*. So the obvious setup means
+approving "Automation → Music" for your whole terminal, and every program you
+run from it inherits that.
+
+The app avoids this by splitting in two:
+
+```
+Claude Desktop ──stdio──▶ shim ──unix socket (0600)──▶ helper ──▶ Music.app
+                     no permissions                 owns the grant
+```
+
+The shim holds nothing and can't talk to Music; the launchd-started helper owns
+the grant. You get one revocable row in System Settings → Privacy & Security →
+Automation, and your terminal gets nothing.
+[docs/PERMISSIONS.md](docs/PERMISSIONS.md) has the details.
+
+### From source
 
 ```sh
 git clone https://github.com/jaminben/secure-applemusic-mcp-for-osx
 cd secure-applemusic-mcp-for-osx
-uv sync            # or: pip install .
+./install.sh --scoped --sign "My Local Signing Cert"   # or plain ./install.sh
+make app                                               # or build the .app yourself
 ```
 
-Register with your MCP client:
+`install.sh` installs into a private `0700` virtualenv from the checkout you're
+standing in — nothing is piped from the network into a shell. Plain `./install.sh`
+skips the bundle and configures the simpler (unscoped) stdio server.
 
-```json
-{
-  "mcpServers": {
-    "apple-music": {
-      "command": "/absolute/path/to/.venv/bin/secure-applemusic-mcp",
-      "args": ["serve"]
-    }
-  }
-}
+### Uninstall
+
+Move the app to the Trash, then:
+
+```sh
+launchctl bootout gui/$(id -u)/io.github.jaminben.secure-applemusic-mcp
+rm -f ~/Library/LaunchAgents/io.github.jaminben.secure-applemusic-mcp.plist
+tccutil reset AppleEvents io.github.jaminben.secure-applemusic-mcp
 ```
 
-First use triggers one macOS prompt: **"… wants to control Music.app"**. Allow it.
+Remove the `apple-music` entry from Claude Desktop's config (a backup sits next
+to it), and delete `~/.config/applemusic-mcp` and `~/.cache/applemusic-mcp` if
+you want the credentials and audit log gone too. From a source install:
+`./install.sh --uninstall`.
 
-> **Read [docs/PERMISSIONS.md](docs/PERMISSIONS.md) before you click Allow.**
-> macOS attributes that grant to the *responsible process* — usually your
-> terminal, not this server — which means you'd be granting Music control to
-> everything you run from that terminal. That document explains how to scope it
-> to a dedicated app bundle or user account, and `tools/make-app-bundle.sh`
-> builds the bundle.
->
 > **Never grant this Accessibility.** It cannot use it. If something asks, that's
 > a bug — please file it.
 

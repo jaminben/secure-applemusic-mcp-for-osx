@@ -31,13 +31,26 @@ LOG_DIR="${HOME}/Library/Logs/${BUNDLE_ID}"
 SIGN_ID=""
 DO_INSTALL=0
 
+# launchctl bootout returns before teardown finishes, so a bootout immediately
+# followed by a bootstrap can fail with "service already loaded". Wait for the
+# service to actually disappear (bounded) instead of racing it.
+unload_and_wait() {
+  launchctl bootout "gui/$(id -u)/${BUNDLE_ID}" 2>/dev/null || true
+  for _ in $(seq 1 40); do
+    launchctl print "gui/$(id -u)/${BUNDLE_ID}" >/dev/null 2>&1 || return 0
+    sleep 0.25
+  done
+  echo "warning: ${BUNDLE_ID} is still registered with launchd after 10s" >&2
+  return 1
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --sign)      SIGN_ID="${2:?--sign needs an identity}"; shift 2 ;;
     --out)       OUT_DIR="${2:?--out needs a directory}";   shift 2 ;;
     --install)   DO_INSTALL=1; shift ;;
     --uninstall)
-      launchctl bootout "gui/$(id -u)/${BUNDLE_ID}" 2>/dev/null || true
+      unload_and_wait || true
       rm -f "$PLIST"
       rm -rf "${OUT_DIR}/${APP_NAME}.app"
       echo "Removed the LaunchAgent and bundle."
@@ -132,7 +145,7 @@ echo "Built:  $APP"
 echo "Agent:  $PLIST"
 
 if [[ "$DO_INSTALL" -eq 1 ]]; then
-  launchctl bootout "gui/$(id -u)/${BUNDLE_ID}" 2>/dev/null || true
+  unload_and_wait || true
   launchctl bootstrap "gui/$(id -u)" "$PLIST"
   echo "Loaded the LaunchAgent."
   for _ in $(seq 1 40); do

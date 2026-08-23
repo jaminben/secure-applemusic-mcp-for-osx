@@ -179,6 +179,14 @@ def cmd_helper(args):
     return main()
 
 
+def cmd_app_setup(args):
+    """First-run setup for the standalone .app (LaunchAgent + Claude Desktop +
+    permission prompt). Normally reached by double-clicking the app."""
+    from .app_setup import main
+
+    return main()
+
+
 def cmd_shim(args):
     """Bridge stdio to the resident helper. This is what your MCP client spawns.
 
@@ -203,6 +211,10 @@ def main():
     sub.add_parser(
         "helper",
         help="Run the resident helper behind a unix socket (launchd starts this)",
+    )
+    sub.add_parser(
+        "app-setup",
+        help="First-run setup for the standalone app (double-clicking runs this)",
     )
 
     login = sub.add_parser("login", help="Sign in (--dev: Apple Developer token; optional)")
@@ -252,6 +264,8 @@ def main():
         sys.exit(cmd_shim(args))
     elif args.command == "helper":
         sys.exit(cmd_helper(args))
+    elif args.command == "app-setup":
+        sys.exit(cmd_app_setup(args))
     else:
         parser.print_help()
         sys.exit(0)

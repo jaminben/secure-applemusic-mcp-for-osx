@@ -39,8 +39,14 @@ FORBIDDEN = {
     "webbrowser": "handing a URL to the OS to open",
 }
 
-# subprocess is permitted in exactly one module, for exactly one binary.
-SUBPROCESS_ALLOWED = {"applescript.py"}
+# subprocess is permitted in a named few modules, each for named binaries only.
+# The point of the invariant is that the set of executables this server can
+# launch stays small and reviewable — so the allowlist names them.
+SUBPROCESS_ALLOWED = {
+    "applescript.py": {"osascript"},
+    # The installer has to talk to launchd and show a native dialog.
+    "app_setup.py": {"launchctl", "osascript"},
+}
 
 
 def _source(path: Path) -> str:

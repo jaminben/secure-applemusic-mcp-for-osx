@@ -196,7 +196,9 @@ def test_handshake_survives_the_shim_hop(sock_path, tmp_path):
             timeout=90,
         )
         first = out.stdout.strip().split("\n")[0]
-        assert first, f"no response. shim stderr: {out.stderr}\nhelper: {(tmp_path / 'helper.log').read_text()}"
+        if not first:
+            log = (tmp_path / "helper.log").read_text()
+            raise AssertionError(f"no response.\nshim stderr: {out.stderr}\nhelper: {log}")
         msg = json.loads(first)
         assert msg["id"] == 1
         assert "serverInfo" in msg["result"]
@@ -221,9 +223,7 @@ def test_helper_child_inherits_no_listener(sock_path):
     forks = [
         n
         for n in ast.walk(tree)
-        if isinstance(n, ast.Call)
-        and isinstance(n.func, ast.Attribute)
-        and n.func.attr == "fork"
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "fork"
     ]
     assert forks, "expected a fork-per-connection model"
 
