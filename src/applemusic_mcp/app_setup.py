@@ -236,8 +236,8 @@ def configure_detected_clients() -> list[str]:
     if not found:
         return ["• No MCP clients detected — add the server by hand (see the README)"]
 
-    labels = [c.name for c in found]
-    caveats = "\n".join(f"  {c.name}: {c.caveat}" for c in found if c.caveat)
+    labels = [c.label for c in found]
+    caveats = "\n".join(f"  {c.label}: {c.caveat}" for c in found if c.caveat)
     prompt = (
         "Found these MCP clients on this Mac. Select the ones that should be "
         "able to control Music.\n\nEach file is backed up first, and your other "
@@ -255,7 +255,7 @@ def configure_detected_clients() -> list[str]:
     lines = []
     configured = []
     for client in found:
-        if client.name not in chosen:
+        if client.label not in chosen:
             continue
         ok, msg = clients.configure(client, client.entry(str(helper_executable()), ["shim"]))
         lines.append(("✓ " if ok else "✗ ") + msg)
@@ -278,11 +278,11 @@ def _offer_restart(configured: list) -> list[str]:
     running = [c for c in configured if c.restartable and clients.is_running(c)]
     stale = [c for c in configured if not c.restartable and c.caveat]
 
-    out: list[str] = [f"• {c.name}: {c.caveat}" for c in stale]
+    out: list[str] = [f"• {c.label}: {c.caveat}" for c in stale]
     if not running:
         return out
 
-    names = ", ".join(c.name for c in running)
+    names = ", ".join(c.label for c in running)
     prompt = (
         f"{names} {'is' if len(running) == 1 else 'are'} running.\n\n"
         "MCP servers are read at startup, so Apple Music won't appear until "
@@ -296,12 +296,12 @@ def _offer_restart(configured: list) -> list[str]:
         if not clients.quit_client(client):
             # Never escalate to a kill: an app that ignores SIGTERM has a
             # reason, and it is not worth the user's unsaved work.
-            out.append(f"✗ {client.name} did not quit — restart it yourself")
+            out.append(f"✗ {client.label} did not quit — restart it yourself")
             continue
         out.append(
-            f"✓ {client.name} restarted"
+            f"✓ {client.label} restarted"
             if clients.relaunch(client)
-            else f"• {client.name} quit — reopen it to pick up the server"
+            else f"• {client.label} quit — reopen it to pick up the server"
         )
     return out
 

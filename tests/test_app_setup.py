@@ -343,6 +343,20 @@ def _client(name="Cursor", restartable=True, caveat=""):
     )
 
 
+def test_the_picker_offers_labels_not_bare_names(monkeypatch):
+    """Selection is matched back by label, so the two must agree."""
+    from applemusic_mcp import clients as _c
+
+    codex = _c.find("codex")
+    monkeypatch.setattr(app_setup.clients, "detected", lambda: [codex])
+    seen = {}
+    monkeypatch.setattr(
+        app_setup, "_choose", lambda prompt, items, **k: seen.setdefault("items", items) and []
+    )
+    app_setup.configure_detected_clients()
+    assert seen["items"] == ["Codex (ChatGPT Classic)"]
+
+
 def test_no_restart_prompt_when_nothing_is_running(monkeypatch):
     monkeypatch.setattr(app_setup.clients, "is_running", lambda c: False)
     called = []

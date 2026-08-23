@@ -63,9 +63,17 @@ class Client:
     # present but has never written an MCP config.
     evidence: tuple[Path, ...] = ()
     caveat: str = ""
+    # What the app is called in /Applications, when that differs from the name
+    # we use. The picker shows both: a user looking for "ChatGPT Classic"
+    # should not have to know it is Codex underneath.
+    aka: str = ""
     # A GUI app we can quit and reopen for the user. False for anything that
     # lives in a terminal, where "restart it" is the user's job.
     restartable: bool = True
+
+    @property
+    def label(self) -> str:
+        return f"{self.name} ({self.aka})" if self.aka else self.name
 
     def installed(self) -> bool:
         return any(p.exists() for p in (self.config, *self.evidence))
@@ -123,6 +131,7 @@ def known_clients() -> list[Client]:
         Client(
             key="codex",
             name="Codex",
+            aka="ChatGPT Classic",
             config=home / ".codex" / "config.toml",
             fmt="toml",
             servers_key="mcp_servers",

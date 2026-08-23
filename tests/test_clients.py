@@ -460,3 +460,24 @@ def test_creating_a_config_from_nothing_writes_no_backup(home):
     client = _codex(home)
     clients.configure(client, {"command": "/a", "args": ["shim"]})
     assert list(client.config.parent.glob("*.bak-*")) == []
+
+
+def test_codex_is_labelled_with_the_name_on_disk(home):
+    """It ships as ChatGPT Classic.app. Someone looking for the ChatGPT app in
+    the picker must not have to know it is Codex underneath."""
+    client = clients.find("codex")
+    assert client.label == "Codex (ChatGPT Classic)"
+    assert "ChatGPT" in client.label
+
+
+def test_clients_without_an_alias_are_labelled_plainly(home):
+    for client in clients.known_clients():
+        if client.key != "codex":
+            assert client.label == client.name, client.key
+
+
+def test_labels_are_unique(home):
+    """The picker matches the user's selection back by label, so a duplicate
+    would configure the wrong client."""
+    labels = [c.label for c in clients.known_clients()]
+    assert len(set(labels)) == len(labels)
