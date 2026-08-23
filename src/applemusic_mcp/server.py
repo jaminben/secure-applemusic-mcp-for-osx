@@ -8697,6 +8697,20 @@ def _playback_play(
     # Track not in library - search catalog
     search_term = f"{track_name} {track_artist}".strip() if track_artist else track_name
     songs = _search_catalog_songs(search_term, limit=5)
+    if not songs:
+        # _search_catalog_songs needs a developer token and returns [] without
+        # one, which made this path report "not found in catalog" for tracks
+        # that are plainly there — the `catalog` tool finds them via the public
+        # iTunes Search API. Use the same tokenless rail here so the outcome is
+        # an accurate message ("in the catalog, but adding it needs a token")
+        # instead of a false negative.
+        songs = [
+            {
+                "id": hit["id"],
+                "attributes": {"name": hit["name"], "artistName": hit["artist"], "url": ""},
+            }
+            for hit in _catalog_search_itunes(search_term, 5)
+        ]
 
     # Find best match
     for song in songs:

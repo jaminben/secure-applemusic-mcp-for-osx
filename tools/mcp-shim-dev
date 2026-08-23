@@ -1,0 +1,6 @@
+#!/bin/sh
+# Thin wrapper so an MCP client can attach to the DEV helper (source tree).
+# Kept as a file rather than inline env config because clients differ in
+# whether they let you set environment variables per server.
+export APPLEMUSIC_MCP_SOCKET="$HOME/Library/Application Support/io.github.jaminben.amcp-dev/helper.sock"
+exec "$(cd "$(dirname "$0")/.." && pwd)/.venv/bin/secure-applemusic-mcp" shim "$@"

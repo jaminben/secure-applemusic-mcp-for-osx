@@ -876,3 +876,61 @@ def test_library_diff():
     # clean case
     same = {"track_count": 1, "playback": {}, "playlists": {}, "folders": {}}
     assert asc.library_diff(same, same)["is_clean"] is True
+
+
+# --- AppleScript string coercion ------------------------------------------------
+
+
+def test_library_stats_script_coerces_every_value_to_text():
+    """`&` in AppleScript only yields a STRING when the left operand is text.
+
+    `integer & "|||"` builds a LIST, which osascript prints comma-separated —
+    collapsing the ||| delimiting and parsing every field into garbage. The
+    visible symptom was volume permanently reading 0. Verified live:
+        set n to 1234
+        return n & "|||" & 60        -> '1234, |||, 60'
+        return (n as text) & "|||" & (60 as text) -> '1234|||60'
+    """
+    import inspect
+
+    src = inspect.getsource(asc.get_library_stats)
+    body = src[src.index("tell application") : src.index("end tell")]
+    # Every numeric/boolean value must be coerced before it meets a delimiter.
+    for var in ("trackCount", "playlistCount", "shuffleState", "vol"):
+        assert f"({var} as text)" in body, f"{var} is concatenated without `as text`"
+    assert "return trackCount &" not in body, "leading operand must be text"
+
+
+def test_library_stats_parses_a_well_formed_line(monkeypatch):
+    monkeypatch.setattr(
+        asc, "run_applescript", lambda s: (True, "1234|||45|||playing|||false|||off|||60")
+    )
+    ok, stats = asc.get_library_stats()
+    assert ok
+    assert stats == {
+        "track_count": 1234,
+        "playlist_count": 45,
+        "player_state": "playing",
+        "shuffle": False,
+        "repeat": "off",
+        "volume": 60,
+    }
+
+
+def test_library_stats_reports_the_list_rendering_instead_of_zeroing(monkeypatch):
+    """The exact broken output, which used to yield volume=0 and stray commas.
+
+    It must now fail loudly: a wrong number reads as a real measurement, so
+    silently defaulting to 0 is what kept this bug invisible.
+    """
+    broken = "1234, |||, 45, |||, playing, |||, false, |||, off, |||, 60"
+    monkeypatch.setattr(asc, "run_applescript", lambda s: (True, broken))
+    ok, err = asc.get_library_stats()
+    assert not ok
+    assert "Failed to parse" in err
+
+
+def test_library_stats_rejects_a_short_line(monkeypatch):
+    monkeypatch.setattr(asc, "run_applescript", lambda s: (True, "1|||2|||playing"))
+    ok, err = asc.get_library_stats()
+    assert not ok and "Failed to parse" in err

@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""Call MCP tools from the shell. The fast half of the dev loop.
+
+    tools/mcp-call playback action=now_playing
+    tools/mcp-call playback action=settings volume:=25
+    tools/mcp-call --dev library action=search query="Beatles" limit:=3
+    tools/mcp-call --list
+    tools/mcp-call --raw catalog action=search query="Red Right Hand"
+
+Values are strings by default. Use ``key:=value`` for JSON (numbers, booleans,
+null, arrays) — ``limit:=3`` sends 3, ``limit=3`` sends "3".
+
+Why this exists: a real client holds one long-lived session, so testing a change
+through Claude Code means restarting it. This opens a fresh session per
+invocation, which with the dev helper (see tools/dev-helper.sh) means an edit is
+live on the very next call — no rebuild, no reinstall, no client restart.
+
+--dev targets the development helper's socket instead of the installed app's.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+PROD_APP = Path("/Applications/AppleMusicMCP.app/Contents/MacOS/AppleMusicMCP")
+REPO = Path(__file__).resolve().parent.parent
+DEV_SOCKET = Path.home() / "Library" / "Application Support" / "io.github.jaminben.amcp-dev" / "helper.sock"
+
+
+def _shim_command(dev: bool) -> tuple[list[str], dict]:
+    env = dict(os.environ)
+    if dev:
+        env["APPLEMUSIC_MCP_SOCKET"] = str(DEV_SOCKET)
+        venv = REPO / ".venv" / "bin" / "secure-applemusic-mcp"
+        cmd = [str(venv), "shim"] if venv.exists() else ["uv", "run", "--directory", str(REPO),
+                                                         "secure-applemusic-mcp", "shim"]
+    else:
+        cmd = [str(PROD_APP), "shim"]
+    return cmd, env
+
+
+def _parse_args(pairs: list[str]) -> dict:
+    args: dict = {}
+    for pair in pairs:
+        if ":=" in pair:
+            key, _, raw = pair.partition(":=")
+            try:
+                args[key] = json.loads(raw)
+            except json.JSONDecodeError:
+                sys.exit(f"error: {key}:={raw!r} is not valid JSON (use key=value for a string)")
+        elif "=" in pair:
+            key, _, raw = pair.partition("=")
+            args[key] = raw
+        else:
+            sys.exit(f"error: expected key=value or key:=json, got {pair!r}")
+    return args
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(add_help=False)
+    ap.add_argument("--dev", action="store_true", help="target the dev helper")
+    ap.add_argument("--list", action="store_true", help="list tools and exit")
+    ap.add_argument("--raw", action="store_true", help="print the raw JSON result")
+    ap.add_argument("--timeout", type=float, default=120.0)
+    ap.add_argument("-h", "--help", action="store_true")
+    ap.add_argument("tool", nargs="?")
+    ap.add_argument("pairs", nargs="*")
+    ns = ap.parse_args()
+
+    if ns.help or (not ns.tool and not ns.list):
+        print(__doc__)
+        return 0
+
+    cmd, env = _shim_command(ns.dev)
+    proc = subprocess.Popen(
+        cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, bufsize=1, env=env,
+    )
+    responses: dict = {}
+
+    def reader():
+        for line in proc.stdout:  # type: ignore[union-attr]
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(msg.get("id"), int):
+                responses[msg["id"]] = msg
+
+    threading.Thread(target=reader, daemon=True).start()
+
+    def send(obj):
+        proc.stdin.write(json.dumps(obj) + "\n")  # type: ignore[union-attr]
+        proc.stdin.flush()  # type: ignore[union-attr]
+
+    def wait_for(msg_id: int, timeout: float):
+        # A real client keeps stdin open for the whole session; closing it makes
+        # the server tear down and drop in-flight requests. So: hold it open and
+        # poll for the reply.
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if msg_id in responses:
+                return responses[msg_id]
+            if proc.poll() is not None:
+                break
+            time.sleep(0.05)
+        return None
+
+    send({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+          "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                     "clientInfo": {"name": "mcp-call", "version": "1"}}})
+    if wait_for(1, 30) is None:
+        err = (proc.stderr.read() if proc.stderr else "") or "no response"
+        proc.kill()
+        print(f"error: could not initialize: {err.strip()}", file=sys.stderr)
+        return 1
+    send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+
+    rc = 0
+    if ns.list:
+        send({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        msg = wait_for(2, 30)
+        if msg:
+            for tool in msg.get("result", {}).get("tools", []):
+                print(f"{tool['name']:10} {tool.get('description','').splitlines()[0][:90]}")
+        else:
+            rc = 1
+    else:
+        send({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+              "params": {"name": ns.tool, "arguments": _parse_args(ns.pairs)}})
+        msg = wait_for(3, ns.timeout)
+        if msg is None:
+            print("error: timed out waiting for the tool result", file=sys.stderr)
+            rc = 1
+        elif ns.raw:
+            print(json.dumps(msg, indent=2))
+        elif "error" in msg:
+            print(f"error: {msg['error'].get('message', msg['error'])}", file=sys.stderr)
+            rc = 1
+        else:
+            content = msg.get("result", {}).get("content", [])
+            print(content[0].get("text", "") if content else json.dumps(msg.get("result")))
+
+    try:
+        proc.stdin.close()  # type: ignore[union-attr]
+        proc.wait(timeout=5)
+    except Exception:
+        proc.kill()
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())

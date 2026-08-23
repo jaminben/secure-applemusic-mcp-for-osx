@@ -2,7 +2,7 @@
 # no venv activated. Override for a specific interpreter:  PY="python3.12" make test
 PY ?= uv run python
 
-.PHONY: help test test-all preflight preflight-ui invariants app release clean-dist
+.PHONY: help test test-all preflight preflight-ui invariants app release clean-dist dev dev-stop
 
 help:
 	@echo "make test         - fast suite (mocked logic); what GitHub CI runs"
@@ -11,6 +11,8 @@ help:
 	@echo "make preflight    - PRE-RELEASE GATE: fast + live env check + live API suite"
 	@echo "make preflight-ui - NATIVE UI GATE: live Music.app playback paths (run on iMac AND mini,"
 	@echo "                    unlocked console session) before any UI-touching release"
+	@echo "make dev          - run the server from source (hot-reload dev loop)"
+	@echo "make dev-stop     - stop the dev helper"
 	@echo "make invariants   - capability invariants only (the fork's reason to exist)"
 	@echo "make app          - build the standalone AppleMusicMCP.app"
 	@echo "make release      - invariants + tests + wheel/sdist + signed .app + checksums"
@@ -69,3 +71,20 @@ release: clean-dist invariants test
 	@ls -lh dist/ | tail -n +2
 	@echo
 	@echo "NOTE: publishing is gated on the upstream disclosure window — see DISCLOSURE.md"
+
+
+# Development loop. The installed app vendors its own copy of the code, so
+# testing a change there costs a rebuild + reinstall + launchd restart. This
+# runs the same helper straight from the working tree under its own bundle
+# identity and socket, and the server module is imported inside the forked
+# child — so an edit is live on the NEXT call, with no restart:
+#
+#     make dev
+#     tools/mcp-call --dev playback action=now_playing
+#
+# Restart only after editing helper.py / ipc.py / shim.py, which the parent holds.
+dev:
+	./tools/dev-helper.sh start $(if $(SIGN_ID),--sign "$(SIGN_ID)",)
+
+dev-stop:
+	./tools/dev-helper.sh stop

@@ -2300,7 +2300,15 @@ def reveal_track(track_name: str, artist: Optional[str] = None) -> tuple[bool, s
 
 
 def get_library_stats() -> tuple[bool, dict]:
-    """Get library statistics."""
+    """Get library statistics: counts, player state, shuffle, repeat, volume.
+
+    Every value is coerced with ``as text`` before concatenation. That is not
+    stylistic: in AppleScript ``&`` only produces a STRING when the left operand
+    is already text. ``integer & "|||"`` builds a *list*, which osascript then
+    prints comma-separated — so the whole ``|||`` delimiting collapsed and the
+    fields parsed into garbage. The visible symptom was volume always reading 0
+    and stray commas in the player state (``Player: , playing,``).
+    """
     script = """
     tell application "Music"
         set trackCount to count of tracks of library playlist 1
@@ -2310,24 +2318,31 @@ def get_library_stats() -> tuple[bool, dict]:
         set repeatState to song repeat as string
         set vol to sound volume
 
-        return trackCount & "|||" & playlistCount & "|||" & playerState & "|||" & shuffleState & "|||" & repeatState & "|||" & vol
+        return (trackCount as text) & "|||" & (playlistCount as text) & "|||" & ¬
+            playerState & "|||" & (shuffleState as text) & "|||" & ¬
+            repeatState & "|||" & (vol as text)
     end tell
     """
     success, output = run_applescript(script)
     if not success:
         return False, output
 
-    parts = output.split("|||")
-    if len(parts) >= 6:
-        return True, {
-            "track_count": int(parts[0]) if parts[0].isdigit() else 0,
-            "playlist_count": int(parts[1]) if parts[1].isdigit() else 0,
-            "player_state": parts[2],
-            "shuffle": parts[3].lower() == "true",
-            "repeat": parts[4],
-            "volume": int(parts[5]) if parts[5].isdigit() else 0,
-        }
-    return False, "Failed to parse library stats"
+    parts = [p.strip() for p in output.split("|||")]
+    if len(parts) < 6:
+        return False, f"Failed to parse library stats: {output[:200]!r}"
+    # Strict on the numerics. Defaulting an unparseable value to 0 is exactly
+    # what let the coercion bug above go unnoticed — a wrong number looks like a
+    # real reading, whereas a failure gets investigated.
+    if not (parts[0].isdigit() and parts[1].isdigit() and parts[5].isdigit()):
+        return False, f"Failed to parse library stats: {output[:200]!r}"
+    return True, {
+        "track_count": int(parts[0]),
+        "playlist_count": int(parts[1]),
+        "player_state": parts[2],
+        "shuffle": parts[3].lower() == "true",
+        "repeat": parts[4],
+        "volume": int(parts[5]),
+    }
 
 
 # =============================================================================

@@ -22,6 +22,17 @@ from applemusic_mcp.server import InputType, ResolvedInput, ResolvedPlaylist
 
 
 @pytest.fixture(autouse=True)
+def _no_real_itunes(monkeypatch):
+    """Stub the tokenless catalog rail by default.
+
+    The play path falls back to Apple's public iTunes Search API when no
+    developer token is configured, which is a REAL network call — the suite's
+    network guard rightly blocks it. Tests that want catalog hits override this.
+    """
+    monkeypatch.setattr(server, "_catalog_search_itunes", lambda *a, **k: [])
+
+
+@pytest.fixture(autouse=True)
 def _reset_active_playback():
     """The active-engine hint is a module global; reset it so play/queue tests
     that set it don't leak into later tests that read it."""
