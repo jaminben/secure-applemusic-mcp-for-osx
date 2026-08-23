@@ -189,3 +189,38 @@ def test_dunder_main_entrypoint(monkeypatch):
     monkeypatch.setattr(cli, "cmd_status", lambda args: 0)
     with pytest.raises(SystemExit):
         runpy.run_module("applemusic_mcp.cli", run_name="__main__")
+
+
+def test_every_cli_subcommand_has_its_handler():
+    """Regression: a broad rewrite of cmd_login deleted _login_dev along with it,
+    and `login --dev` raised NameError at runtime — no test noticed, because the
+    handlers were only ever exercised via mocks."""
+    import applemusic_mcp.cli as cli_mod
+
+    for name in ("cmd_login", "_login_dev", "cmd_logout", "cmd_reset",
+                 "cmd_status", "cmd_serve", "cmd_shim", "cmd_helper", "cmd_app_setup"):
+        assert hasattr(cli_mod, name), f"cli.{name} is missing"
+
+
+def test_login_dev_reaches_the_auth_server(tmp_path, monkeypatch):
+    """--dev must get all the way to the browser authorization step."""
+    import applemusic_mcp.cli as cli_mod
+
+    monkeypatch.setenv("APPLEMUSIC_MCP_HOME", str(tmp_path))
+    cfg_dir = tmp_path / ".config" / "applemusic-mcp"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.json").write_text('{"team_id":"T","key_id":"K","private_key_path":"/x"}')
+    monkeypatch.setattr(cli_mod, "get_config_dir", lambda: cfg_dir)
+    monkeypatch.setattr(cli_mod, "generate_developer_token", lambda expiry_days=180: "tok")
+    reached = []
+    monkeypatch.setattr(cli_mod, "run_auth_server", lambda port: reached.append(port) or "mut")
+
+    class A:
+        dev = True
+        days = 180
+        port = 8765
+        team_id = key_id = key_path = None
+        safari = chrome = False
+
+    assert cli_mod.cmd_login(A()) == 0
+    assert reached == [8765]

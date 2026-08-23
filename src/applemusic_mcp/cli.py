@@ -15,6 +15,7 @@ into one guided `login --dev`.
 
 import argparse
 import json
+import os
 import sys
 import time
 
@@ -56,6 +57,49 @@ def cmd_login(args):
         )
         return 0
     return _login_dev(args)
+
+
+def _login_dev(args):
+    """Guided Apple Developer token setup: ensure config.json, mint the
+    developer token, then authorize for a Music User Token.
+
+    Prompts only for what is missing, so a second run with config.json already
+    present goes straight to the browser authorization step.
+    """
+    config_dir = get_config_dir()
+    config_file = config_dir / "config.json"
+
+    if not config_file.exists():
+        print("Apple Developer setup (one time). From your MusicKit key:")
+        team_id = args.team_id or input("  Team ID: ").strip()
+        key_id = args.key_id or input("  Key ID: ").strip()
+        key_path = args.key_path or input("  Path to .p8 key: ").strip()
+        if not (team_id and key_id and key_path):
+            print("Error: team ID, key ID, and .p8 path are all required.")
+            return 1
+        config_dir.mkdir(parents=True, exist_ok=True)
+        # 0600 from creation: this names the .p8 and identifies the team, and
+        # the directory is 0700, but there is no reason to leave it group- or
+        # world-readable in between.
+        fd = os.open(str(config_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(
+                {"team_id": team_id, "key_id": key_id, "private_key_path": key_path}, f, indent=2
+            )
+        print(f"Wrote {config_file}")
+
+    try:
+        generate_developer_token(expiry_days=args.days)
+        print("Developer token generated.")
+    except FileNotFoundError as e:
+        print(f"Error: {e}")
+        return 1
+    except Exception as e:
+        print(f"Error generating token: {e}")
+        return 1
+
+    token = run_auth_server(port=args.port)
+    return 0 if token else 1
 
 
 def cmd_logout(args):

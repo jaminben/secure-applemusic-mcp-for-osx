@@ -1169,7 +1169,7 @@ def _label_write(result: str, rail: str) -> str:
 
 _SESSION_EXPIRED_MSG = (
     "Error: your Apple Music session has expired — re-run `applemusic-mcp login` "
-    "(browser) or `applemusic-mcp login --dev` (developer-token path)."
+    "`applemusic-mcp login --dev` (Apple Developer token)."
 )
 # Apple's throttle is a ROLLING ~60-minute window with no Retry-After header, so
 # "wait a moment" was wrong advice: a short cooldown still 429s, and each retry
@@ -2476,7 +2476,7 @@ def _unified_auto_search_to_playlist(
             return (False, f"Catalog add disabled: {_FORCED_TOKENLESS_MSG}", steps)
         return (
             False,
-            "Catalog add needs the API. Run `applemusic-mcp login` (browser sign-in, "
+            "Catalog add needs the Apple Music API. Run `applemusic-mcp login --dev` ("
             "no Apple Developer account) or `applemusic-mcp login --dev`.",
             steps,
         )
@@ -5123,7 +5123,7 @@ def _library_add(
             return f"Error: Adding to your library is disabled: {_FORCED_TOKENLESS_MSG}"
         return (
             "Error: Adding to your library needs the API. Run "
-            "`applemusic-mcp login` (browser sign-in, no Apple Developer account) "
+            "`applemusic-mcp login --dev` (Apple Developer token) "
             "or `applemusic-mcp login --dev`."
         )
 
@@ -7692,18 +7692,19 @@ def _config_auth_status(mutation_status: "Optional[str]" = None) -> str:
         status.append("Developer Token: OK (web player — auto-refreshes, no action needed)")
     else:
         status.append(
-            "Developer Token: MISSING — run `applemusic-mcp login` (browser, no account) "
+            "Developer Token: MISSING — run `applemusic-mcp login --dev` "
             "or `applemusic-mcp login --dev` (Apple Developer)"
         )
 
-    # User token (media-user-token). Persists; re-auth = signin (browser) or authorize.
+    # Music User Token. Persists; re-auth via `login --dev`, which mints the
+    # developer token and then runs the local MusicKit authorization page.
     if user_present:
         status.append(
             "Music User Token: OK (persists; re-auth with `applemusic-mcp login` if it fails)"
         )
     else:
         status.append(
-            "Music User Token: MISSING — run `applemusic-mcp login` (browser) "
+            "Music User Token: MISSING — run `applemusic-mcp login --dev` "
             "or `applemusic-mcp login --dev` (dev token)"
         )
 
@@ -7722,7 +7723,7 @@ def _config_auth_status(mutation_status: "Optional[str]" = None) -> str:
             elif response.status_code in (401, 403):
                 status.append(
                     "API Connection: UNAUTHORIZED — your session expired. Re-run "
-                    "`applemusic-mcp login` (browser) or `applemusic-mcp login --dev` (dev token)."
+                    "`applemusic-mcp login --dev` (Apple Developer token)."
                 )
             elif response.status_code == 429:
                 rate_limit.note_status(429, rate_limit.API)

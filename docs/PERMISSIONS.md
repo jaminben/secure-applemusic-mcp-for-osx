@@ -155,3 +155,45 @@ designed so you never need it:
 Both synthetic-input channels die at the OS layer, no profile required. Nothing
 in this build asks for that permission — if something prompts you for
 Accessibility, treat it as a bug and file it.
+
+
+---
+
+# Rejected: native MusicKit (Swift) instead of a developer token
+
+Worth recording, because it is the obvious idea and it does not work on macOS.
+
+**The appeal.** A Swift helper using Apple's `MusicKit` framework would need no
+developer token in the app at all: the `com.apple.developer.musickit` entitlement
+plus the user's consent replaces it, so nothing secret is ever distributed. It
+would also swap the localhost browser-authorization page for a native dialog.
+
+**Why it fails.** MusicKit on macOS is read-and-play-in-process only. Checked by
+compiling against the real SDK (macOS 15.7, Swift 6.2, target macOS 14):
+
+| API | macOS |
+|---|---|
+| `MusicAuthorization` | available |
+| `MusicCatalogResourceRequest` (catalog reads) | available |
+| `MusicLibraryRequest` (library reads) | available |
+| `ApplicationMusicPlayer` (in-process player) | available |
+| `SystemMusicPlayer` (drives Music.app) | **`@available(macOS, unavailable)`** |
+| `MusicLibrary.shared.edit` / `.add` | **`@available(macOS, unavailable)`** |
+
+So the one thing we wanted — add a catalog track to the library — is not
+expressible in MusicKit on macOS at all. Apple gates library mutation to iOS.
+
+`ApplicationMusicPlayer` *can* play an unowned catalog track without a token,
+but it is an in-process player, not Music.app: transport (`pause`, `next`,
+`now_playing`) would not reach it, reintroducing exactly the two-engine split
+this fork removed with the browser player — and the process would have to stay
+resident to hold the audio.
+
+**Note for anyone re-checking this:** `swiftc -parse` does NOT evaluate
+availability, so a parse-only probe compiles all of the above cleanly and looks
+like a green light. Use `-typecheck` or a real build.
+
+**What to do instead.** The REST rail (`POST /me/library` with a developer token,
+then play by name over Apple Events) does the whole job in about 8 seconds and
+keeps a single player. For distribution the token question is answered by a
+broker, not by MusicKit — see the shipping options in the README.
