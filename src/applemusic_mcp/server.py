@@ -60,8 +60,10 @@ APPLESCRIPT_AVAILABLE = asc.is_available()
 # Max characters for track listing output
 MAX_OUTPUT_CHARS = 50000
 
-# Minimum digits for a string to be considered a catalog ID (Apple IDs are 10 digits)
-MIN_CATALOG_ID_LENGTH = 9
+# Minimum digits for a string to be considered a catalog ID. Modern Apple IDs are
+# 10 digits, but catalog entries from the iTunes Store era are 8 (e.g. 89285956,
+# "Hedwig's Theme"). Anything shorter is far more likely to be a track name.
+MIN_CATALOG_ID_LENGTH = 8
 
 
 class EntityType(Enum):

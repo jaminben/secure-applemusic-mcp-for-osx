@@ -169,17 +169,51 @@ plutil -lint "${APP}/Contents/Info.plist" >/dev/null
 # --- 4. sign -----------------------------------------------------------------
 if [[ -n "$SIGN_ID" ]]; then
   echo "==> Signing"
-  # Inside-out: nested Mach-O (the interpreter and every .so) must be signed
-  # before the bundle that contains them.
-  find "${RES}/python" "${RES}/lib" \( -name '*.dylib' -o -name '*.so' \) -print0 2>/dev/null \
-    | xargs -0 -r codesign --force --timestamp=none --sign "$SIGN_ID" 2>/dev/null || true
-  codesign --force --timestamp=none --sign "$SIGN_ID" "$VENDORED_PY" 2>/dev/null || true
+
+  # Notarization has two hard requirements a local self-signed build cannot
+  # meet: a secure timestamp (needs Apple's timestamp server and a real cert)
+  # and the hardened runtime. So a Developer ID identity gets both, and a
+  # self-signed one gets neither and stays usable offline.
+  if [[ "$SIGN_ID" == *"Developer ID"* ]]; then
+    SIGN_OPTS=(--timestamp --options runtime)
+    echo "    Developer ID -> hardened runtime + secure timestamp (notarizable)"
+  else
+    SIGN_OPTS=(--timestamp=none)
+    echo "    local identity -> no hardened runtime or timestamp (NOT notarizable)"
+  fi
+
+  # Inside-out, and deliberately NOT --deep. --deep re-signs nested code with
+  # the OUTER bundle's options, which silently replaces the MusicKit helper's
+  # own signature; Apple deprecated it for exactly that reason. Every Mach-O is
+  # signed explicitly instead, deepest first.
+  #
+  # Detected with file(1) rather than by extension: the vendored CPython ships
+  # executables with no suffix and .so files that are not all in one place, and
+  # a missed binary is a notarization rejection several minutes later.
+  signed=0
+  while IFS= read -r -d '' macho; do
+    codesign --force "${SIGN_OPTS[@]}" --sign "$SIGN_ID" "$macho" 2>/dev/null \
+      && signed=$((signed + 1))
+  done < <(
+    find "$RES" -type f \( -perm -u+x -o -name '*.so' -o -name '*.dylib' \) -print0 2>/dev/null \
+      | while IFS= read -r -d '' f; do
+          file -b "$f" | grep -q "Mach-O" && printf '%s\0' "$f"
+        done
+  )
+  echo "    signed ${signed} nested Mach-O files"
+
+  # The MusicKit helper is its own bundle: signed as a unit, after its contents
+  # and before the bundle that contains it.
   if [[ -d "${APP}/Contents/Helpers/AMCPMusicKit.app" ]]; then
-    codesign --force --options runtime --timestamp=none --sign "$SIGN_ID" \
+    codesign --force "${SIGN_OPTS[@]}" --sign "$SIGN_ID" \
       "${APP}/Contents/Helpers/AMCPMusicKit.app"
   fi
-  codesign --force --deep --timestamp=none --sign "$SIGN_ID" "$APP"
+
+  codesign --force "${SIGN_OPTS[@]}" --sign "$SIGN_ID" "$APP"
   codesign --verify --deep --strict "$APP" && echo "    signature verifies"
+  if [[ "$SIGN_ID" == *"Developer ID"* ]]; then
+    echo "    next: tools/notarize.sh \"$APP\""
+  fi
 else
   cat >&2 <<'WARN'
 
