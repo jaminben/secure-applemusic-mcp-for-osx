@@ -13,6 +13,7 @@ import os
 import plistlib
 import stat
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -174,7 +175,9 @@ def spy(monkeypatch):
     monkeypatch.setattr(app_setup, "install_launch_agent", lambda: calls.append("agent"))
     monkeypatch.setattr(app_setup, "load_agent", lambda: calls.append("load") or True)
     monkeypatch.setattr(
-        app_setup, "configure_claude_desktop", lambda *a: (calls.append("claude"), (True, "ok"))[1]
+        app_setup,
+        "configure_detected_clients",
+        lambda: (calls.append("clients"), ["✓ configured a client's config"])[1],
     )
     monkeypatch.setattr(
         app_setup, "prime_permission", lambda: (calls.append("permission"), (True, "ok"))[1]
@@ -212,13 +215,13 @@ def test_accepting_only_the_helper_runs_only_the_helper(spy, monkeypatch):
     _answers(monkeypatch, "Continue", "Install", "Skip", "Skip", "Done")
     app_setup.main()
     assert spy == ["agent", "load"]
-    assert "claude" not in spy and "permission" not in spy
+    assert "clients" not in spy and "permission" not in spy
 
 
 def test_accepting_everything_runs_everything_in_order(spy, monkeypatch):
-    _answers(monkeypatch, "Continue", "Install", "Add Entry", "Ask macOS", "Done")
+    _answers(monkeypatch, "Continue", "Install", "Choose Clients", "Ask macOS", "Done")
     app_setup.main()
-    assert spy == ["agent", "load", "claude", "permission"]
+    assert spy == ["agent", "load", "clients", "permission"]
 
 
 def test_prompts_name_the_file_and_the_permission(monkeypatch):
@@ -226,7 +229,8 @@ def test_prompts_name_the_file_and_the_permission(monkeypatch):
     app_setup.main()
     texts = "\n".join(t for t, _ in seen)
     # The user should be able to see exactly what is about to change.
-    assert "claude_desktop_config.json" in texts
+    assert "MCP clients" in texts
+    assert "backup" in texts
     assert "LaunchAgents" in texts
     assert "wants to control Music" in texts
     assert "never asks for Accessibility" in texts.replace("\n", " ")
@@ -275,26 +279,33 @@ def test_written_config_keeps_owner_only_mode(cfg):
 
 def test_every_dialog_string_is_valid_applescript():
     """Regression: json.dumps escapes non-ASCII to \\uXXXX, which AppleScript
-    rejects — osascript exits 1 and no dialog appears. Because a failed dialog
-    is deliberately read as "skip", that turned the entire installer into a
-    silent no-op. The real strings contain → ✓ ✗, so this is the normal path.
+    rejects as a SYNTAX ERROR — osascript exits 1 and no dialog appears.
+    Because a failed dialog is deliberately read as "skip", that turned the
+    entire installer into a silent no-op. The real strings contain — → ✓ ✗.
 
-    Compiles each string with `return`, so nothing is displayed.
+    An earlier version of this test checked _as_applescript_string directly
+    while _dialog still called json.dumps, so it passed while the installer was
+    broken. It therefore compiles the whole `display dialog` command now, built
+    the way _dialog builds it.
     """
     import subprocess
 
     texts = {
         "intro": app_setup._INTRO,
         "helper": app_setup._STEP_HELPER.format(bundle=app_setup.BUNDLE_ID),
-        "claude": app_setup._STEP_CLAUDE.format(
-            key=app_setup.SERVER_KEY, path=app_setup.CLAUDE_CONFIG
-        ),
+        "clients": app_setup._STEP_CLIENTS.format(key=app_setup.SERVER_KEY),
         "permission": app_setup._STEP_PERMISSION,
+        "summary": "Setup finished.\n\n✓ a\n✗ b\n• c",
     }
     for name, text in texts.items():
-        script = f"return {app_setup._as_applescript_string(text)}"
+        script = (
+            f"display dialog {app_setup._as_applescript_string(text)} "
+            f"with title {app_setup._as_applescript_string('Apple Music MCP')} "
+            f'buttons {{"OK"}} default button 1 with icon note'
+        )
         res = subprocess.run(
-            ["osascript", "-e", script], capture_output=True, text=True, timeout=60
+            ["osacompile", "-o", "/dev/null", "-e", script],
+            capture_output=True, text=True, timeout=60,
         )
         assert res.returncode == 0, f"{name} dialog is not valid AppleScript: {res.stderr}"
 
@@ -318,3 +329,80 @@ def test_dialog_quoting_survives_a_round_trip(hostile):
     # osascript renders a literal newline in a returned string as \n; compare
     # on the single-line forms.
     assert res.stdout.strip().replace("\\n", "\n") == hostile.replace("\r", "")
+
+
+# --- restarting clients after the edit -------------------------------------------
+
+
+def _client(name="Cursor", restartable=True, caveat=""):
+    from applemusic_mcp import clients as _c
+
+    return _c.Client(
+        key=name.lower(), name=name, config=Path("/tmp/x.json"),
+        restartable=restartable, caveat=caveat,
+    )
+
+
+def test_no_restart_prompt_when_nothing_is_running(monkeypatch):
+    monkeypatch.setattr(app_setup.clients, "is_running", lambda c: False)
+    called = []
+    monkeypatch.setattr(app_setup, "_dialog", lambda *a, **k: called.append(1) or "x")
+    assert app_setup._offer_restart([_client()]) == []
+    assert called == [], "must not ask about restarting an app that is not running"
+
+
+def test_declining_the_restart_quits_nothing(monkeypatch):
+    monkeypatch.setattr(app_setup.clients, "is_running", lambda c: True)
+    monkeypatch.setattr(app_setup, "_dialog", lambda *a, **k: "Not Now")
+    quit_calls = []
+    monkeypatch.setattr(app_setup.clients, "quit_client", lambda c: quit_calls.append(c))
+    lines = app_setup._offer_restart([_client()])
+    assert quit_calls == [], "declining must be honoured"
+    assert any("restart to pick up" in line for line in lines)
+
+
+def test_a_failed_dialog_does_not_quit_anything(monkeypatch):
+    """_dialog returns "" when it cannot display. That must read as 'no'."""
+    monkeypatch.setattr(app_setup.clients, "is_running", lambda c: True)
+    monkeypatch.setattr(app_setup, "_dialog", lambda *a, **k: "")
+    quit_calls = []
+    monkeypatch.setattr(app_setup.clients, "quit_client", lambda c: quit_calls.append(c))
+    app_setup._offer_restart([_client()])
+    assert quit_calls == [], "an undisplayable dialog must never terminate an app"
+
+
+def test_accepting_quits_then_relaunches(monkeypatch):
+    order = []
+    monkeypatch.setattr(app_setup.clients, "is_running", lambda c: True)
+    monkeypatch.setattr(app_setup, "_dialog", lambda *a, **k: "Quit & Reopen")
+    monkeypatch.setattr(
+        app_setup.clients, "quit_client", lambda c: order.append("quit") or True
+    )
+    monkeypatch.setattr(
+        app_setup.clients, "relaunch", lambda c: order.append("relaunch") or True
+    )
+    lines = app_setup._offer_restart([_client()])
+    assert order == ["quit", "relaunch"], "relaunching before the quit completes races"
+    assert any("restarted" in line for line in lines)
+
+
+def test_a_client_that_refuses_to_quit_is_not_relaunched(monkeypatch):
+    monkeypatch.setattr(app_setup.clients, "is_running", lambda c: True)
+    monkeypatch.setattr(app_setup, "_dialog", lambda *a, **k: "Quit & Reopen")
+    monkeypatch.setattr(app_setup.clients, "quit_client", lambda c: False)
+    relaunched = []
+    monkeypatch.setattr(app_setup.clients, "relaunch", lambda c: relaunched.append(c))
+    lines = app_setup._offer_restart([_client()])
+    assert relaunched == [], "relaunching a client that never quit would open a second copy"
+    assert any("did not quit" in line for line in lines)
+
+
+def test_a_terminal_client_is_reported_never_restarted(monkeypatch):
+    monkeypatch.setattr(app_setup.clients, "is_running", lambda c: True)
+    quit_calls = []
+    monkeypatch.setattr(app_setup.clients, "quit_client", lambda c: quit_calls.append(c))
+    monkeypatch.setattr(app_setup, "_dialog", lambda *a, **k: "Quit & Reopen")
+    cc = _client("Claude Code", restartable=False, caveat="Restart your Claude Code session.")
+    lines = app_setup._offer_restart([cc])
+    assert quit_calls == [], "never kill the user's terminal session"
+    assert any("Restart your Claude Code session" in line for line in lines)

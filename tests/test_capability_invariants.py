@@ -46,6 +46,12 @@ SUBPROCESS_ALLOWED = {
     "applescript.py": {"osascript"},
     # The installer has to talk to launchd and show a native dialog.
     "app_setup.py": {"launchctl", "osascript"},
+    # Restarting a client after editing its config. `pgrep` only reads the
+    # process table. `open` hands a path to LaunchServices. Notably absent:
+    # anything that quits another app by Apple Event, which would require
+    # permission to CONTROL that app -- SIGTERM via os.kill needs none and is
+    # not a subprocess at all.
+    "clients.py": {"pgrep", "open"},
     # The MusicKit helper: our own signed Swift binary, the only way to add a
     # catalog track without shipping an Apple Music credential. Its argv[0] is
     # computed rather than literal (the path differs between the packaged app

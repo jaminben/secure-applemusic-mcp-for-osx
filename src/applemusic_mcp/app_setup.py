@@ -26,8 +26,9 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
-from . import ipc
+from . import clients, ipc
 
 APP_NAME = "AppleMusicMCP"
 BUNDLE_ID = ipc.BUNDLE_ID
@@ -60,9 +61,16 @@ def _dialog(text: str, title: str = "Apple Music MCP", buttons=("OK",), default:
     which would require Accessibility — the one permission this build refuses
     to ask for.
     """
-    btn_list = ", ".join(f'"{b}"' for b in buttons)
+    # _as_applescript_string, NOT json.dumps: the default ensure_ascii=True
+    # emits "✓", which is a SYNTAX ERROR in AppleScript, not a mangled
+    # character. osascript then exits non-zero, _dialog returns "", and
+    # _confirm reads that as "Skip" -- so a single em dash in a prompt silently
+    # turns a consent step into a declined one. Every prompt below contains
+    # one, and the summary always contains a check mark.
+    btn_list = ", ".join(f"{_as_applescript_string(b)}" for b in buttons)
     script = (
-        f"display dialog {json.dumps(text)} with title {json.dumps(title)} "
+        f"display dialog {_as_applescript_string(text)} "
+        f"with title {_as_applescript_string(title)} "
         f"buttons {{{btn_list}}} default button {default} with icon note"
     )
     try:
@@ -76,6 +84,41 @@ def _dialog(text: str, title: str = "Apple Music MCP", buttons=("OK",), default:
         if part.startswith("button returned:"):
             return part.split(":", 1)[1]
     return ""
+
+
+def _choose(prompt: str, items: list[str], title: str = "Apple Music MCP") -> "Optional[list[str]]":
+    """Native multi-select list. Returns the chosen labels, or None if cancelled.
+
+    A checklist rather than one dialog per client: the consent that matters is
+    "which of these files may I edit", and showing that as a single reviewable
+    list is clearer than four sequential prompts the user learns to click
+    through. Nothing is pre-selected -- the user picks, so an accidental Return
+    installs nothing.
+    """
+    if not items:
+        return []
+    listing = ", ".join(_as_applescript_string(i) for i in items)
+    script = (
+        f"choose from list {{{listing}}} with title {_as_applescript_string(title)} "
+        f"with prompt {_as_applescript_string(prompt)} "
+        f"OK button name \"Add\" cancel button name \"Skip\" "
+        f"with multiple selections allowed"
+    )
+    try:
+        out = subprocess.run(
+            ["osascript", "-e", script], capture_output=True, text=True, timeout=600
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    raw = (out.stdout or "").strip()
+    if out.returncode != 0 or not raw or raw == "false":
+        return None
+    # osascript joins the chosen items with ", ". Rather than trusting that
+    # split, each token is matched against what we offered -- anything we did
+    # not put in the list is discarded rather than acted on.
+    offered = set(items)
+    chosen = [tok for tok in raw.split(", ") if tok in offered]
+    return chosen
 
 
 def _log(msg: str) -> None:
@@ -174,69 +217,93 @@ def claude_server_entry() -> dict:
 def configure_claude_desktop(config_path: Path | None = None) -> tuple[bool, str]:
     """Merge our entry into Claude Desktop's config.
 
-    Merges rather than writes: the file usually contains the user's other MCP
-    servers, and clobbering it would be a genuinely destructive act performed by
-    an installer. A timestamped backup is kept, the write is atomic
-    (temp + replace), and the file mode is preserved (Claude ships it 0600).
+    Kept as a named function because Claude Desktop is the client most people
+    installing this will have; the work is now generic (see clients.py).
     """
-    path = config_path or CLAUDE_CONFIG
-    if not path.parent.exists():
-        return False, (
-            "Claude Desktop doesn't appear to be installed "
-            f"(no {path.parent}). Skipped — you can add the server by hand later."
+    client = clients.find("claude-desktop")
+    assert client is not None
+    return clients.configure(client, claude_server_entry(), config_path)
+
+
+def configure_detected_clients() -> list[str]:
+    """Ask which installed MCP clients to configure, then configure those.
+
+    Returns summary lines. Detection is deliberately separate from consent: we
+    say what we found, and the user chooses. A client being installed is not a
+    reason to edit its configuration.
+    """
+    found = clients.detected()
+    if not found:
+        return ["• No MCP clients detected — add the server by hand (see the README)"]
+
+    labels = [c.name for c in found]
+    caveats = "\n".join(f"  {c.name}: {c.caveat}" for c in found if c.caveat)
+    prompt = (
+        "Found these MCP clients on this Mac. Select the ones that should be "
+        "able to control Music.\n\nEach file is backed up first, and your other "
+        "servers are kept."
+    )
+    if caveats:
+        prompt += "\n\nNote:\n" + caveats
+
+    chosen = _choose(prompt, labels)
+    if chosen is None:
+        return ["• No client configs touched"]
+    if not chosen:
+        return ["• No clients selected"]
+
+    lines = []
+    configured = []
+    for client in found:
+        if client.name not in chosen:
+            continue
+        ok, msg = clients.configure(client, client.entry(str(helper_executable()), ["shim"]))
+        lines.append(("✓ " if ok else "✗ ") + msg)
+        if ok:
+            configured.append(client)
+
+    lines.extend(_offer_restart(configured))
+    return lines
+
+
+def _offer_restart(configured: list) -> list[str]:
+    """Offer to quit and reopen the clients that are running.
+
+    Every one of these reads its MCP config once, at startup. Editing the file
+    under a running client is safe -- verified, not assumed: a Claude Desktop
+    quit and a Claude Code session that predated the edit both preserved it --
+    but the new server simply will not appear until the client restarts. So the
+    edit is not the risk; leaving the user to wonder why nothing happened is.
+    """
+    running = [c for c in configured if c.restartable and clients.is_running(c)]
+    stale = [c for c in configured if not c.restartable and c.caveat]
+
+    out: list[str] = [f"• {c.name}: {c.caveat}" for c in stale]
+    if not running:
+        return out
+
+    names = ", ".join(c.name for c in running)
+    prompt = (
+        f"{names} {'is' if len(running) == 1 else 'are'} running.\n\n"
+        "MCP servers are read at startup, so Apple Music won't appear until "
+        f"{'it restarts' if len(running) == 1 else 'they restart'}.\n\n"
+        "Quit and reopen now? Anything unsaved should be saved first."
+    )
+    if _dialog(prompt, buttons=("Not Now", "Quit & Reopen"), default=1) != "Quit & Reopen":
+        return out + [f"• {names}: restart to pick up the server"]
+
+    for client in running:
+        if not clients.quit_client(client):
+            # Never escalate to a kill: an app that ignores SIGTERM has a
+            # reason, and it is not worth the user's unsaved work.
+            out.append(f"✗ {client.name} did not quit — restart it yourself")
+            continue
+        out.append(
+            f"✓ {client.name} restarted"
+            if clients.relaunch(client)
+            else f"• {client.name} quit — reopen it to pick up the server"
         )
-
-    data: dict = {}
-    if path.exists():
-        try:
-            data = json.loads(path.read_text(encoding="utf-8") or "{}")
-        except (json.JSONDecodeError, OSError) as exc:
-            # Never overwrite a config we could not parse: it is the user's, it
-            # may hold other servers, and a broken merge would lose them.
-            return False, (
-                f"Couldn't read {path.name} ({exc}). Left it untouched — add the "
-                "server manually (see the README)."
-            )
-        if not isinstance(data, dict):
-            return False, f"{path.name} isn't a JSON object. Left it untouched."
-
-    servers = data.setdefault("mcpServers", {})
-    if not isinstance(servers, dict):
-        return False, f"{path.name} has a non-object 'mcpServers'. Left it untouched."
-
-    already = servers.get(SERVER_KEY)
-    entry = claude_server_entry()
-    if already == entry:
-        # Nothing to do. Returning before the backup matters: the app may be
-        # launched many times, and a backup per launch would quietly fill the
-        # directory with copies.
-        return True, "Claude Desktop was already configured."
-
-    if path.exists():
-        backup = path.with_suffix(f".json.bak-{time.strftime('%Y%m%d-%H%M%S')}")
-        # copy2 copies contents then metadata, so the backup is briefly readable
-        # at the umask default. Create it closed-first, then copy the bytes in.
-        src_mode = path.stat().st_mode & 0o777
-        fd = os.open(str(backup), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, src_mode)
-        with os.fdopen(fd, "wb") as out:
-            out.write(path.read_bytes())
-        _log(f"backed up {path.name} -> {backup.name}")
-
-    servers[SERVER_KEY] = entry
-
-    mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
-    tmp = path.with_suffix(".json.tmp")
-    # Create the temp file with the FINAL mode, not the umask default. This file
-    # holds a copy of the whole config, and other MCP servers routinely keep API
-    # keys in their `env` blocks — a write-then-chmod leaves those world-readable
-    # for the duration of the write. (Same gap auth._write_private closes for
-    # token files.)
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(json.dumps(data, indent=2) + "\n")
-    os.replace(tmp, path)
-    verb = "Updated" if already else "Added"
-    return True, f"{verb} the '{SERVER_KEY}' entry in Claude Desktop's config."
+    return out
 
 
 # --- 3. Permission -----------------------------------------------------------
@@ -304,14 +371,13 @@ _STEP_HELPER = (
     "and running:  launchctl bootout gui/$(id -u)/{bundle}"
 )
 
-_STEP_CLAUDE = (
-    "Step 2 of 3 — Claude Desktop\n\n"
-    "Adds one entry, '{key}', to:\n"
-    "  {path}\n\n"
-    "Your existing servers and settings are kept, and a timestamped backup of the "
-    "file is written next to it first.\n\n"
-    "Skip this if you would rather paste the config in yourself, or if you use a "
-    "different MCP client."
+_STEP_CLIENTS = (
+    "Step 2 of 3 — MCP clients\n\n"
+    "Next you'll see the MCP clients found on this Mac, and you choose which "
+    "ones get an '{key}' entry.\n\n"
+    "For each one you pick: your existing servers and settings are kept, and a "
+    "timestamped backup is written next to the file first.\n\n"
+    "Skip this if you would rather paste the config in yourself."
 )
 
 _STEP_PERMISSION = (
@@ -346,12 +412,11 @@ def main() -> int:
     else:
         steps.append("• Helper skipped — run this app again to install it")
 
-    # 2. Claude Desktop
-    if _confirm(_STEP_CLAUDE.format(key=SERVER_KEY, path=CLAUDE_CONFIG), "Add Entry"):
-        ok, msg = configure_claude_desktop()
-        steps.append(("✓ " if ok else "✗ ") + msg)
+    # 2. MCP clients
+    if _confirm(_STEP_CLIENTS.format(key=SERVER_KEY), "Choose Clients"):
+        steps.extend(configure_detected_clients())
     else:
-        steps.append("• Claude Desktop config not touched")
+        steps.append("• No client configs touched")
 
     # 3. permission
     if _confirm(_STEP_PERMISSION, "Ask macOS"):
@@ -362,8 +427,8 @@ def main() -> int:
 
     body = "\n".join(steps)
     tail = ""
-    if any(s.startswith("✓") and "Claude" in s for s in steps):
-        tail = "\n\nRestart Claude Desktop to pick up the new server."
+    if any(s.startswith("✓") and "config" in s for s in steps):
+        tail = "\n\nRestart your MCP client(s) to pick up the new server."
     _dialog("Setup finished.\n\n" + body + tail, buttons=("Done",))
     _log(body)
     return 0
