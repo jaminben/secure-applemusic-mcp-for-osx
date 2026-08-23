@@ -238,3 +238,83 @@ def test_no_step_defaults_to_acting(monkeypatch, spy):
     monkeypatch.setattr(app_setup, "_dialog", lambda *a, **k: "")
     assert app_setup.main() == 1
     assert spy == []
+
+
+def test_temp_file_and_backup_are_never_world_readable(cfg, monkeypatch):
+    """The config can hold OTHER servers' API keys in their env blocks.
+
+    A write-then-chmod would expose those at the umask default for the duration
+    of the write. Assert the mode at creation time, not just afterwards.
+    """
+    seen: list[int] = []
+    real_open = os.open
+
+    def spy_open(path, flags, mode=0o777, **kw):
+        if str(path).endswith((".json.tmp", ".json")) or ".bak-" in str(path):
+            if flags & os.O_CREAT:
+                seen.append(mode)
+        return real_open(path, flags, mode, **kw)
+
+    monkeypatch.setattr(os, "open", spy_open)
+    ok, _ = app_setup.configure_claude_desktop(cfg)
+    assert ok
+    assert seen, "expected the temp file and backup to be created via os.open with a mode"
+    for mode in seen:
+        assert mode & 0o077 == 0, f"created with {oct(mode)} — group/other can read it"
+
+
+def test_written_config_keeps_owner_only_mode(cfg):
+    app_setup.configure_claude_desktop(cfg)
+    assert stat.S_IMODE(cfg.stat().st_mode) & 0o077 == 0
+    for backup in cfg.parent.glob("*.bak-*"):
+        assert stat.S_IMODE(backup.stat().st_mode) & 0o077 == 0, "backup is readable by others"
+
+
+# --- dialogs must actually display ---------------------------------------------
+
+
+def test_every_dialog_string_is_valid_applescript():
+    """Regression: json.dumps escapes non-ASCII to \\uXXXX, which AppleScript
+    rejects — osascript exits 1 and no dialog appears. Because a failed dialog
+    is deliberately read as "skip", that turned the entire installer into a
+    silent no-op. The real strings contain → ✓ ✗, so this is the normal path.
+
+    Compiles each string with `return`, so nothing is displayed.
+    """
+    import subprocess
+
+    texts = {
+        "intro": app_setup._INTRO,
+        "helper": app_setup._STEP_HELPER.format(bundle=app_setup.BUNDLE_ID),
+        "claude": app_setup._STEP_CLAUDE.format(
+            key=app_setup.SERVER_KEY, path=app_setup.CLAUDE_CONFIG
+        ),
+        "permission": app_setup._STEP_PERMISSION,
+    }
+    for name, text in texts.items():
+        script = f"return {app_setup._as_applescript_string(text)}"
+        res = subprocess.run(
+            ["osascript", "-e", script], capture_output=True, text=True, timeout=60
+        )
+        assert res.returncode == 0, f"{name} dialog is not valid AppleScript: {res.stderr}"
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    ['quote " inside', "back\\slash", "→ ✓ ✗ é 日本語", 'both " and \\ and →', "new\nline"],
+)
+def test_dialog_quoting_survives_a_round_trip(hostile):
+    """The quoting must be correct for text we did not write — error messages
+    embed filesystem paths and exception strings."""
+    import subprocess
+
+    res = subprocess.run(
+        ["osascript", "-e", f"return {app_setup._as_applescript_string(hostile)}"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert res.returncode == 0, res.stderr
+    # osascript renders a literal newline in a returned string as \n; compare
+    # on the single-line forms.
+    assert res.stdout.strip().replace("\\n", "\n") == hostile.replace("\r", "")

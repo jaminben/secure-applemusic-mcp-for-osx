@@ -22,7 +22,6 @@ from __future__ import annotations
 import json
 import os
 import plistlib
-import shutil
 import subprocess
 import sys
 import time
@@ -42,6 +41,15 @@ SERVER_KEY = "apple-music"
 
 
 # --- small native UI ---------------------------------------------------------
+
+
+def _as_applescript_string(value: str) -> str:
+    """Quote a Python string as an AppleScript string literal.
+
+    JSON and AppleScript agree on \" and \\ escaping, so json.dumps is the right
+    tool — but only with ensure_ascii=False (see _dialog).
+    """
+    return json.dumps(str(value), ensure_ascii=False)
 
 
 def _dialog(text: str, title: str = "Apple Music MCP", buttons=("OK",), default: int = 1) -> str:
@@ -206,15 +214,26 @@ def configure_claude_desktop(config_path: Path | None = None) -> tuple[bool, str
 
     if path.exists():
         backup = path.with_suffix(f".json.bak-{time.strftime('%Y%m%d-%H%M%S')}")
-        shutil.copy2(path, backup)
+        # copy2 copies contents then metadata, so the backup is briefly readable
+        # at the umask default. Create it closed-first, then copy the bytes in.
+        src_mode = path.stat().st_mode & 0o777
+        fd = os.open(str(backup), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, src_mode)
+        with os.fdopen(fd, "wb") as out:
+            out.write(path.read_bytes())
         _log(f"backed up {path.name} -> {backup.name}")
 
     servers[SERVER_KEY] = entry
 
     mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
     tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    os.chmod(tmp, mode)
+    # Create the temp file with the FINAL mode, not the umask default. This file
+    # holds a copy of the whole config, and other MCP servers routinely keep API
+    # keys in their `env` blocks — a write-then-chmod leaves those world-readable
+    # for the duration of the write. (Same gap auth._write_private closes for
+    # token files.)
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(json.dumps(data, indent=2) + "\n")
     os.replace(tmp, path)
     verb = "Updated" if already else "Added"
     return True, f"{verb} the '{SERVER_KEY}' entry in Claude Desktop's config."

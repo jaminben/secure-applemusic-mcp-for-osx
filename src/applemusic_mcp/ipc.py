@@ -96,10 +96,23 @@ def create_listener(path: Path) -> socket.socket:
     except OSError:
         pass
 
-    if path.exists():
+    # lstat, not stat: the checks below must describe the path itself, not
+    # whatever it points at. `path.exists()`/`path.stat()` follow symlinks, so a
+    # symlink to a socket would satisfy an "is it a socket?" test and we would
+    # then be operating on someone else's chosen location.
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        st = None
+    if st is not None:
+        if stat.S_ISLNK(st.st_mode):
+            raise OSError(
+                f"Refusing to use a symlink as the socket path: {path}. "
+                "Point APPLEMUSIC_MCP_SOCKET at a real path."
+            )
         # Only ever unlink something that is actually a socket — never a
         # regular file that happens to share the name.
-        if not stat.S_ISSOCK(path.stat().st_mode):
+        if not stat.S_ISSOCK(st.st_mode):
             raise OSError(f"Refusing to replace non-socket file at {path}")
         path.unlink()
 

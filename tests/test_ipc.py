@@ -243,3 +243,25 @@ def test_socket_is_unreachable_by_other_users(sock_path):
         client.close()
     finally:
         listener.close()
+
+
+def test_listener_refuses_a_symlinked_socket_path(sock_path):
+    """The stale-socket check must not follow a symlink.
+
+    `Path.exists()` and `Path.stat()` both follow links, so a symlink pointing
+    at a real socket would satisfy an "is this a socket?" test and we would then
+    be binding at a location someone else chose.
+    """
+    # Short path: pytest's tmp_path blows past sockaddr_un's 103-byte limit.
+    target = Path("/tmp") / f"am-victim{os.getpid()}.sock"
+    target.unlink(missing_ok=True)
+    victim = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    victim.bind(str(target))
+    try:
+        sock_path.symlink_to(target)
+        with pytest.raises(OSError, match="Refusing to use a symlink"):
+            ipc.create_listener(sock_path)
+        assert target.exists(), "the symlink target must be left alone"
+    finally:
+        victim.close()
+        target.unlink(missing_ok=True)
