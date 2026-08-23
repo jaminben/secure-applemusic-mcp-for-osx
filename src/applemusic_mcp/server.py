@@ -1029,138 +1029,68 @@ def _can_use_library_api() -> bool:
 
 
 def _engine() -> str:
-    """Resolve the active engine from the single ``mode`` preference:
-    ``native`` (AppleScript / local Music.app) or ``api`` (the web API +
-    Chrome web player, cross-platform).
+    """Resolve the active data engine.
 
-    mode values: ``auto`` (default — native on macOS, web elsewhere), ``native``,
-    or ``web``. ``api`` is accepted as a back-compat alias for ``web``.
-
-    Playback follows the engine (see ``_use_browser_playback``); there is no
-    separate playback knob. Honors APPLEMUSIC_FORCE_API_MODE for testing."""
+    This build is macOS-native only: local Music.app via Apple Events. The
+    optional developer-token REST rail is read-only catalog data, not an engine.
+    Kept as a function (rather than a constant) so callers read identically to
+    upstream and a future rail can be reintroduced in exactly one place."""
     if os.environ.get("APPLEMUSIC_FORCE_API_MODE") == "1":
         return "api"
-    mode = (get_user_preferences().get("mode") or "auto").lower()
-    # safari/chrome are PLAYBACK engines — their data still comes from the REST API.
-    if mode in ("web", "api", "safari", "chrome"):
-        return "api"
-    # native or auto: native only when AppleScript is available; otherwise fall
-    # back to the web engine so a non-macOS host never hits AppleScript.
-    return "native" if APPLESCRIPT_AVAILABLE else "api"
+    return "native" if APPLESCRIPT_AVAILABLE else "none"
 
 
-def _playback_engine(engine_override: Optional[str] = None, for_queue: bool = False) -> str:
-    """Resolve the playback engine: 'native' | 'safari' | 'chrome' | 'none'.
+def _playback_engine(engine_override: Optional[str] = None) -> str:
+    """Resolve the playback engine: 'native' | 'none'.
 
-    Priority: per-call ``engine=`` override → ``mode`` pref → ``auto`` routing.
-    'none' means no player is available for this selection (the caller turns that
-    into an actionable error). ``for_queue`` distinguishes Up Next (web-player only:
-    Safari on macOS, Chrome off-mac) from plain playback (native on macOS).
-    AppleScript availability is the macOS proxy (native + Safari both need it)."""
+    Upstream resolved four engines (native / safari / chrome / api). This build
+    ships one: the local Music.app. Browser engines were removed with the
+    Playwright and Safari-Apple-Events subsystems, so an explicit request for
+    one is an error, not a silent downgrade to a different engine than asked."""
     sel = (engine_override or "").strip().lower()
-    if not sel:
-        sel = (get_user_preferences().get("mode") or "auto").lower()
-    if sel == "browser":  # legacy alias for the Chrome web player
-        sel = "chrome"
-    if sel == "api":
-        return "none"  # api mode has no player
-    if sel == "native":
-        return "native" if APPLESCRIPT_AVAILABLE else "none"
-    if sel == "safari":
-        return "safari" if APPLESCRIPT_AVAILABLE else "none"  # macOS-only
-    if sel == "chrome":
-        return "chrome"
-    if sel == "web":  # "the web engine" — Safari on macOS, Chrome off-mac
-        return "safari" if APPLESCRIPT_AVAILABLE else "chrome"
-    # auto: Up Next is web-player only (Safari on macOS, else Chrome); plain
-    # playback prefers the real Music.app on macOS.
-    if for_queue:
-        return "safari" if APPLESCRIPT_AVAILABLE else "chrome"
-    return "native" if APPLESCRIPT_AVAILABLE else "chrome"
+    if sel in ("safari", "chrome", "browser", "web", "api"):
+        return "none"
+    return "native" if APPLESCRIPT_AVAILABLE else "none"
 
 
-def _queue_engine(engine_override: Optional[str] = None) -> str:
-    """Resolve the engine for Up Next ops. Native Music.app has no exposed queue,
-    so a 'native' resolution collapses to 'none' (caller guides to safari/chrome)."""
-    eng = _playback_engine(engine_override, for_queue=True)
-    return "none" if eng == "native" else eng
-
-
-def _web_player(engine: str):
-    """Return the module that drives the given web engine ('safari' | 'chrome')."""
-    if engine == "safari":
-        from . import safari_player
-
-        return safari_player
-    from . import browser
-
-    return browser
-
-
-def _platform_players() -> str:
-    """The playback engines that actually exist on THIS machine — so guidance names
-    only options the user can use (native/safari are macOS-only; chrome is anywhere)."""
-    return "native, safari, or chrome" if APPLESCRIPT_AVAILABLE else "chrome"
-
-
-def _no_player_msg(engine_override: Optional[str] = None, for_queue: bool = False) -> str:
-    """Actionable error when no playback/queue engine is available. System-aware: it
-    names only the engines available on this platform."""
-    mode = (engine_override or get_user_preferences().get("mode") or "auto").lower()
-    if for_queue and mode == "native":
-        # Only reachable on macOS (native needs AppleScript), so the macOS advice fits.
+def _no_player_msg(engine_override: Optional[str] = None) -> str:
+    """Actionable error when no playback engine is available."""
+    sel = (engine_override or "").strip().lower()
+    if sel in ("safari", "chrome", "browser", "web", "api"):
         return (
-            "Up Next isn't available in native (Music.app) mode — it's a web-player "
-            "feature. Set mode to safari or chrome (or pass engine='safari')."
-        )
-    if mode == "api":
-        return (
-            f"API mode has no player. Set mode to {_platform_players()} (or pass "
-            "engine=) to play or queue."
-        )
-    if APPLESCRIPT_AVAILABLE:
-        return (
-            "No playback engine is available. Use native (Music.app) or safari — or "
-            "install Google Chrome for the cross-platform web player."
+            f"engine={sel!r} is not available in this build. The Chrome and Safari "
+            "web players were removed (they require browser automation or "
+            "Apple-Events-into-Safari). Playback runs on the local Music.app: "
+            "use engine='native' or omit engine."
         )
     return (
-        "No playback engine is available. On Windows/Linux playback uses Google Chrome "
-        "(the web player) — install Chrome and run `applemusic-mcp login` once to set "
-        "it up."
+        "No playback engine is available. This build plays through the local "
+        "Music.app, which needs macOS and Automation permission for Music."
     )
 
 
-# Active-engine tracking — the engine that last played or queued. control /
-# now_playing target it so a session that started native (Music.app) but then used
-# Up Next (Safari) stays coherent: the queue pulls transport control into Safari.
-_active_playback_engine = ""  # '' | 'native' | 'safari' | 'chrome'
+# Active-engine tracking. Retained (single-valued now) so control / now_playing
+# keep the same shape as upstream and a reintroduced engine has a seam to use.
+_active_playback_engine = ""  # '' | 'native'
 
 
 def _set_active_playback(engine: str) -> None:
     global _active_playback_engine
-    if engine in ("native", "safari", "chrome"):
+    if engine == "native":
         _active_playback_engine = engine
 
 
 def _get_active_playback() -> str:
-    """Engine for control / now_playing: the last-used one, else the auto default."""
+    """Engine for control / now_playing: the last-used one, else the default."""
     return _active_playback_engine or _playback_engine()
 
 
 def _mode_pinned_native() -> bool:
-    """True when the user explicitly pinned ``mode=native`` (so playback must
-    stay in Music.app and never fall back to the browser). ``auto`` is NOT
-    pinned, so it may use the browser as a playback safety net."""
-    return (get_user_preferences().get("mode") or "auto").lower() == "native"
+    """Always True in this build: native Music.app is the only playback engine,
+    so there is never a browser fallback to opt out of."""
+    return True
 
 
-def _use_browser_playback() -> bool:
-    """Playback follows the engine: the web engine plays through the local Chrome
-    web player, native plays through Music.app. There is no separate playback
-    preference. Browser playback needs a signed-in session (a media-user-token)."""
-    if os.environ.get("APPLEMUSIC_FORCE_BROWSER_PLAYBACK") == "1":
-        return True
-    return _engine() == "api"
 
 
 # Writes choose their rail by CREDENTIAL + capability, independent of the playback
@@ -1699,42 +1629,6 @@ def _library_remove_api(track: str, artist: str = "") -> str:
     return out
 
 
-def _browser_play(
-    wp,
-    track: str = "",
-    artist: str = "",
-    url: str = "",
-    playlist: str = "",
-    album: str = "",
-    shuffle: bool = False,
-) -> str:
-    """Play a track, playlist, album, or Apple Music URL in a web player. ``wp`` is
-    the resolved engine module (safari_player or browser) — cross-platform parity
-    with native macOS playback."""
-    if url:
-        ok, msg = wp.play_url(url, shuffle)
-        return msg if ok else f"Error: {msg}"
-    if playlist:
-        pid, _ = _find_api_playlist_by_name(playlist)
-        if not pid:
-            pid = amp_api.resolve_playlist_id(playlist, api_created_only=False)
-        if not pid:
-            return _resolve_failure_msg(f"playlist {playlist!r} not found in your library")
-        ok, msg = wp.play_descriptor({"playlist": pid}, shuffle)
-        return msg if ok else f"Error: {msg}"
-    if album:
-        alb, err, _ = _find_matching_catalog_album(album, artist)
-        if not alb:
-            return f"Error: {err or f'album {album!r} not found in catalog'}"
-        ok, msg = wp.play_descriptor({"album": alb["id"]}, shuffle)
-        return msg if ok else f"Error: {msg}"
-    if track:
-        resolved = _resolve_catalog_track_itunes(track, artist)
-        if not resolved:
-            return _catalog_miss_reason(f"Error: '{track}' not found in catalog")
-        ok, msg = wp.play_url(resolved["url"], shuffle)
-        return msg if ok else f"Error: {msg}"
-    return "Error: provide track, playlist, album, or url"
 
 
 def _format_applescript_error(raw: str, operation: str = "") -> str:
@@ -2970,13 +2864,9 @@ def _auto_search_and_add_to_playlist(
             if asc.find_library_track(found_name, found_artist or "")[0]:
                 synced = True
                 break
-            if not nudged and time.monotonic() - start >= _SYNC_NUDGE_AFTER_S:
-                nudged = True
-                if asc.update_cloud_library()[0]:
-                    steps.append(
-                        "Sync was slow, so I triggered Music's Update Cloud Library as a "
-                        "last resort (brief Music.app flash) to kick the iCloud sync"
-                    )
+            # Upstream nudged iCloud here by clicking File > Library > Update Cloud
+            # Library, which needs Accessibility. Removed: we just keep polling and
+            # report honestly if the sync doesn't land inside the budget.
             time.sleep(_SYNC_POLL_INTERVAL_S)
         if synced:
             # Synced locally — attach via AppleScript, then verify. CRITICAL: the
@@ -5347,6 +5237,58 @@ def _library_search(
         return msg
 
 
+def _catalog_search_itunes(query: str, limit: int = 25) -> list[dict]:
+    """Catalog search over Apple's PUBLIC iTunes Search API — no credential.
+
+    This is the tokenless catalog rail for this build. Upstream reached the same
+    data either through a developer token or by scraping Music.app's search UI
+    with System Events; the public endpoint needs neither, so catalog search
+    works out of the box with nothing stored and no Accessibility permission.
+
+    Returns rows shaped like ``extract_track_data`` output so they flow through
+    ``format_output`` unchanged. ``id`` is the catalog track id, which is the
+    same identifier ``playlist(action="add", track=<id>)`` accepts.
+    """
+    if not (query or "").strip():
+        return []
+    try:
+        resp = requests.get(
+            "https://itunes.apple.com/search",
+            params={
+                "term": query,
+                "entity": "song",
+                "limit": max(1, min(int(limit or 25), 200)),
+                "country": get_storefront(),
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
+        if resp.status_code != 200:
+            return []
+        results = resp.json().get("results", [])
+    except (requests.exceptions.RequestException, ValueError):
+        return []
+    out: list[dict] = []
+    for r in results:
+        released = str(r.get("releaseDate") or "")
+        # The iTunes payload exposes an explicit flag directly, so a clean_only
+        # filter over these rows is verified rather than "not known to be explicit".
+        advisory = (r.get("trackExplicitness") or "").lower()
+        out.append(
+            {
+                "name": r.get("trackName", ""),
+                "duration": format_duration(r.get("trackTimeMillis", 0)),
+                "artist": r.get("artistName", ""),
+                "album": r.get("collectionName", ""),
+                "year": released[:4],
+                "genre": r.get("primaryGenreName", ""),
+                "explicit": "Yes" if advisory == "explicit" else "No",
+                "id": str(r.get("trackId", "")),
+                "catalog_id": str(r.get("trackId", "")),
+            }
+        )
+    return out
+
+
 def _resolve_catalog_track_itunes(name: str, artist: str = "") -> Optional[dict]:
     """Resolve a track to a catalog entry via the FREE iTunes Search API.
 
@@ -7555,29 +7497,23 @@ def catalog(
     action = action.lower().strip().replace("-", "_")
 
     if action == "search":
-        # Try API first, fall back to UI search if no API token
+        # Developer-token API first; otherwise Apple's PUBLIC iTunes Search API.
+        # Upstream fell back to scraping Music.app's search UI here (System
+        # Events + synthetic clicks). The public endpoint returns the same
+        # catalog data with no Accessibility permission and no credential.
         try:
             get_headers()  # Verify API access is available
             return _catalog_search(query, types, limit, format, export, full, clean_only)
         except (FileNotFoundError, ValueError):
-            if APPLESCRIPT_AVAILABLE and query:
-                ok, results, why = asc.ui_search_catalog(query)
-                if ok and results:
-                    asc.ui_clear_search()
-                    lines = [f"=== UI Search: {query} (no API — results from Music.app) ===", ""]
-                    for r in results:
-                        artist_str = f" by {r['artist']}" if r.get("artist") else ""
-                        type_str = f" ({r['type']})" if r.get("type") else ""
-                        lines.append(f"{r['index']}. {r['name']}{type_str}{artist_str}")
-                    lines.append("")
-                    lines.append(
-                        "Note: UI search shows Top Results only. For full catalog search, set up API access."
-                    )
-                    return "\n".join(lines)
-                asc.ui_clear_search()
-                if why:
-                    return f"Error: UI search failed — {why}"
-            return "Error: API token required for catalog search. Set up API access or use UI search on macOS."
+            if not query:
+                return "Error: query required for search"
+            hits = _catalog_search_itunes(query, limit or 25)
+            if not hits:
+                return (
+                    f"No catalog results for '{query}' (public iTunes Search API). "
+                    "For the full Apple Music catalog API, run `applemusic-mcp login --dev`."
+                )
+            return format_output(hits, format, export, full, "catalog_search")
     elif action in ("resolve", "resolve_isrc", "match", "match_tracks", "resolve_tracks"):
         # ONE action, routed by which identifier you have. `resolve_isrc` and
         # `match` are the 0.17.0 names, kept working but no longer advertised:
@@ -7646,14 +7582,13 @@ def config(
         if action == "set-pref":
             bool_prefs = ["fetch_explicit", "clean_only", "auto_add"]
             string_prefs = ["storefront", "mode"]
-            # Enum string prefs: only these values are accepted. `mode` is the
-            # single engine knob (playback follows it): auto (best-of mix), native
-            # (Music.app), safari (drive Safari, macOS), chrome (Chrome web player),
-            # api (REST only). `web` stays accepted as a back-compat alias (the web
-            # engine — Safari on macOS, Chrome off-mac). (Token storage is
-            # auto-decided by platform, not a user pref.)
+            # Enum string prefs: only these values are accepted. This build has
+            # ONE engine — the local Music.app — so `mode` is effectively a
+            # no-op kept for config compatibility; "auto" resolves to native.
+            # Upstream also accepted safari/chrome/web/api. Those engines were
+            # removed, and accepting the value would misdescribe what runs.
             enum_prefs = {
-                "mode": ("auto", "native", "safari", "chrome", "web", "api"),
+                "mode": ("auto", "native"),
             }
             all_prefs = bool_prefs + string_prefs
 
@@ -7673,6 +7608,14 @@ def config(
                     )
                     return f"Error: '{preference}' requires 'string_value' parameter{hint}"
                 pref_value = string_value.lower()
+                # Storefront is interpolated into API URL paths, so constrain it to
+                # the ISO-3166-1 alpha-2 shape Apple uses. Upstream accepted any
+                # string, letting '?', '#' or '../' reshape the request.
+                if preference == "storefront" and not re.fullmatch(r"[a-z]{2}", pref_value):
+                    return (
+                        "Error: 'storefront' must be a two-letter country code "
+                        "(e.g. 'us', 'gb', 'jp')."
+                    )
                 if preference in enum_prefs and pref_value not in enum_prefs[preference]:
                     return (
                         f"Error: '{preference}' must be one of: "
@@ -8402,93 +8345,48 @@ def _auth_action(action: str = "status", confirm: bool = False) -> str:
             )
         else:
             write_rail = _RAIL_LABELS.get(rail, "unknown")
-        # Show the engines `mode` resolves to, so the user can see what auto picks
-        # (e.g. playback=native, queue=safari on macOS) and where playback will land.
-        engines = f"Engines: playback={_playback_engine()}, queue={_queue_engine()}"
+        engines = f"Engines: playback={_playback_engine()} (local Music.app; no web player)"
         return f"{body}\nMode: {mode}\n{engines}\nWrites: {write_rail}\n\n{nxt}"
 
     if action in ("signin", "login"):
-        # macOS default: harvest the token from a signed-in Safari (zero-install) —
-        # the same default as the CLI `login`. Only fall back to Chrome (with
-        # guidance), and only try Chrome at all when Playwright is actually present.
-        if APPLESCRIPT_AVAILABLE:
-            from . import safari
-            from .auth import save_user_token
-
-            try:
-                ok, res = safari.media_user_token()
-            except Exception as exc:  # noqa: BLE001
-                ok, res = False, str(exc)
-            if ok:
-                save_user_token(res)
-                return (
-                    "✓ Signed in via Safari — no Chrome needed. Playback uses Music.app; "
-                    "for the cross-platform Chrome web player, "
-                    "`pip install 'applemusic-mcp[browser]'`."
-                )
-            from . import browser
-
-            if not browser.is_available():
-                return (
-                    f"{res}\n\nTo finish on macOS without Chrome: enable Safari → Settings → "
-                    'Advanced → "Show features for web developers", then Develop → "Allow '
-                    'JavaScript from Apple Events", sign into Apple Music at music.apple.com '
-                    "in Safari, and ask me to sign in again. Or install the Chrome web "
-                    "player: `pip install 'applemusic-mcp[browser]'`, then ask again."
-                )
-            # Chrome/Playwright is installed — fall through to the Chrome flow.
-
-        from . import browser
-
-        try:
-            ok, msg = browser.signin_interactive()
-        except Exception as exc:  # noqa: BLE001
-            return f"Error: {exc}"
-        if ok:
-            return f"✓ {msg}"
-        if msg == "still-waiting":
-            return (
-                "A Chrome window is open on music.apple.com — finish signing in "
-                "(Apple ID + 2FA), then run config(action='signin') again and I'll capture "
-                "your session."
-            )
+        # Upstream signed in by harvesting the media-user-token from a signed-in
+        # Safari (Apple Events -> document.cookie) or by driving a Playwright
+        # Chrome. Both were removed: the Safari path requires "Allow JavaScript
+        # from Apple Events", which grants JS execution in EVERY Safari tab, and
+        # the Chrome path keeps a full browser-automation handle in-process.
+        # This build stores no session credential by default.
         return (
-            f"Error: {msg}\n\nBrowser sign-in needs Google Chrome installed (for "
-            "full-length playback) and a desktop session — not a headless server. "
-            "The browser engine downloads itself automatically on first use."
+            "This build has no browser sign-in, and doesn't need one.\n\n"
+            "Library, playlists, ratings and playback run through the local "
+            "Music.app over Apple Events — no token, no cookie, nothing stored. "
+            "Catalog search uses Apple's public iTunes Search API (no auth).\n\n"
+            "The only feature needing a credential is adding a catalog track you "
+            "don't own yet to your library. That's opt-in via an official Apple "
+            "Developer token: `applemusic-mcp login --dev`."
         )
 
     if action == "logout":
         if not confirm:
             return (
-                "This signs you out: it clears your Apple Music user token and the browser "
-                "session (your library and playlists are untouched). Afterwards, run "
-                "config(action='signin') to sign back in — with a different account if you "
-                "like. To proceed, call config(action='logout', confirm=True)."
+                "This clears the optional Apple Developer user token (your library and "
+                "playlists are untouched). There is no browser session to clear in this "
+                "build. To proceed, call config(action='logout', confirm=True)."
             )
         removed, failed = _clear_credentials("music_user_token", "harvested_token")
-        from . import browser
-
-        browser.clear_session()
         audit_log.log_action("logout", {"removed": removed, "failed": failed})
         if failed:
             return (
                 f"⚠️ Partly signed out — couldn't clear {', '.join(failed)} "
                 "(keychain may be locked). Unlock it and try again."
             )
-        return (
-            "✓ Signed out — user token and browser session cleared. Run "
-            "config(action='signin') to sign in (you can switch accounts now)."
-        )
+        return "✓ Signed out — stored user token cleared."
 
     if action == "reset":
         if not confirm:
             return (
-                "This wipes ALL credentials: developer token, config.json, user token, web "
-                "token, and the browser session. Your downloaded .p8 key file is left in "
-                "place. Use it for a clean slate, or to drop an Apple Developer token and "
-                "fall back to the free web path. To proceed, call "
-                "config(action='reset', confirm=True)."
+                "This wipes ALL stored credentials: developer token, config.json, and the "
+                "user token. Your downloaded .p8 key file is left in place. To proceed, "
+                "call config(action='reset', confirm=True)."
             )
         removed, failed = _clear_credentials(
             "developer_token", "music_user_token", "harvested_token"
@@ -8501,9 +8399,6 @@ def _auth_action(action: str = "status", confirm: bool = False) -> str:
                 removed.append("config.json")
             except OSError:
                 failed.append("config.json")
-        from . import browser
-
-        browser.clear_session()
         audit_log.log_action("reset", {"removed": removed, "failed": failed})
         if failed:
             return (
@@ -8511,208 +8406,36 @@ def _auth_action(action: str = "status", confirm: bool = False) -> str:
                 "(keychain may be locked). Unlock it and try again."
             )
         return (
-            "✓ Reset complete. Run config(action='signin') for the free web path, or set up an "
-            "Apple Developer token with `applemusic-mcp login --dev`."
+            "✓ Reset complete. Nothing is stored now. Local Music.app features work "
+            "with no credential; for catalog library-adds, run `applemusic-mcp login --dev`."
         )
 
     return f"Unknown action: {action}. Use: status, signin, logout, reset"
 
 
-# =============================================================================
-# Up Next / play queue (browser web player — cross-platform)
-# =============================================================================
-# The personal playback queue is MusicKit-instance state (no REST endpoint), so
-# these route through the browser engine that drives the web player's MusicKit.
-# Cross-platform; needs a signed-in browser session (`applemusic-mcp login`).
 
 
-def _queue_resolve_catalog_id(track: str, artist: str = "") -> Optional[str]:
-    """Resolve a track param to a catalog song id: a bare catalog id passes
-    through; a name is resolved via catalog search.
-
-    Fetches several candidates and requires the title to correspond, rather than
-    trusting the search's first row — the same guard the playlist add needed after
-    `search_library_songs("Yesterday", limit=1)` turned out to return "Renaissance
-    Fair" by The Byrds. Queueing the wrong song is recoverable where adding it to a
-    playlist is not, but it is the same silent-wrong-data shape either way."""
-    t = (track or "").strip()
-    if not t:
-        return None
-    if t.isdigit():
-        return t
-    songs = amp_api.search_catalog_songs(f"{t} {artist}".strip(), 5)
-    pick, _conf = _pick_resolved_song(songs, t, artist)
-    return pick["id"] if pick else None
 
 
-def _format_queue(data: dict, limit: Optional[int] = None) -> str:
-    items = data.get("items", [])
-    autoplay = " · autoplay on" if data.get("autoplay") else ""
-    if not items:
-        return f"Up Next is empty{autoplay}"
-    pos = data.get("position", -1)
-    # When limited, center the window on the current item so the relevant part of a
-    # long queue shows (the thing just played/jumped to, plus what's coming).
-    shown = items
-    if limit is not None and len(items) > limit:
-        start = max(0, pos)
-        shown = items[start : start + limit]
-        more = len(items) - len(shown)
-        head = f"Up Next ({len(items)} item(s){autoplay}; showing {len(shown)}, +{more} more):"
-    else:
-        head = f"Up Next ({len(items)} item(s){autoplay}):"
-    lines = [head]
-    for it in shown:
-        marker = "▶ " if it["index"] == pos else "  "
-        artist = f" — {it['artist']}" if it.get("artist") else ""
-        lines.append(f"{marker}{it['index']}. {it['name']}{artist}")
-    return "\n".join(lines)
 
 
-def _queue_after(wp, header: str, top_n: int = 6) -> str:
-    """After a queue mutation, append the resulting Up Next (windowed to top_n) so
-    the caller sees the effect without a follow-up `list` call. ``wp`` is the
-    resolved web-player module (safari_player or browser)."""
-    ok, data = wp.queue_list()
-    if not ok or not isinstance(data, dict):
-        return header
-    return f"{header}\n\n{_format_queue(data, limit=top_n)}"
 
 
-def _queue_current_name(wp) -> str:
-    """Name of the now-current Up Next item (the thing a jump landed on), or ''."""
-    ok, data = wp.queue_list()
-    if not ok or not isinstance(data, dict):
-        return ""
-    pos = data.get("position", -1)
-    for it in data.get("items", []):
-        if it.get("index") == pos:
-            artist = f" — {it['artist']}" if it.get("artist") else ""
-            return f"{it.get('name', '')}{artist}"
-    return ""
 
 
-@mcp.tool(
-    annotations=ToolAnnotations(
-        title="Up Next queue", readOnlyHint=False, destructiveHint=False, openWorldHint=True
-    )
-)
-def queue(
-    action: str = "list",
-    track: str = "",
-    artist: str = "",
-    index: int = -1,
-    enabled: Optional[bool] = None,
-    engine: str = "",
-) -> str:
-    """The Up Next play queue — the web player's own MusicKit state (the same Up Next
-    you see in the player). It runs on a web engine: Safari on macOS (no Chrome
-    needed) or Chrome elsewhere, picked by your `mode` (auto/safari/chrome) or a
-    per-call `engine=` ('safari' | 'chrome'). Using the queue makes it the active
-    playback engine, so transport controls reach it. Native (Music.app) mode has no
-    Up Next — set mode to safari/chrome or pass engine='safari'.
 
-    Actions:
-    - `list` — show Up Next (▶ marks the current item; indices are 0-based)
-    - `set` — replace the whole queue in order, one call (`track`=comma/newline-separated ids or names)
-    - `play_next` — insert a track right after the current one (`track`=name or catalog id, optional `artist`)
-    - `play_last` — append a track to the end of Up Next
-    - `remove` — remove the item at `index` (can't remove the currently-playing item — jump away first)
-    - `clear` — empty the queue
-    - `jump` — jump playback to a track: by `track` (name or catalog id — drift-proof, preferred since Up Next auto-advances) or by `index`
-    - `autoplay` — set Autoplay (∞: keep playing similar music when the queue ends); pass `enabled=true` or `enabled=false` (required)
-    """
-    action = action.lower().strip().replace("-", "_")
-
-    eng = _queue_engine(engine)
-    if eng == "none":
-        return "Error: " + _no_player_msg(engine, for_queue=True)
-    wp = _web_player(eng)
-
-    if action in ("list", "show", "up_next"):
-        ok, data = wp.queue_list()
-        return _format_queue(data) if ok else f"Error: {data}"
-    if action == "set":
-        raw = [t.strip() for t in re.split(r"[,\n]", track) if t.strip()]
-        if not raw:
-            return "Error: set needs track=comma/newline-separated ids or names"
-        ids: list[str] = []
-        misses: list[str] = []
-        for t in raw:
-            cid = _queue_resolve_catalog_id(t, artist)
-            (ids.append(cid) if cid else misses.append(t))
-        if not ids:
-            return _catalog_miss_reason(
-                f"Error: none of those resolved to catalog tracks: {', '.join(misses)}"
-            )
-        ok, msg = wp.queue_set(ids)
-        if not ok:
-            return f"Error: {msg}"
-        if misses:
-            msg += f" (skipped, not found: {', '.join(misses)})"
-        _set_active_playback(eng)
-        return _queue_after(wp, msg)
-    if action in ("play_next", "play_last"):
-        cid = _queue_resolve_catalog_id(track, artist)
-        if not cid:
-            return _catalog_miss_reason(f"Error: '{track}' not found in catalog")
-        ok, msg = wp.queue_play_next(cid) if action == "play_next" else wp.queue_play_later(cid)
-        if not ok:
-            return f"Error: {msg}"
-        _set_active_playback(eng)
-        return _queue_after(wp, msg)
-    if action == "remove":
-        if index < 0:
-            return "Error: index required (0-based) for remove"
-        ok, msg = wp.queue_remove(index)
-        return _queue_after(wp, msg) if ok else f"Error: {msg}"
-    if action == "clear":
-        ok, msg = wp.queue_clear()
-        return _queue_after(wp, msg) if ok else f"Error: {msg}"
-    if action == "jump":
-        # Prefer jump-by-track (name or catalog id): the Up Next auto-advances in
-        # real time, so an index captured a moment ago can land on the wrong track.
-        # Targeting by id is drift-proof.
-        if track:
-            cid = _queue_resolve_catalog_id(track, artist)
-            if not cid:
-                return _catalog_miss_reason(f"Error: '{track}' not found to jump to")
-            ok, msg = wp.queue_jump_id(cid)
-        elif index >= 0:
-            ok, msg = wp.queue_jump(index)
-        else:
-            return "Error: jump needs index (0-based) or track (name/catalog id — drift-proof)"
-        if not ok:
-            return f"Error: {msg}"
-        _set_active_playback(eng)
-        name = _queue_current_name(wp)
-        header = f"Jumped to: {name}" if name else msg
-        return _queue_after(wp, header)
-    if action == "autoplay":
-        if enabled is None:
-            return "Error: autoplay needs enabled=true or enabled=false"
-        # autoplayEnabled is the player's OWN state — set it directly, don't shadow it
-        # in our config. `queue list` reports the current value (read), this sets it.
-        ok, msg = wp.queue_autoplay(enabled)
-        return _queue_after(wp, msg) if ok else f"Error: {msg}"
-    return (
-        f"Unknown action: {action}. Use: list, set, play_next, play_last, remove, clear, jump, "
-        "autoplay"
-    )
 
 
 # =============================================================================
-# Playback transport (cross-platform — browser web player or native Music.app)
+# Playback transport (local Music.app, macOS)
 # =============================================================================
-# Registered unconditionally so non-macOS clients get it too. play/control/
-# now_playing/settings run through the web player or, on macOS, the local
-# Music.app — chosen by the `mode` preference (auto/native/web) or a per-call
-# engine= override. reveal/airplay are macOS-only and gated at runtime.
+# One engine: Apple Events to Music.app. The browser web players were removed,
+# so every action here is macOS-only and gated on Automation permission.
 
-_PLAYBACK_NEEDS_BROWSER = (
-    "Native (Music.app) playback needs macOS, and this host isn't macOS. "
-    'Set the web engine — config(action="set-pref", preference="mode", string_value="web") '
-    "— and run `applemusic-mcp login`, or pass engine='web' for this one call."
+_PLAYBACK_NEEDS_NATIVE = (
+    "Playback needs macOS and the local Music.app. This build has no browser "
+    "web player — the Chrome (Playwright) and Safari (Apple-Events JavaScript) "
+    "engines were removed on purpose."
 )
 
 
@@ -8746,151 +8469,49 @@ def playback(
     # engine override (one call only)
     engine: str = "",
 ) -> str:
-    """Playback transport. play/control/now_playing/settings run on the engine the
-    `mode` preference resolves to — native Music.app (macOS), the Safari web player
-    (macOS), or the Chrome web player (any OS). Override it for ONE call with
-    `engine=`: 'native', 'safari', 'chrome', 'web' (the web engine — Safari on macOS,
-    Chrome off-mac), or 'auto'. control/now_playing follow whichever engine is
-    actively playing (so after a Safari queue, pause/next reach Safari). Safari needs
-    a signed-in Safari + "Allow JavaScript from Apple Events"; Chrome needs a
-    signed-in Chrome (`applemusic-mcp login`) + a desktop session. reveal and airplay
-    are macOS-only. For the Up Next queue, use the separate `queue` tool.
+    """Playback transport, running on the local Music.app (macOS, Apple Events).
+
+    This build ships a single playback engine. The Chrome (Playwright) and Safari
+    (`do JavaScript`) web players were removed, so `engine=` accepts only 'native'
+    or 'auto'; asking for a removed engine is an explicit error rather than a
+    silent substitution. There is no Up Next tool — Up Next lived in the web
+    player's MusicKit instance, which no longer exists here.
     Actions: play, control, now_playing, settings, reveal, airplay."""
     action = action.lower().strip().replace("-", "_")
 
-    # Resolve the engine: native | safari | chrome | none. `play` uses the play
-    # resolver; control/now_playing/settings/reveal follow the ACTIVE engine (so a
-    # Safari-queued session is the one you control) unless this call overrides it.
     override = engine.strip()
-    if override and override.lower() not in (
-        "native",
-        "safari",
-        "chrome",
-        "web",
-        "browser",
-        "auto",
-        "api",
-    ):
-        return f"Error: engine must be one of native, safari, chrome, web, auto (got {engine!r})"
+    if override and override.lower() not in ("native", "auto"):
+        if override.lower() in ("safari", "chrome", "web", "browser", "api"):
+            return "Error: " + _no_player_msg(override)
+        return f"Error: engine must be 'native' or 'auto' (got {engine!r})"
     eng = _playback_engine(override) if (action == "play" or override) else _get_active_playback()
 
+    if eng == "none" and action in ("play", "control", "now_playing"):
+        return "Error: " + _no_player_msg(override)
+    if not APPLESCRIPT_AVAILABLE:
+        return _PLAYBACK_NEEDS_NATIVE
+
     if action == "play":
-        if eng == "none":
-            return "Error: " + _no_player_msg(override)
-        if eng == "native":
-            if not APPLESCRIPT_AVAILABLE:
-                return _PLAYBACK_NEEDS_BROWSER
-            res = _playback_play(
-                track, playlist, album, artist, shuffle, reveal, add_to_library, url
-            )
-            _set_active_playback("native")
-            return res
-        res = _browser_play(_web_player(eng), track, artist, url, playlist, album, shuffle)
-        if not res.startswith("Error"):
-            _set_active_playback(eng)
+        res = _playback_play(track, playlist, album, artist, shuffle, reveal, add_to_library, url)
+        _set_active_playback("native")
         return res
     elif action == "control":
         if not control:
             return "Error: control param required. Use: play, pause, stop, next, previous, seek"
-        if eng == "none":
-            return "Error: " + _no_player_msg(override)
-        if eng == "native":
-            if not APPLESCRIPT_AVAILABLE:
-                return _PLAYBACK_NEEDS_BROWSER
-            msg = _playback_control(control, seconds)
-            if msg.startswith("Error"):
-                return msg
-        else:
-            ok, msg = _web_player(eng).playback_control(control, seconds)
-            if not ok:
-                return f"Error: {msg}"
+        msg = _playback_control(control, seconds)
+        if msg.startswith("Error"):
+            return msg
         # Return the resulting now-playing so the caller doesn't need a follow-up
         # now_playing call after a play/pause/next/seek.
         return f"{msg}\n\n{playback(action='now_playing', engine=engine)}"
     elif action == "now_playing":
-        # PRIMARY = full state of the active engine (native keeps its rich detail:
-        # state / progress). Then surface any OTHER engine that's also playing, so a
-        # split is visible, with a hint to drive a specific one. Peeks never launch an
-        # engine — they only read one already running.
-        from . import browser, safari_player
-
-        _ENGINE_LABELS = {"native": "Music.app", "safari": "Safari", "chrome": "Chrome web player"}
-
-        def _peek(key):  # no-launch read of a non-active engine
-            if key == "native":
-                return asc.now_playing_if_running() if APPLESCRIPT_AVAILABLE else None
-            if key == "safari":
-                return safari_player.now_playing_if_running()
-            if key == "chrome":
-                return browser.now_playing_if_running()
-            return None
-
-        def _compact(label, np):
-            st = f" [{np.get('state')}]" if np.get("state") else ""
-            artist = f" — {np.get('artist')}" if np.get("artist") else ""
-            album = f" ({np.get('album')})" if np.get("album") else ""
-            pos, dur = np.get("position"), np.get("duration")
-            prog = ""
-            if isinstance(pos, (int, float)) and isinstance(dur, (int, float)) and dur:
-                prog = f" {int(pos) // 60}:{int(pos) % 60:02d}/{int(dur) // 60}:{int(dur) % 60:02d}"
-            return f"{label}{st}: {np.get('name')}{artist}{album}{prog}"
-
-        # Primary line for the active engine.
-        if eng == "native":
-            if not APPLESCRIPT_AVAILABLE:
-                return _PLAYBACK_NEEDS_BROWSER
-            primary = _playback_now_playing()  # rich: state / track / artist / album / position
-        elif eng in ("safari", "chrome"):
-            np = _web_player(eng).now_playing()
-            primary = (
-                _compact(_ENGINE_LABELS[eng], np)
-                if np
-                else f"Nothing playing ({_ENGINE_LABELS[eng]})"
-            )
-        else:  # none — no player resolved (e.g. api mode)
-            primary = _no_player_msg(override)
-
-        # Other engines also playing (peek-only), so a split is visible.
-        others = []
-        for key in ["native", "safari", "chrome"]:
-            if key == eng:
-                continue
-            np = _peek(key)
-            if np and np.get("name"):
-                others.append(f"  also on {_compact(_ENGINE_LABELS[key], np)}")
-
-        out = primary
-        if others:
-            out += "\n\nOther engines also playing:\n" + "\n".join(others)
-            out += "\n(pass engine='native' | 'safari' | 'chrome' to control a specific one)"
-        tabs = safari_player.music_tab_count() if APPLESCRIPT_AVAILABLE else 0
-        if tabs > 1:
-            out += f"\n\nℹ️ {tabs} Apple Music tabs are open in Safari — driving a consistent one."
-        return out
+        return _playback_now_playing()
     elif action == "settings":
-        if eng in ("safari", "chrome"):
-            shuffle_b = (
-                {"on": True, "off": False}.get(shuffle_mode.lower()) if shuffle_mode else None
-            )
-            repeat_v = repeat.lower() if repeat else None
-            ok, msg = _web_player(eng).browser_settings(volume, shuffle_b, repeat_v)
-            return msg if ok else f"Error: {msg}"
-        if not APPLESCRIPT_AVAILABLE:
-            return _PLAYBACK_NEEDS_BROWSER
         return _playback_settings(volume, shuffle_mode, repeat)
     elif action == "reveal":
         name = track_name or track
         if not name and not url:
             return "Error: track_name, track, or url required for reveal action"
-        if eng in ("safari", "chrome"):
-            target = url
-            if not target:
-                resolved = _resolve_catalog_track_itunes(name, artist)
-                if not resolved:
-                    return f"Error: '{name}' not found in catalog"
-                target = resolved["url"]
-            ok, msg = _web_player(eng).reveal_url(target)
-            return msg if ok else f"Error: {msg}"
         if err := _macos_only("reveal"):
             return err
         return _playback_reveal(name, artist)
@@ -8975,79 +8596,100 @@ def _convert_song_url_to_album(url: str) -> Optional[str]:
     return None
 
 
-def _try_ui_catalog_play(
-    track_name: str,
-    track_artist: str,
-    source_label: str = "ui_catalog",
-    prefix: str = "[UI Catalog]",
-) -> tuple[bool, Optional[str]]:
-    """Try to play a catalog track via Music.app UI automation.
-
-    Centralizes the APPLESCRIPT_AVAILABLE gating, audit logging, and
-    success-message formatting that was previously duplicated across
-    three call sites in this function.
-
-    Returns:
-        (True, formatted_message) on success.
-        (False, raw_error_message) on UI failure (caller can choose
-            whether to surface the failure inline or fall through).
-        (False, None) when APPLESCRIPT_AVAILABLE is False — caller
-            should fall through to the next path.
-    """
-    if not APPLESCRIPT_AVAILABLE:
-        return False, None
-    ui_query = f"{track_name} {track_artist}".strip()
-    ok, msg = asc.ui_play_result_by_query(ui_query)
-    if ok:
-        audit_log.log_action(
-            "play_track",
-            {"track": track_name, "artist": track_artist, "source": source_label},
-        )
-        return True, f"{prefix} {msg}"
-    return False, msg
 
 
 def _catalog_miss_play(name: str, artist: str, url: str, reveal: bool) -> str:
-    """A catalog item isn't in the library and the UI-search play didn't take.
-    Play it natively in Music.app by deep-linking the URL and driving the UI
-    (the fixed CoreGraphics click for the album/playlist Play button, or a
-    name-matched double-click for a specific ?i= track). No library changes;
-    reveal=True just opens the page for a manual click.
+    """A catalog item isn't in the user's library, so Music.app can't play it directly.
 
-    If native UI play fails and playback isn't pinned to ``native``, fall
-    back to the browser web player (now full-DRM) rather than dead-ending —
-    a pinned-``native`` user explicitly opted out of the browser, so they
-    get the actionable message instead."""
-    if reveal and url:
-        success, _ = asc.open_catalog_song(url)
-        if success:
-            return f"[Catalog] Opened: {name} by {artist} (click play)"
-    if not url:
-        return f"[Catalog] Found {name} by {artist}."
-
-    ok, msg = asc.open_catalog_and_play(url, track_name=name)
-    if ok:
-        audit_log.log_action("play_track", {"track": name, "artist": artist, "source": "deep_link"})
-        return f"[Catalog] {msg}"
-
-    # Native UI play failed (commonly: Accessibility not granted, or a Music
-    # layout this build doesn't match). In auto/browser playback, the browser
-    # web player is a working fallback; pinned-native opted out of it.
-    pinned_native = _mode_pinned_native()
-    if not pinned_native and has_user_token():
-        bmsg = _browser_play(_web_player(_playback_engine("web")), url=url)
-        if not bmsg.startswith("Error"):
-            return f"[Catalog→Browser] {bmsg}"
-
-    return (
-        f"[Catalog] Found {name} by {artist} — couldn't auto-play it in Music. "
-        "Grant Accessibility (System Settings → Privacy & Security → Accessibility) "
-        "for your terminal/MCP host, "
-        + (
-            "or play in the web player: set mode=web, or pass engine='web' for this call."
-            if has_user_token()
-            else "or run `login` to play in the web player (needs an Apple Music subscription)."
+    Upstream handled this by deep-linking the URL into Music.app (``open``) and
+    then driving the UI with synthetic clicks. Both halves are gone here: the
+    ``open`` call took a weakly-validated URL, and the clicking needed
+    Accessibility. The supported substitute is add-then-play — put the track in
+    the library over the official API, then play it by name through Apple Events.
+    That needs a developer token; without one we say so plainly instead of
+    silently doing nothing.
+    """
+    label = f"{name} by {artist}" if artist else name
+    if reveal:
+        # "Reveal" meant opening a music.apple.com URL in a browser/Music.app.
+        # This build never hands a URL to the OS, so report rather than open.
+        return (
+            f"[Catalog] Found {label}. This build doesn't open external URLs, so "
+            f"there's nothing to reveal — search for it in Music.app, or add it to "
+            f"your library first."
         )
+    if not _can_use_library_api():
+        return (
+            f"[Catalog] Found {label}, but it isn't in your library and Music.app can "
+            "only play what you own. Adding a catalog track needs the official Apple "
+            "Music API — run `applemusic-mcp login --dev` — or add it in Music.app "
+            "yourself and ask again."
+        )
+    catalog_id = _find_catalog_id_for(name, artist)
+    if not catalog_id:
+        return f"[Catalog] Couldn't resolve a catalog id for {label}."
+    ok, msg = _add_songs_to_library([catalog_id])
+    if not ok:
+        return f"Error: couldn't add {label} to your library: {msg}"
+    audit_log.log_action("add_to_library", {"tracks": [label], "source": "play_add_then_play"})
+    # iCloud propagates the add to the local library asynchronously; poll, then play.
+    deadline = time.monotonic() + _LIBRARY_SYNC_DEADLINE_S
+    last_err = ""
+    while time.monotonic() < deadline:
+        found, _ = asc.find_library_track(name, artist or "")
+        if found:
+            ok2, res = asc.play_track(name, artist or None)
+            if ok2:
+                audit_log.log_action(
+                    "play_track", {"track": name, "artist": artist, "source": "add_then_play"}
+                )
+                return f"[Catalog→Library] Added and playing: {res}"
+            last_err = res
+            break
+        time.sleep(_LIBRARY_SYNC_TICK_S)
+    return _play_after_add(label, last_err)
+
+
+def _find_catalog_id_for(name: str, artist: str = "") -> str:
+    """Resolve a catalog song id by name/artist, tokenlessly where possible."""
+    for hit in _catalog_search_itunes(f"{name} {artist}".strip(), 5):
+        if _loose_equals(hit.get("name", ""), name) and (
+            not artist or _loose_contains(artist, hit.get("artist", ""))
+        ):
+            return hit.get("id", "")
+    return ""
+
+
+def _parse_apple_music_url(url: str) -> tuple[bool, str]:
+    """Validate an Apple Music URL and return its catalog id — parse only.
+
+    Strict hostname equality via ``urlparse`` (never ``startswith``, which
+    accepts ``music.apple.com.evil.tld`` and ``music.apple.com@evil.tld``), and
+    only ``https``. The URL is never fetched, opened, or handed to any OS
+    handler: the sole output is a numeric catalog id extracted from it.
+    """
+    from urllib.parse import parse_qs, urlparse
+
+    if not url or not isinstance(url, str):
+        return False, "empty URL"
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False, "unparseable URL"
+    if parsed.scheme != "https":
+        return False, f"only https Apple Music URLs are accepted (got scheme {parsed.scheme!r})"
+    host = (parsed.hostname or "").lower()
+    if host != "music.apple.com" and not host.endswith(".music.apple.com"):
+        return False, f"not an Apple Music URL (host {host!r})"
+    qs = parse_qs(parsed.query)
+    if qs.get("i") and qs["i"][0].isdigit():
+        return True, qs["i"][0]
+    m = re.search(r"/song/[^/]*/(\d+)", parsed.path)
+    if m:
+        return True, m.group(1)
+    return False, (
+        "only song URLs are supported (a /song/<id> path or an ?i=<id> query). "
+        "For albums and playlists, play by name."
     )
 
 
@@ -9061,42 +8703,39 @@ def _playback_play(
     add_to_library: bool = False,
     url: str = "",
 ) -> str:
-    """Play a track, playlist, album, or URL (macOS). Provide ONE target."""
+    """Play a track, playlist, album, or Apple Music URL on the local Music.app.
+
+    Provide ONE target. A URL is never handed to the operating system in this
+    build: upstream passed it to ``open`` behind a ``startswith`` host check that
+    accepted ``music.apple.com.evil.tld`` and ``music.apple.com@evil.tld``, which
+    made the model's URL parameter an outbound channel. Here a URL is only ever
+    PARSED — we extract the catalog id and play that — so a hostile URL yields a
+    rejection, never a fetch, a navigation, or a launched application.
+    """
     # === URL === (handle first, separate from other targets)
     if url:
         url = url.strip()
         if track or playlist or album or artist:
             return "Error: When using url, don't provide track, playlist, album, or artist"
-
-        # Convert /song/ URLs to /album/?i= format via API lookup
-        if "/song/" in url and "?i=" not in url:
-            converted = _convert_song_url_to_album(url)
-            if converted:
-                url = converted
-
-        # For a specific ?i= track, look up its name so the deep-link path can
-        # match the exact row and double-click it (rather than the album Play
-        # button, which would start the whole album from track 1).
-        track_name_hint = ""
-        i_match = re.search(r"[?&]i=(\d+)", url)
-        if i_match:
-            track_name_hint = _catalog_song_name(i_match.group(1))
-
-        success, result = asc.open_catalog_and_play(
-            url, shuffle=shuffle, track_name=track_name_hint
-        )
-        if success:
-            audit_log.log_action("play_url", {"url": url, "result": result})
-            return result
-        # Native UI play failed — fall back to the browser web player unless
-        # playback is pinned to native (same policy as _catalog_miss_play).
-        pinned_native = _mode_pinned_native()
-        if not pinned_native and has_user_token():
-            bmsg = _browser_play(_web_player(_playback_engine("web")), url=url, shuffle=shuffle)
-            if not bmsg.startswith("Error"):
-                audit_log.log_action("play_url", {"url": url, "via": "browser"})
-                return f"[Browser] {bmsg}"
-        return f"Error: {result}"
+        ok, ident = _parse_apple_music_url(url)
+        if not ok:
+            return f"Error: {ident}"
+        song_id = ident
+        name = _catalog_song_name(song_id) if _has_developer_token() else ""
+        if not name:
+            hits = [h for h in _catalog_search_itunes(song_id, 1)] if song_id.isdigit() else []
+            name = hits[0]["name"] if hits else ""
+        if not name:
+            return (
+                f"Error: couldn't resolve catalog id {song_id} to a track. "
+                "Play by name instead, or run `applemusic-mcp login --dev` for catalog lookups."
+            )
+        audit_log.log_action("play_url", {"catalog_id": song_id, "resolved": name})
+        found, _ = asc.find_library_track(name, "")
+        if found:
+            ok2, res = asc.play_track(name, None)
+            return res if ok2 else f"Error: {res}"
+        return _catalog_miss_play(name, "", "", reveal or False)
 
     # Count how many targets provided
     targets = sum(1 for t in [track, playlist, album] if t)
@@ -9262,10 +8901,7 @@ def _playback_play(
                             return _play_after_add(f"{track_name} by {track_artist}", result)
                         return f"[Catalog] Failed to add: {add_msg}"
 
-                    # UI play first; else play via the browser web player.
-                    ui_ok, ui_msg = _try_ui_catalog_play(track_name, track_artist)
-                    if ui_ok:
-                        return ui_msg
+                    # No UI automation in this build — add-then-play or explain.
                     return _catalog_miss_play(track_name, track_artist, song_url, reveal)
         except requests.exceptions.RequestException as e:
             return f"Error looking up catalog ID {catalog_id}: {e}"
@@ -9348,28 +8984,8 @@ def _playback_play(
                 return _play_after_add(f"{song_name} by {song_artist}", result)
             return f"[Catalog] Failed to add: {add_msg}"
 
-        # UI play — works without adding to library; tried before the
-        # browser fallback when Music.app automation is available.
-        ui_ok, ui_msg = _try_ui_catalog_play(song_name, song_artist)
-        if ui_ok:
-            return ui_msg
-        if ui_msg is not None:
-            # UI was attempted and failed — surface the reason rather than
-            # falling through to reveal/error. APPLESCRIPT_AVAILABLE=False
-            # returns (False, None), in which case we do fall through.
-            return f"[UI Catalog failed: {ui_msg}] Falling back — {song_name} by {song_artist}"
-
-        # Not in library and UI play didn't take — play via the browser.
+        # Not in the library: add-then-play (needs the API), or explain why not.
         return _catalog_miss_play(song_name, song_artist, song_url, reveal)
-
-    # API catalog search found nothing — try UI search as last resort.
-    # Different prefix ([UI Search] vs [UI Catalog]) signals to the user
-    # that this matched only via UI search, not via API confirmation.
-    ui_ok, ui_msg = _try_ui_catalog_play(
-        track_name, track_artist, source_label="ui_search", prefix="[UI Search]"
-    )
-    if ui_ok:
-        return ui_msg
 
     return f"Track not found in library or catalog: {track_name}"
 
@@ -9816,31 +9432,13 @@ def _playback_airplay(device_name: str = "") -> str:
         return f"AirPlay devices ({len(devices)}):\n" + "\n".join(f"  - {d}" for d in devices)
 
 
-def _shutdown_browser_engine():  # pragma: no cover - lifecycle, not exercised under test
-    """Close the Chrome engine's persistent context cleanly so its profile is flushed
-    and not left locked/corrupted. Playwright only persists reliably on a graceful
-    ctx.close(); an abrupt kill is a known cause of the 'signed-out next launch' bug."""
-    try:
-        from . import browser
-
-        browser._engine.shutdown(timeout=5.0)
-    except Exception:
-        pass
 
 
 def main():
     """Run the MCP server."""
     # pragma: no cover  # entrypoint: starts the MCP server, not exercised under test
-    import atexit
-    import signal
-
-    atexit.register(_shutdown_browser_engine)
-    # MCP clients usually stop the server with SIGTERM, which by default skips atexit —
-    # turn it into a normal exit so the Chrome profile flushes before we die.
-    try:
-        signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    except (ValueError, OSError):
-        pass  # not the main thread / unsupported platform — atexit still covers normal exit
+    # Upstream registered an atexit hook to close its persistent Chrome context.
+    # No browser engine exists here, so there is nothing to tear down.
     mcp.run()
 
 

@@ -22,7 +22,6 @@ import pytest
 from applemusic_mcp import server
 
 
-@pytest.fixture(autouse=True)
 def _no_real_safari_signin(monkeypatch):
     """signin now tries the Safari harvest first on macOS — stub it to 'no session'
     so config signin tests deterministically exercise the Chrome path regardless of
@@ -106,9 +105,6 @@ class TestSetPrefGaps:
         out = server.config(action="set-pref", preference="secure_storage", string_value="keychain")
         assert "preference must be one of" in out and "secure_storage" not in out.split(":")[-1]
 
-    def test_set_mode_web(self, mock_config_dir):
-        out = server.config(action="set-pref", preference="mode", string_value="web")
-        assert "mode = web" in out
 
 
 # ---------------------------------------------------------------------------
@@ -1025,82 +1021,17 @@ class TestClearCredentials:
 
 
 class TestAuthActionGaps:
-    def test_signin_exception_returns_error(self, monkeypatch):
-        """signin_interactive raises → 'Error: ...'."""
-        import applemusic_mcp.browser as browser
 
-        monkeypatch.setattr(
-            browser, "signin_interactive", lambda: (_ for _ in ()).throw(RuntimeError("no chrome"))
-        )
-        out = server._auth_action("signin")
-        assert "Error" in out and "no chrome" in out
 
-    def test_signin_generic_error_message(self, monkeypatch):
-        """signin_interactive returns (False, non-waiting msg) → browser error text.
-        Force the Chrome fallback: Safari harvest fails + Playwright present."""
-        import applemusic_mcp.browser as browser
-        from applemusic_mcp import safari
 
-        monkeypatch.setattr(safari, "media_user_token", lambda: (False, "no safari session"))
-        monkeypatch.setattr(browser, "is_available", lambda: True)
-        monkeypatch.setattr(browser, "signin_interactive", lambda: (False, "playwright not found"))
-        out = server._auth_action("signin")
-        assert "playwright not found" in out
-        assert "Google Chrome installed" in out and "downloads itself" in out
 
-    def test_logout_failed_credentials(self, mock_config_dir, monkeypatch):
-        """_clear_credentials returns non-empty failed → ⚠️ Partly signed out."""
-        import applemusic_mcp.browser as browser
-
-        monkeypatch.setattr(browser, "clear_session", lambda: None)
-        with patch.object(server, "_clear_credentials", return_value=([], ["music_user_token"])):
-            out = server._auth_action("logout", confirm=True)
-        assert "Partly signed out" in out
-        assert "music_user_token" in out
-
-    def test_reset_config_json_oserror(self, mock_config_dir, monkeypatch):
-        """config.json exists but unlink raises OSError → goes to failed."""
-        import applemusic_mcp.browser as browser
-
-        monkeypatch.setattr(browser, "clear_session", lambda: None)
-        (mock_config_dir / "config.json").write_text("{}")
-        with (
-            patch.object(server, "_clear_credentials", return_value=([], [])),
-            patch("pathlib.Path.unlink", side_effect=OSError("locked")),
-        ):
-            out = server._auth_action("reset", confirm=True)
-        # failed now contains "config.json" → ⚠️ Partial reset
-        assert "Partial reset" in out
-
-    def test_reset_partial_failed(self, mock_config_dir, monkeypatch):
-        """_clear_credentials has failures → ⚠️ Partial reset."""
-        import applemusic_mcp.browser as browser
-
-        monkeypatch.setattr(browser, "clear_session", lambda: None)
-        with patch.object(server, "_clear_credentials", return_value=([], ["developer_token"])):
-            out = server._auth_action("reset", confirm=True)
-        assert "Partial reset" in out
 
     def test_unknown_auth_action(self):
         out = server._auth_action("teleport")
         assert "Unknown action" in out
         assert "teleport" in out
 
-    def test_login_alias(self, monkeypatch):
-        """'login' is an alias for 'signin'."""
-        import applemusic_mcp.browser as browser
 
-        monkeypatch.setattr(browser, "signin_interactive", lambda: (True, "Signed in"))
-        out = server._auth_action("login")
-        assert "✓" in out
-
-    def test_config_action_login_alias(self, monkeypatch):
-        """config(action='login') routes to signin."""
-        import applemusic_mcp.browser as browser
-
-        monkeypatch.setattr(browser, "signin_interactive", lambda: (True, "Signed in"))
-        out = server.config(action="login")
-        assert "✓" in out
 
     def test_config_action_auth_status_alias(self, mock_config_dir):
         """config(action='auth_status') is also handled."""

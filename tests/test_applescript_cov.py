@@ -646,123 +646,14 @@ def test_play_track(monkeypatch):
     assert asc.play_track("T") == (False, "Track not found: T")
 
 
-# ===========================================================================
-# open_catalog_song (subprocess-backed)
-# ===========================================================================
-def test_open_catalog_song(monkeypatch):
-    assert asc.open_catalog_song("")[0] is False
-    assert asc.open_catalog_song(123)[0] is False  # not a str
-    assert asc.open_catalog_song("https://example.com")[0] is False  # non-apple https
-    assert asc.open_catalog_song("ftp://x")[0] is False  # bare/other
-
-    # music:// success on first try
-    monkeypatch.setattr(asc.subprocess, "run", lambda *a, **k: proc(0))
-    assert asc.open_catalog_song("music://music.apple.com/x") == (True, "Opened in Music")
-
-    # https apple, music:// fails -> https fallback succeeds
-    calls = {"n": 0}
-
-    def _run(*a, **k):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise asc.subprocess.CalledProcessError(1, a[0])
-        return proc(0)
-
-    monkeypatch.setattr(asc.subprocess, "run", _run)
-    assert asc.open_catalog_song("https://music.apple.com/x") == (True, "Opened via browser")
-
-    # both fail
-    def _fail(*a, **k):
-        raise asc.subprocess.CalledProcessError(1, a[0])
-
-    monkeypatch.setattr(asc.subprocess, "run", _fail)
-    ok, msg = asc.open_catalog_song("https://music.apple.com/x")
-    assert ok is False and "Failed to open" in msg
 
 
-# ===========================================================================
-# Search-field resolution + UI accessibility / lock
-# ===========================================================================
-def test_get_search_field(monkeypatch):
-    # cache hit
-    monkeypatch.setattr(asc, "_search_field_cache", "CACHED")
-    assert asc._get_search_field() == "CACHED"
-
-    # probe grouped
-    monkeypatch.setattr(asc, "_search_field_cache", None)
-    setrun(monkeypatch, const(True, "grouped"))
-    assert asc._get_search_field() == asc._SEARCH_FIELD_TOOLBAR
-
-    # probe flat
-    monkeypatch.setattr(asc, "_search_field_cache", None)
-    setrun(monkeypatch, const(True, "flat"))
-    assert asc._get_search_field() == asc._SEARCH_FIELD_TOOLBAR_FLAT
-
-    # none -> cmd+f -> grouped
-    monkeypatch.setattr(asc, "_search_field_cache", None)
-    setrun(monkeypatch, Seq([(True, "none"), (True, ""), (True, "grouped")]))
-    assert asc._get_search_field() == asc._SEARCH_FIELD_TOOLBAR
-
-    # probe not ok (returns None) twice -> sidebar fallback, no caching
-    monkeypatch.setattr(asc, "_search_field_cache", None)
-    setrun(monkeypatch, Seq([(False, "x"), (True, ""), (False, "y")]))
-    assert asc._get_search_field() == asc._SEARCH_FIELD_SIDEBAR
-    assert asc._search_field_cache is None
 
 
-def test_classify_as_error():
-    assert "Accessibility permission" in asc._classify_as_error("err -1743 here")
-    assert "UI element not found" in asc._classify_as_error("err -1728 here")
-    assert "Unexpected UI automation error" in asc._classify_as_error("weird thing")
 
 
-def test_is_screen_locked(monkeypatch):
-    # Quartz import fails -> None
-    monkeypatch.setitem(sys.modules, "Quartz", None)
-    assert asc.is_screen_locked() is None
-
-    def fake_quartz(d):
-        return types.SimpleNamespace(CGSessionCopyCurrentDictionary=lambda: d)
-
-    # No dict -> True
-    monkeypatch.setitem(sys.modules, "Quartz", fake_quartz(None))
-    assert asc.is_screen_locked() is True
-    # Locked flag -> True
-    monkeypatch.setitem(sys.modules, "Quartz", fake_quartz({"CGSSessionScreenIsLocked": 1}))
-    assert asc.is_screen_locked() is True
-    # Not on console -> True
-    monkeypatch.setitem(sys.modules, "Quartz", fake_quartz({"kCGSSessionOnConsoleKey": 0}))
-    assert asc.is_screen_locked() is True
-    # Unlocked + on console -> False
-    monkeypatch.setitem(sys.modules, "Quartz", fake_quartz({"kCGSSessionOnConsoleKey": 1}))
-    assert asc.is_screen_locked() is False
 
 
-def test_check_ui_accessible(monkeypatch):
-    # locked
-    monkeypatch.setattr(asc, "is_screen_locked", lambda: True)
-    ok, reason = asc.check_ui_accessible()
-    assert ok is False and "locked" in reason.lower()
-
-    monkeypatch.setattr(asc, "is_screen_locked", lambda: False)
-    # run_applescript not ok -> classified
-    setrun(monkeypatch, const(False, "err -1743"))
-    ok, reason = asc.check_ui_accessible()
-    assert ok is False and "Accessibility" in reason
-
-    # windows > 0 -> accessible
-    setrun(monkeypatch, const(True, "2"))
-    assert asc.check_ui_accessible() == (True, "")
-
-    # zero windows, loginwindow has windows -> locked message
-    setrun(monkeypatch, Seq([(True, "0"), (True, "true")]))
-    ok, reason = asc.check_ui_accessible()
-    assert ok is False and "screen is locked" in reason.lower()
-
-    # zero windows, loginwindow false -> generic no windows
-    setrun(monkeypatch, Seq([(True, "0"), (True, "false")]))
-    ok, reason = asc.check_ui_accessible()
-    assert ok is False and "no visible windows" in reason
 
 
 def test_check_playing(monkeypatch):
@@ -772,226 +663,24 @@ def test_check_playing(monkeypatch):
     assert asc._check_playing() is False
 
 
-# ===========================================================================
-# CoreGraphics / JXA helpers (subprocess-backed)
-# ===========================================================================
-def test_jxa_helpers_success(monkeypatch):
-    monkeypatch.setattr(asc.subprocess, "run", lambda *a, **k: proc(0))
-    assert asc._jxa_mouse_move(1, 2) is True
-    assert asc._jxa_mouse_click(1, 2) is True
-    assert asc._jxa_mouse_double_click(1, 2) is True
-    assert asc._jxa_scroll_down(1, 2) is True
-    # _hover_with_nudge delegates to _jxa_mouse_move
-    assert asc._hover_with_nudge(3, 4) is True
 
 
-def test_jxa_helpers_failure(monkeypatch):
-    def _boom(*a, **k):
-        raise RuntimeError("x")
-
-    monkeypatch.setattr(asc.subprocess, "run", _boom)
-    assert asc._jxa_mouse_move(1, 2) is False
-    assert asc._jxa_mouse_click(1, 2) is False
-    assert asc._jxa_mouse_double_click(1, 2) is False
-    assert asc._jxa_scroll_down(1, 2) is False
 
 
-def test_ensure_music_frontmost(monkeypatch):
-    # open raises (caught), process check returns true -> break, then run_applescript
-    calls = {"n": 0}
-
-    def _run(*a, **k):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise asc.subprocess.TimeoutExpired(cmd="open", timeout=5)
-        return proc(0, "true")
-
-    monkeypatch.setattr(asc.subprocess, "run", _run)
-    setrun(monkeypatch, const(True, ""))
-    asc._ensure_music_frontmost()  # should not raise
-
-    # process check always raises OSError -> loop exhausts, still completes
-    def _run2(*a, **k):
-        raise OSError("no")
-
-    monkeypatch.setattr(asc.subprocess, "run", _run2)
-    setrun(monkeypatch, const(True, ""))
-    asc._ensure_music_frontmost()
 
 
-# ===========================================================================
-# Click-to-play orchestration
-# ===========================================================================
-def test_click_play_or_shuffle(monkeypatch):
-    monkeypatch.setattr(asc, "_ensure_music_frontmost", lambda: None)
-
-    # NOT_FOUND
-    setrun(monkeypatch, const(True, "NOT_FOUND"))
-    ok, msg = asc._click_play_or_shuffle()
-    assert ok is False and "Could not find Play" in msg
-
-    # invalid position
-    setrun(monkeypatch, const(True, "not,a,number"))
-    ok, msg = asc._click_play_or_shuffle(shuffle=True)
-    assert ok is False and "Invalid Shuffle button position" in msg
-
-    # click fails
-    setrun(monkeypatch, const(True, "10.0,20.0"))
-    monkeypatch.setattr(asc, "_jxa_mouse_click", lambda x, y: False)
-    assert asc._click_play_or_shuffle()[0] is False
-
-    # click ok + playing
-    monkeypatch.setattr(asc, "_jxa_mouse_click", lambda x, y: True)
-    monkeypatch.setattr(asc, "_check_playing", lambda: True)
-    ok, msg = asc._click_play_or_shuffle()
-    assert ok is True and "playing via UI click" in msg
-
-    # click ok but not playing
-    monkeypatch.setattr(asc, "_check_playing", lambda: False)
-    ok, msg = asc._click_play_or_shuffle()
-    assert ok is False and "playback did not start" in msg
 
 
-def test_find_highlighted_track_position(monkeypatch):
-    setrun(monkeypatch, const(True, "NOT_FOUND"))
-    assert asc._find_highlighted_track_position() is None
-    setrun(monkeypatch, const(True, "1,2"))  # < 3 parts
-    assert asc._find_highlighted_track_position() is None
-    setrun(monkeypatch, const(True, "x,y,Name"))  # ValueError
-    assert asc._find_highlighted_track_position() is None
-    setrun(monkeypatch, const(True, "10.0,20.0,My Track"))
-    assert asc._find_highlighted_track_position() == (10.0, 20.0, "My Track")
 
 
-def test_get_window_bottom(monkeypatch):
-    setrun(monkeypatch, const(True, "500.0"))
-    assert asc._get_window_bottom() == 500.0
-    setrun(monkeypatch, const(True, "nope"))
-    assert asc._get_window_bottom() is None
-    setrun(monkeypatch, const(False, ""))
-    assert asc._get_window_bottom() is None
 
 
-def test_play_by_track_name(monkeypatch):
-    monkeypatch.setattr(asc, "_ensure_music_frontmost", lambda: None)
-    assert asc._play_by_track_name("  ") == (False, "No track name to match")
-
-    setrun(monkeypatch, const(True, "NOT_FOUND"))
-    assert asc._play_by_track_name("T")[0] is False
-
-    setrun(monkeypatch, const(True, "bad,pos,extra"))
-    ok, msg = asc._play_by_track_name("T")
-    assert ok is False and "Invalid track row position" in msg
-
-    setrun(monkeypatch, const(True, "10.0,20.0"))
-    monkeypatch.setattr(asc, "_jxa_mouse_double_click", lambda x, y: False)
-    assert asc._play_by_track_name("T")[0] is False
-
-    monkeypatch.setattr(asc, "_jxa_mouse_double_click", lambda x, y: True)
-    monkeypatch.setattr(asc, "_check_playing", lambda: True)
-    assert asc._play_by_track_name("T") == (True, "Playing: T")
-    monkeypatch.setattr(asc, "_check_playing", lambda: False)
-    assert asc._play_by_track_name("T")[0] is False
 
 
-def test_play_specific_track(monkeypatch):
-    monkeypatch.setattr(asc, "_ensure_music_frontmost", lambda: None)
-
-    # primary name-match succeeds
-    monkeypatch.setattr(asc, "_play_by_track_name", lambda n: (True, "Playing: " + n))
-    assert asc._play_specific_track("T") == (True, "Playing: T")
-
-    # primary fails -> fallback; highlighted not found
-    monkeypatch.setattr(asc, "_play_by_track_name", lambda n: (False, "no"))
-    monkeypatch.setattr(asc, "_find_highlighted_track_position", lambda: None)
-    assert asc._play_specific_track("T")[0] is False
-
-    # fallback with scroll branch, lost after scroll
-    seq_pos = Seq([])
-    positions = [(10.0, 600.0, "T"), None]
-
-    def _find():
-        return positions.pop(0)
-
-    monkeypatch.setattr(asc, "_find_highlighted_track_position", _find)
-    monkeypatch.setattr(asc, "_get_window_bottom", lambda: 500.0)  # cy>bottom-30 triggers scroll
-    monkeypatch.setattr(asc, "_jxa_scroll_down", lambda *a, **k: True)
-    assert asc._play_specific_track("T") == (False, "Lost track row after scrolling")
-
-    # full fallback success: no scroll needed, hover ok, checkbox click playing
-    monkeypatch.setattr(asc, "_find_highlighted_track_position", lambda: (10.0, 100.0, "T"))
-    monkeypatch.setattr(asc, "_get_window_bottom", lambda: 500.0)
-    monkeypatch.setattr(asc, "_hover_with_nudge", lambda x, y: True)
-    setrun(monkeypatch, const(True, "T"))
-    monkeypatch.setattr(asc, "_check_playing", lambda: True)
-    ok, msg = asc._play_specific_track("T")
-    assert ok is True and msg == "Playing: T"
-
-    # hover fails
-    monkeypatch.setattr(asc, "_hover_with_nudge", lambda x, y: False)
-    assert asc._play_specific_track("T") == (False, "Failed to move mouse for hover")
-
-    # hover ok, checkbox NOT_FOUND -> failure tail
-    monkeypatch.setattr(asc, "_hover_with_nudge", lambda x, y: True)
-    setrun(monkeypatch, const(True, "NOT_FOUND"))
-    assert asc._play_specific_track("T")[0] is False
 
 
-def test_play_specific_track_scroll_success(monkeypatch):
-    """Off-screen row: scroll, re-find a valid position, hover+click, play."""
-    monkeypatch.setattr(asc, "_ensure_music_frontmost", lambda: None)
-    monkeypatch.setattr(asc, "_play_by_track_name", lambda n: (False, "no"))
-    finds = [(10.0, 600.0, "T"), (10.0, 120.0, "T2")]
-    monkeypatch.setattr(asc, "_find_highlighted_track_position", lambda: finds.pop(0))
-    monkeypatch.setattr(asc, "_get_window_bottom", lambda: 500.0)  # 600 > 470 -> scroll
-    monkeypatch.setattr(asc, "_jxa_scroll_down", lambda *a, **k: True)
-    monkeypatch.setattr(asc, "_hover_with_nudge", lambda x, y: True)
-    setrun(monkeypatch, const(True, "T2"))
-    monkeypatch.setattr(asc, "_check_playing", lambda: True)
-    ok, msg = asc._play_specific_track("T")
-    assert ok is True and msg == "Playing: T2"
 
 
-def test_open_catalog_and_play(monkeypatch):
-    # /song/ without ?i= rejected
-    ok, msg = asc.open_catalog_and_play("https://music.apple.com/song/x")
-    assert ok is False and "not supported" in msg
-
-    # open fails
-    monkeypatch.setattr(asc, "open_catalog_song", lambda url: (False, "openfail"))
-    assert asc.open_catalog_and_play("https://music.apple.com/album/x") == (False, "openfail")
-
-    monkeypatch.setattr(asc, "open_catalog_song", lambda url: (True, "opened"))
-    monkeypatch.setattr(asc.time, "time", lambda: 0.0)
-
-    # auto-started
-    monkeypatch.setattr(asc, "_check_playing", lambda: True)
-    ok, msg = asc.open_catalog_and_play("https://music.apple.com/album/x")
-    assert ok is True and "auto-started" in msg
-
-    # track param play success
-    monkeypatch.setattr(asc, "_check_playing", lambda: False)
-    monkeypatch.setattr(asc, "_play_specific_track", lambda n: (True, "trackplay"))
-    ok, msg = asc.open_catalog_and_play("https://music.apple.com/album/x?i=1", track_name="T")
-    assert ok and msg == "trackplay"
-
-    # non-track click success
-    monkeypatch.setattr(asc, "_click_play_or_shuffle", lambda s: (True, "clicked"))
-    ok, msg = asc.open_catalog_and_play("https://music.apple.com/album/x")
-    assert ok and msg == "clicked"
-
-    # timeout failure paths: run the retry/wait body once, then exit past deadline
-    monkeypatch.setattr(asc, "_check_playing", lambda: False)
-    monkeypatch.setattr(asc, "_play_specific_track", lambda n: (False, "no"))
-    monkeypatch.setattr(asc, "_click_play_or_shuffle", lambda s: (False, "no"))
-
-    monkeypatch.setattr(asc.time, "time", Seq([0.0, 0.0], default=999.0))
-    ok, msg = asc.open_catalog_and_play("https://music.apple.com/album/x?i=1", track_name="T")
-    assert ok is False and "Opened the track" in msg
-
-    monkeypatch.setattr(asc.time, "time", Seq([0.0, 0.0], default=999.0))
-    ok, msg = asc.open_catalog_and_play("https://music.apple.com/album/x")
-    assert ok is False and "Opened it in Music" in msg
 
 
 # ===========================================================================
@@ -1106,345 +795,34 @@ def test_get_library_stats(monkeypatch):
     assert asc.get_library_stats()[0] is False
 
 
-# ===========================================================================
-# UI catalog automation primitives
-# ===========================================================================
-def test_focus_search_field(monkeypatch):
-    monkeypatch.setattr(asc, "_ensure_music_frontmost", lambda: None)
-    monkeypatch.setattr(asc, "_get_search_field", lambda: "FIELD")
-    assert asc._focus_search_field("  ") == (False, "Empty query")
-
-    # success
-    setrun(monkeypatch, const(True, ""))
-    assert asc._focus_search_field("q") == (True, "")
-
-    # path error -> retry (invalidate cache), then success
-    seq = Seq([(False, "Can't get group 1"), (True, "")])
-    setrun(monkeypatch, seq)
-    assert asc._focus_search_field("q") == (True, "")
-    assert len(seq.calls) == 2
-
-    # failure not accessible
-    setrun(monkeypatch, const(False, "boom"))
-    monkeypatch.setattr(asc, "check_ui_accessible", lambda: (False, "locked"))
-    assert asc._focus_search_field("q") == (False, "locked")
-
-    # failure accessible -> classify
-    monkeypatch.setattr(asc, "check_ui_accessible", lambda: (True, ""))
-    setrun(monkeypatch, const(False, "weird -1743"))
-    ok, msg = asc._focus_search_field("q")
-    assert ok is False and "Accessibility" in msg
-
-
-def test_wait_for_top_results(monkeypatch):
-    # immediate results
-    setrun(monkeypatch, const(True, "1|||Name|||Song · A"))
-    ok, raw = asc._wait_for_top_results()
-    assert ok and "Name" in raw
-
-    # timeout with NO_RESULTS, triggers second enter, clean empty -> (True, "")
-    clock = Seq([0.0, 0.0, 1.5, 1.6], default=99.0)
-    monkeypatch.setattr(asc.time, "monotonic", clock)
-    setrun(monkeypatch, const(True, "NO_RESULTS"))
-    ok, raw = asc._wait_for_top_results(timeout=5.0)
-    assert ok is True and raw == ""
-
-    # not ok at the end -> not accessible
-    clock2 = Seq([0.0, 0.0], default=99.0)
-    monkeypatch.setattr(asc.time, "monotonic", clock2)
-    setrun(monkeypatch, const(False, "boom"))
-    monkeypatch.setattr(asc, "check_ui_accessible", lambda: (False, "locked"))
-    assert asc._wait_for_top_results(timeout=1.0) == (False, "locked")
-
-    # not ok -> accessible -> classify
-    clock3 = Seq([0.0, 0.0], default=99.0)
-    monkeypatch.setattr(asc.time, "monotonic", clock3)
-    setrun(monkeypatch, const(False, "err -1743"))
-    monkeypatch.setattr(asc, "check_ui_accessible", lambda: (True, ""))
-    ok, msg = asc._wait_for_top_results(timeout=1.0)
-    assert ok is False and "Accessibility" in msg
-
-
-def test_parse_top_results():
-    raw = (
-        "1|||Holocene|||Song · Bon Iver\n"
-        "bad line no delim\n"
-        "2|||short\n"
-        "3|||No results for zzz|||\n"
-        "4|||Some Album|||Album\n"
-    )
-    results = asc._parse_top_results(raw)
-    names = {r["name"] for r in results}
-    assert "Holocene" in names and "No results for zzz" not in names
-    holo = next(r for r in results if r["name"] == "Holocene")
-    assert holo["type"] == "Song" and holo["artist"] == "Bon Iver"
-    album = next(r for r in results if r["name"] == "Some Album")
-    assert album["type"] == "Album" and album["artist"] == ""
-
-
-def test_find_top_result_position(monkeypatch):
-    setrun(monkeypatch, const(True, "NOT_FOUND"))
-    assert asc._find_top_result_position("X") is None
-    setrun(monkeypatch, const(True, "10.0,20.0"))
-    assert asc._find_top_result_position("X") == (10.0, 20.0)
-    setrun(monkeypatch, const(True, "a,b"))
-    assert asc._find_top_result_position("X") is None
-
-
-def test_hover_then_click_subelement(monkeypatch):
-    monkeypatch.setattr(asc, "_ensure_music_frontmost", lambda: None)
-
-    # row not found
-    monkeypatch.setattr(asc, "_find_top_result_position", lambda n: None)
-    ok, msg = asc._hover_then_click_subelement("X", "set inner to checkbox 1 of e")
-    assert ok is False and "Could not find" in msg
-
-    monkeypatch.setattr(asc, "_find_top_result_position", lambda n: (10.0, 20.0))
-
-    # hover fails
-    monkeypatch.setattr(asc, "_hover_with_nudge", lambda x, y: False)
-    assert asc._hover_then_click_subelement("X", "s")[1] == "Failed to hover"
-
-    monkeypatch.setattr(asc, "_hover_with_nudge", lambda x, y: True)
-
-    # poll never finds -> sub-element not visible (force time past deadline)
-    clock = Seq([0.0, 0.0], default=99.0)
-    monkeypatch.setattr(asc.time, "monotonic", clock)
-    setrun(monkeypatch, const(True, "NOT_FOUND"))
-    ok, msg = asc._hover_then_click_subelement("X", "s", max_wait=1.5)
-    assert ok is False and msg == "sub-element not visible after hover"
-
-    # found, invalid pos
-    monkeypatch.setattr(asc.time, "monotonic", Seq([0.0, 0.0], default=0.5))
-    setrun(monkeypatch, const(True, "a,b"))
-    ok, msg = asc._hover_then_click_subelement("X", "s", max_wait=10)
-    assert ok is False and "Invalid sub-element position" in msg
-
-    # found, click fails
-    monkeypatch.setattr(asc.time, "monotonic", Seq([0.0, 0.0], default=0.5))
-    setrun(monkeypatch, const(True, "5.0,6.0"))
-    monkeypatch.setattr(asc, "_jxa_mouse_click", lambda x, y: False)
-    assert asc._hover_then_click_subelement("X", "s", max_wait=10)[1] == "CoreGraphics click failed"
-
-    # found, click ok -> success
-    monkeypatch.setattr(asc.time, "monotonic", Seq([0.0, 0.0], default=0.5))
-    monkeypatch.setattr(asc, "_jxa_mouse_click", lambda x, y: True)
-    assert asc._hover_then_click_subelement("X", "s", max_wait=10) == (True, "")
-
-
-def test_hover_then_click_rehover(monkeypatch):
-    """Exercise the mid-poll re-hover branch."""
-    monkeypatch.setattr(asc, "_ensure_music_frontmost", lambda: None)
-    monkeypatch.setattr(asc, "_find_top_result_position", lambda n: (10.0, 20.0))
-    hovers = {"n": 0}
-
-    def _hover(x, y):
-        hovers["n"] += 1
-        return True
-
-    monkeypatch.setattr(asc, "_hover_with_nudge", _hover)
-    # monotonic: start=0; deadline=0+1.5; rehover_at=0+0.75.
-    # iter1 check 0<1.5, time 0 not > 0.75; iter2 time 1.0 > 0.75 -> rehover;
-    # then deadline check at 2.0 -> exit -> not found.
-    monkeypatch.setattr(asc.time, "monotonic", Seq([0.0, 0.0, 0.0, 1.0, 1.0, 2.0], default=99.0))
-    setrun(monkeypatch, const(True, "NOT_FOUND"))
-    ok, msg = asc._hover_then_click_subelement("X", "s", max_wait=1.5)
-    assert ok is False and hovers["n"] >= 2
-
-
-def test_verify_track_playing(monkeypatch):
-    setrun(monkeypatch, const(True, "My Song"))
-    assert asc._verify_track_playing("my song") == (True, "My Song")
-    # timeout, returns last seen
-    clock = Seq([0.0, 0.0], default=99.0)
-    monkeypatch.setattr(asc.time, "monotonic", clock)
-    setrun(monkeypatch, const(True, "Other"))
-    ok, last = asc._verify_track_playing("nomatch", timeout=1.0)
-    assert ok is False and last == "Other"
-
-
-def test_open_search_popover(monkeypatch):
-    monkeypatch.setattr(asc, "_ensure_music_frontmost", lambda: None)
-    monkeypatch.setattr(asc, "_get_search_field", lambda: "FIELD")
-    assert asc._open_search_popover("  ") == (False, "Empty query")
-
-    # navigate ok, popover appears
-    setrun(monkeypatch, Router([("exists (first pop over)", (True, "true"))], default=(True, "")))
-    assert asc._open_search_popover("q") == (True, "")
-
-    # navigate path error -> retry then popover appears
-    seq = Seq(
-        [
-            (True, ""),  # nav step 1
-            (False, "Can't get group 1"),  # type step fails -> retry
-            (True, ""),  # nav step 1 (retry)
-            (True, ""),  # type step ok
-            (True, "true"),  # popover exists
-        ]
-    )
-    setrun(monkeypatch, seq)
-    assert asc._open_search_popover("q") == (True, "")
-
-    # navigate fails, not accessible
-    setrun(monkeypatch, Seq([(True, ""), (False, "boom")], default=(False, "boom")))
-    monkeypatch.setattr(asc, "check_ui_accessible", lambda: (False, "locked"))
-    assert asc._open_search_popover("q") == (False, "locked")
-
-    # navigate fails, accessible -> classify
-    setrun(monkeypatch, Seq([(True, ""), (False, "err -1743")], default=(False, "err -1743")))
-    monkeypatch.setattr(asc, "check_ui_accessible", lambda: (True, ""))
-    ok, msg = asc._open_search_popover("q")
-    assert ok is False and "Accessibility" in msg
-
-    # navigate ok but popover never appears -> poll body runs once, then timeout
-    monkeypatch.setattr(asc.time, "monotonic", Seq([0.0, 0.0], default=99.0))
-    setrun(monkeypatch, Router([("exists (first pop over)", (True, "false"))], default=(True, "")))
-    ok, msg = asc._open_search_popover("q")
-    assert ok is False and "did not appear" in msg
-
-
-def test_find_popover_song_row(monkeypatch):
-    setrun(monkeypatch, const(True, "NO_POPOVER"))
-    assert asc._find_popover_song_row("X") is None
-
-    # mix of rows: exact song wins; album & wrong-artist rejected
-    raw = (
-        "1|||Brown Sugar (Soul Inside 808 Mix)|||Song · The Rolling Stones\n"
-        "2|||Brown Sugar|||Song · The Rolling Stones\n"
-        "3|||Brown Sugar (Remastered)|||Song · The Rolling Stones\n"
-        "4|||Brown Sugar|||Album · The Rolling Stones\n"
-        "badrow\n"
-        "x|||y|||z\n"  # idx not int
-    )
-    setrun(monkeypatch, const(True, raw))
-    idx, artist = asc._find_popover_song_row("Brown Sugar", artist="Rolling Stones")
-    assert idx == 2 and "Rolling Stones" in artist
-
-    # contains-tier match (400) when no exact
-    setrun(monkeypatch, const(True, "1|||Sugar Brown Live|||Song · X\n"))
-    res = asc._find_popover_song_row("Sugar Brown", artist="X")
-    assert res is not None and res[0] == 1
-
-    # no song rows -> None
-    setrun(monkeypatch, const(True, "1|||Thing|||Album · X\n"))
-    assert asc._find_popover_song_row("Thing") is None
-
-    # wrong artist filter -> None
-    setrun(monkeypatch, const(True, "1|||Song|||Song · Real\n"))
-    assert asc._find_popover_song_row("Song", artist="Other") is None
-
-    # song row, artist matches, but title has no name overlap -> _score else None
-    setrun(monkeypatch, const(True, "1|||Totally Different|||Song · X\n"))
-    assert asc._find_popover_song_row("Brown Sugar", artist="X") is None
-
-
-def test_click_popover_row(monkeypatch):
-    setrun(monkeypatch, const(True, "ERR"))
-    assert asc._click_popover_row(1)[0] is False
-    setrun(monkeypatch, const(True, "a,b"))
-    ok, msg = asc._click_popover_row(1)
-    assert ok is False and "Invalid row position" in msg
-    setrun(monkeypatch, const(True, "5.0,6.0"))
-    monkeypatch.setattr(asc, "_jxa_mouse_click", lambda x, y: False)
-    assert asc._click_popover_row(1) == (False, "CoreGraphics click failed")
-    monkeypatch.setattr(asc, "_jxa_mouse_click", lambda x, y: True)
-    assert asc._click_popover_row(1) == (True, "")
-
-
-def test_wait_for_song_page(monkeypatch):
-    setrun(monkeypatch, const(True, "2"))
-    path = asc._wait_for_song_page("T")
-    assert path is not None and "list 2" in path
-    # never found -> poll body runs once (sleep), then None on timeout
-    monkeypatch.setattr(asc.time, "monotonic", Seq([0.0, 0.0], default=99.0))
-    setrun(monkeypatch, const(True, "0"))
-    assert asc._wait_for_song_page("T") is None
-
-
-# ===========================================================================
-# Public ui_* entrypoints
-# ===========================================================================
-def test_ui_search_catalog(monkeypatch):
-    assert asc.ui_search_catalog("  ") == (False, [], "Empty query")
-
-    # focus fails both attempts
-    monkeypatch.setattr(asc, "_focus_search_field", lambda q: (False, "focuserr"))
-    assert asc.ui_search_catalog("q") == (False, [], "focuserr")
-
-    # focus ok, wait fails both
-    monkeypatch.setattr(asc, "_focus_search_field", lambda q: (True, ""))
-    monkeypatch.setattr(asc, "_wait_for_top_results", lambda: (False, "waiterr"))
-    assert asc.ui_search_catalog("q") == (False, [], "waiterr")
-
-    # focus ok, empty raw -> []
-    monkeypatch.setattr(asc, "_wait_for_top_results", lambda: (True, ""))
-    assert asc.ui_search_catalog("q") == (True, [], "")
-
-    # focus ok, raw parsed
-    monkeypatch.setattr(asc, "_wait_for_top_results", lambda: (True, "1|||N|||Song · A"))
-    ok, results, err = asc.ui_search_catalog("q")
-    assert ok and results[0]["name"] == "N" and err == ""
-
-
-def test_ui_clear_search(monkeypatch):
-    monkeypatch.setattr(asc, "_get_search_field", lambda: "FIELD")
-    r = setrun(monkeypatch, Recorder(True, ""))
-    assert asc.ui_clear_search() is None
-    assert "key code 53" in r.calls[-1]
-
-
-def test_ui_play_result(monkeypatch):
-    # hover -> sub-element not visible
-    monkeypatch.setattr(
-        asc,
-        "_hover_then_click_subelement",
-        lambda n, s: (False, "sub-element not visible after hover"),
-    )
-    ok, msg = asc.ui_play_result("X")
-    assert ok is False and "Play checkbox not visible" in msg
-
-    # hover -> other error
-    monkeypatch.setattr(asc, "_hover_then_click_subelement", lambda n, s: (False, "other"))
-    assert asc.ui_play_result("X") == (False, "other")
-
-    # hover ok, verify playing
-    monkeypatch.setattr(asc, "_hover_then_click_subelement", lambda n, s: (True, ""))
-    monkeypatch.setattr(asc, "_verify_track_playing", lambda n: (True, n))
-    assert asc.ui_play_result("X") == (True, "Playing: X")
-
-    # hover ok, wrong track playing
-    monkeypatch.setattr(asc, "_verify_track_playing", lambda n: (False, "Other"))
-    monkeypatch.setattr(asc, "_check_playing", lambda: True)
-    ok, msg = asc.ui_play_result("X")
-    assert ok is False and "instead of" in msg
-
-    # hover ok, nothing playing
-    monkeypatch.setattr(asc, "_check_playing", lambda: False)
-    ok, msg = asc.ui_play_result("X")
-    assert ok is False and "didn't start" in msg
-
-
-def test_ui_play_result_by_query(monkeypatch):
-    monkeypatch.setattr(asc, "ui_clear_search", lambda: None)
-
-    # no results
-    monkeypatch.setattr(asc, "ui_search_catalog", lambda q: (False, [], "why"))
-    assert asc.ui_play_result_by_query("q") == (False, "why")
-
-    # results found, song target
-    monkeypatch.setattr(
-        asc,
-        "ui_search_catalog",
-        lambda q: (True, [{"type": "Album", "name": "A"}, {"type": "Song", "name": "S"}], ""),
-    )
-    monkeypatch.setattr(asc, "ui_play_result", lambda name: (True, "Playing: " + name))
-    assert asc.ui_play_result_by_query("q") == (True, "Playing: S")
-
-    # results found, no song -> fallback to first
-    monkeypatch.setattr(
-        asc, "ui_search_catalog", lambda q: (True, [{"type": "Album", "name": "A"}], "")
-    )
-    assert asc.ui_play_result_by_query("q") == (True, "Playing: A")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 # ===========================================================================

@@ -1262,108 +1262,8 @@ class TestUISearchParsing:
             cx, cy = [float(v) for v in pos_str.strip().split(",")]
 
 
-class TestClassifyAsError:
-    """Unit tests for _classify_as_error()."""
-
-    def test_accessibility_not_granted(self):
-        import applemusic_mcp.applescript as asc
-
-        msg = asc._classify_as_error("execution error: (-1743)")
-        assert "Accessibility" in msg
-        assert "System Settings" in msg
-
-    def test_element_not_found(self):
-        import applemusic_mcp.applescript as asc
-
-        msg = asc._classify_as_error("Can't get window 1. (-1728)")
-        assert "element not found" in msg.lower() or "layout" in msg.lower()
-        assert asc._GITHUB_ISSUES in msg
-
-    def test_unknown_error_includes_issue_link(self):
-        import applemusic_mcp.applescript as asc
-
-        msg = asc._classify_as_error("something totally unexpected")
-        assert asc._GITHUB_ISSUES in msg
-
-    def test_unknown_error_truncates_long_text(self):
-        import applemusic_mcp.applescript as asc
-
-        long_err = "x" * 200
-        msg = asc._classify_as_error(long_err)
-        assert len(msg) < 300
 
 
-class TestCheckUiAccessible:
-    """Unit tests for check_ui_accessible()."""
-
-    def test_returns_ok_when_windows_visible(self, monkeypatch):
-        import applemusic_mcp.applescript as asc
-
-        monkeypatch.setattr(asc, "is_screen_locked", lambda: False)
-        monkeypatch.setattr(asc, "run_applescript", lambda _: (True, "1\n"))
-        ok, reason = asc.check_ui_accessible()
-        assert ok is True
-        assert reason == ""
-
-    def test_returns_classified_error_on_applescript_failure(self, monkeypatch):
-        import applemusic_mcp.applescript as asc
-
-        monkeypatch.setattr(asc, "is_screen_locked", lambda: False)
-        monkeypatch.setattr(asc, "run_applescript", lambda _: (False, "(-1743)"))
-        ok, reason = asc.check_ui_accessible()
-        assert ok is False
-        assert "Accessibility" in reason
-
-    def test_short_circuits_clean_when_locked(self, monkeypatch):
-        # The clean CGSession-based lock check must fire BEFORE any AppleScript,
-        # producing a clear message and not even probing System Events.
-        import applemusic_mcp.applescript as asc
-
-        monkeypatch.setattr(asc, "is_screen_locked", lambda: True)
-
-        def boom(_script):
-            raise AssertionError("run_applescript must not run when screen is locked")
-
-        monkeypatch.setattr(asc, "run_applescript", boom)
-        ok, reason = asc.check_ui_accessible()
-        assert ok is False
-        assert "locked" in reason.lower()
-
-    def test_falls_back_to_loginwindow_heuristic_when_lock_unknown(self, monkeypatch):
-        # When Quartz is unavailable (is_screen_locked() → None), fall through to
-        # the legacy loginwindow heuristic.
-        import applemusic_mcp.applescript as asc
-
-        monkeypatch.setattr(asc, "is_screen_locked", lambda: None)
-        calls = {"n": 0}
-
-        def mock_run(script):
-            calls["n"] += 1
-            if calls["n"] == 1:
-                return (True, "0")  # Music has 0 windows
-            return (True, "true")  # loginwindow has windows → locked
-
-        monkeypatch.setattr(asc, "run_applescript", mock_run)
-        ok, reason = asc.check_ui_accessible()
-        assert ok is False
-        assert "locked" in reason.lower()
-
-    def test_no_window_not_locked(self, monkeypatch):
-        import applemusic_mcp.applescript as asc
-
-        monkeypatch.setattr(asc, "is_screen_locked", lambda: False)
-        calls = {"n": 0}
-
-        def mock_run(script):
-            calls["n"] += 1
-            if calls["n"] == 1:
-                return (True, "0")  # Music has 0 windows
-            return (True, "false")  # loginwindow also 0 → not locked, just minimized
-
-        monkeypatch.setattr(asc, "run_applescript", mock_run)
-        ok, reason = asc.check_ui_accessible()
-        assert ok is False
-        assert "no visible windows" in reason.lower() or "minimize" in reason.lower()
 
 
 class TestIsScreenLocked:
@@ -1377,45 +1277,10 @@ class TestIsScreenLocked:
         fake.CGSessionCopyCurrentDictionary = lambda: session_dict
         monkeypatch.setitem(sys.modules, "Quartz", fake)
 
-    def test_locked_session_true(self, monkeypatch):
-        import applemusic_mcp.applescript as asc
 
-        self._patch_quartz(
-            monkeypatch, {"CGSSessionScreenIsLocked": 1, "kCGSSessionOnConsoleKey": 1}
-        )
-        assert asc.is_screen_locked() is True
 
-    def test_unlocked_on_console_false(self, monkeypatch):
-        import applemusic_mcp.applescript as asc
 
-        self._patch_quartz(
-            monkeypatch, {"CGSSessionScreenIsLocked": 0, "kCGSSessionOnConsoleKey": 1}
-        )
-        assert asc.is_screen_locked() is False
 
-    def test_no_session_dict_true(self, monkeypatch):
-        import applemusic_mcp.applescript as asc
-
-        self._patch_quartz(monkeypatch, None)
-        assert asc.is_screen_locked() is True
-
-    def test_fast_user_switched_away_true(self, monkeypatch):
-        import applemusic_mcp.applescript as asc
-
-        # Not locked, but not the active console session either.
-        self._patch_quartz(
-            monkeypatch, {"CGSSessionScreenIsLocked": 0, "kCGSSessionOnConsoleKey": 0}
-        )
-        assert asc.is_screen_locked() is True
-
-    def test_quartz_unavailable_returns_none(self, monkeypatch):
-        import sys
-
-        import applemusic_mcp.applescript as asc
-
-        # Simulate the import failing (non-macOS / no pyobjc).
-        monkeypatch.setitem(sys.modules, "Quartz", None)
-        assert asc.is_screen_locked() is None
 
 
 class TestGetSearchField:
@@ -1427,55 +1292,10 @@ class TestGetSearchField:
 
         asc._search_field_cache = None
 
-    def test_toolbar_grouped_path_when_probe_returns_grouped(self, monkeypatch):
-        import applemusic_mcp.applescript as asc
 
-        monkeypatch.setattr(asc, "run_applescript", lambda _: (True, "grouped\n"))
-        result = asc._get_search_field()
-        assert result == asc._SEARCH_FIELD_TOOLBAR
 
-    def test_toolbar_flat_path_when_probe_returns_flat(self, monkeypatch):
-        """macOS 26 build variant: text field is directly under toolbar with
-        no wrapping `group 1`. Probe should return the flat path."""
-        import applemusic_mcp.applescript as asc
 
-        monkeypatch.setattr(asc, "run_applescript", lambda _: (True, "flat\n"))
-        result = asc._get_search_field()
-        assert result == asc._SEARCH_FIELD_TOOLBAR_FLAT
 
-    def test_sidebar_path_when_no_toolbar_variant_found(self, monkeypatch):
-        """If neither toolbar variant exists even after Cmd+F, fall back to
-        the macOS 15 sidebar path."""
-        import applemusic_mcp.applescript as asc
-
-        monkeypatch.setattr(asc, "run_applescript", lambda _: (True, "none\n"))
-        result = asc._get_search_field()
-        assert result == asc._SEARCH_FIELD_SIDEBAR
-
-    def test_sidebar_path_on_applescript_failure_does_not_cache(self, monkeypatch):
-        """Transient probe failure (e.g., Music.app still launching) returns
-        sidebar as a safe default, but does NOT cache — next call should retry
-        so we don't pin a macOS 26 user to the wrong path."""
-        import applemusic_mcp.applescript as asc
-
-        monkeypatch.setattr(asc, "run_applescript", lambda _: (False, "error"))
-        result = asc._get_search_field()
-        assert result == asc._SEARCH_FIELD_SIDEBAR
-        assert asc._search_field_cache is None  # not cached on failure
-
-    def test_result_is_cached(self, monkeypatch):
-        import applemusic_mcp.applescript as asc
-
-        call_count = {"n": 0}
-
-        def counting_run(script):
-            call_count["n"] += 1
-            return (True, "grouped")
-
-        monkeypatch.setattr(asc, "run_applescript", counting_run)
-        asc._get_search_field()
-        asc._get_search_field()
-        assert call_count["n"] == 1  # probe ran once; second call hit cache
 
 
 class TestUIPrimitives:
@@ -1495,199 +1315,28 @@ class TestUIPrimitives:
 
     # --- _focus_search_field -------------------------------------------------
 
-    def test_focus_search_field_rejects_empty_query(self):
-        import applemusic_mcp.applescript as asc
 
-        ok, err = asc._focus_search_field("")
-        assert ok is False
-        assert err == "Empty query"
 
-        ok, err = asc._focus_search_field("   ")
-        assert ok is False
-        assert err == "Empty query"
-
-    def test_focus_search_field_success_path(self, monkeypatch):
-        """On AppleScript success, returns (True, ""). The query is escaped
-        and embedded in the consolidated AppleScript that the helper emits."""
-        import applemusic_mcp.applescript as asc
-
-        captured_scripts: list[str] = []
-
-        def fake_run(script: str):
-            captured_scripts.append(script)
-            return (True, "")
-
-        monkeypatch.setattr(asc, "run_applescript", fake_run)
-        monkeypatch.setattr(asc, "_ensure_music_frontmost", lambda: None)
-        monkeypatch.setattr(asc, "_get_search_field", lambda: asc._SEARCH_FIELD_TOOLBAR)
-
-        ok, err = asc._focus_search_field("Radiohead")
-        assert ok is True
-        assert err == ""
-        # The injected script contains the resolved field path AND the query
-        emitted = captured_scripts[-1]
-        assert asc._SEARCH_FIELD_TOOLBAR in emitted
-        assert "Radiohead" in emitted
-
-    def test_focus_search_field_classifies_environmental_failure(self, monkeypatch):
-        """When AppleScript fails AND check_ui_accessible reports a problem,
-        the user-facing reason should be the access reason, not the raw
-        AppleScript error — same behavior the original ui_search_catalog had."""
-        import applemusic_mcp.applescript as asc
-
-        monkeypatch.setattr(asc, "run_applescript", lambda _: (False, "execution error"))
-        monkeypatch.setattr(asc, "_ensure_music_frontmost", lambda: None)
-        monkeypatch.setattr(asc, "_get_search_field", lambda: asc._SEARCH_FIELD_TOOLBAR)
-        monkeypatch.setattr(asc, "check_ui_accessible", lambda: (False, "Music.app not running"))
-
-        ok, err = asc._focus_search_field("anything")
-        assert ok is False
-        assert err == "Music.app not running"
 
     # --- _wait_for_top_results ----------------------------------------------
 
-    def test_wait_for_top_results_returns_immediately_on_success(self, monkeypatch):
-        import applemusic_mcp.applescript as asc
 
-        monkeypatch.setattr(asc, "run_applescript", lambda _: (True, "1|||Track|||Song"))
-        ok, raw = asc._wait_for_top_results(timeout=2.0)
-        assert ok is True
-        assert "1|||Track" in raw
-
-    def test_wait_for_top_results_empty_on_clean_timeout(self, monkeypatch):
-        """If results never appear but AppleScript itself succeeds with
-        NO_RESULTS, returns (True, "") to signal empty results — not error."""
-        import applemusic_mcp.applescript as asc
-
-        monkeypatch.setattr(asc, "run_applescript", lambda _: (True, "NO_RESULTS"))
-        ok, raw = asc._wait_for_top_results(timeout=0.5)
-        assert ok is True
-        assert raw == ""
 
     # --- _parse_top_results -------------------------------------------------
 
-    def test_parse_top_results_handles_unicode_separators(self):
-        import applemusic_mcp.applescript as asc
 
-        raw = (
-            "1|||Creep|||Song · Radiohead\n"
-            "2|||OK Computer|||Album · Radiohead\n"
-            "3|||Radiohead|||Artist\n"
-        )
-        results = asc._parse_top_results(raw)
-        assert len(results) == 3
-        assert results[0] == {"name": "Creep", "type": "Song", "artist": "Radiohead", "index": 1}
-        assert results[1] == {
-            "name": "OK Computer",
-            "type": "Album",
-            "artist": "Radiohead",
-            "index": 2,
-        }
-        assert results[2] == {"name": "Radiohead", "type": "Artist", "artist": "", "index": 3}
-
-    def test_parse_top_results_skips_malformed_lines(self):
-        import applemusic_mcp.applescript as asc
-
-        raw = "1|||Good|||Song · A\n||\nbroken_line_no_separator\n2|||Also Good|||Song · B"
-        results = asc._parse_top_results(raw)
-        assert len(results) == 2
-        assert results[0]["name"] == "Good"
-        assert results[1]["name"] == "Also Good"
 
     # --- _find_top_result_position ------------------------------------------
 
-    def test_find_top_result_position_parses_csv(self, monkeypatch):
-        import applemusic_mcp.applescript as asc
 
-        monkeypatch.setattr(asc, "run_applescript", lambda _: (True, "1883.0,686.0"))
-        pos = asc._find_top_result_position("Some Track")
-        assert pos == (1883.0, 686.0)
-
-    def test_find_top_result_position_returns_none_on_not_found(self, monkeypatch):
-        import applemusic_mcp.applescript as asc
-
-        monkeypatch.setattr(asc, "run_applescript", lambda _: (True, "NOT_FOUND"))
-        assert asc._find_top_result_position("Missing") is None
 
     # --- _hover_then_click_subelement ---------------------------------------
 
-    def test_hover_then_click_succeeds(self, monkeypatch):
-        """Full success path: row found, hover succeeds, sub-element appears
-        on first poll, CoreGraphics click succeeds."""
-        import applemusic_mcp.applescript as asc
 
-        click_calls: list[tuple[float, float]] = []
-
-        # AppleScript is called twice in this path:
-        # 1. _find_top_result_position → returns row pos
-        # 2. inner sub-element poll → returns inner pos
-        responses = iter([(True, "100.0,200.0"), (True, "55.0,77.0")])
-
-        monkeypatch.setattr(asc, "run_applescript", lambda _: next(responses))
-        monkeypatch.setattr(asc, "_ensure_music_frontmost", lambda: None)
-        monkeypatch.setattr(asc, "_hover_with_nudge", lambda cx, cy: True)
-        monkeypatch.setattr(
-            asc,
-            "_jxa_mouse_click",
-            lambda x, y: (click_calls.append((x, y)), True)[1],
-        )
-
-        ok, err = asc._hover_then_click_subelement("Track", "set inner to checkbox 1 of e")
-        assert ok is True
-        assert err == ""
-        # Click landed at the inner element's center, not the row's center
-        assert click_calls == [(55.0, 77.0)]
-
-    def test_hover_then_click_returns_not_visible_marker(self, monkeypatch):
-        """When the inner sub-element never becomes queryable within max_wait,
-        the helper returns the reserved 'sub-element not visible after hover'
-        string so wrappers can map it to a domain-specific message
-        (e.g. ui_play_result → 'Play checkbox not visible after hover')."""
-        import applemusic_mcp.applescript as asc
-
-        # Row found, but sub-element poll always returns NOT_FOUND
-        responses = [(True, "100.0,200.0")] + [(True, "NOT_FOUND")] * 50
-
-        idx = {"i": 0}
-
-        def fake_run(_):
-            r = responses[min(idx["i"], len(responses) - 1)]
-            idx["i"] += 1
-            return r
-
-        monkeypatch.setattr(asc, "run_applescript", fake_run)
-        monkeypatch.setattr(asc, "_ensure_music_frontmost", lambda: None)
-        monkeypatch.setattr(asc, "_hover_with_nudge", lambda cx, cy: True)
-        monkeypatch.setattr(asc, "_jxa_mouse_click", lambda x, y: True)
-
-        ok, err = asc._hover_then_click_subelement(
-            "Track", "set inner to checkbox 1 of e", max_wait=0.3
-        )
-        assert ok is False
-        assert err == "sub-element not visible after hover"
 
     # --- _verify_track_playing ----------------------------------------------
 
-    def test_verify_track_playing_match_on_first_poll(self, monkeypatch):
-        import applemusic_mcp.applescript as asc
 
-        monkeypatch.setattr(
-            asc, "run_applescript", lambda _: (True, "Sweet Baby James (Remastered)")
-        )
-        ok, name = asc._verify_track_playing("Sweet Baby James", timeout=1.0)
-        assert ok is True
-        assert "Sweet Baby James" in name
-
-    def test_verify_track_playing_returns_false_on_mismatch(self, monkeypatch):
-        """When the current track never matches within timeout, returns
-        (False, last_known_track) so the caller can distinguish 'wrong
-        track playing' from 'nothing playing'."""
-        import applemusic_mcp.applescript as asc
-
-        monkeypatch.setattr(asc, "run_applescript", lambda _: (True, "Different Song"))
-        ok, name = asc._verify_track_playing("Sweet Baby James", timeout=0.4)
-        assert ok is False
-        assert name == "Different Song"
 
 
 class TestPopoverSongRowScoring:
@@ -1709,213 +1358,17 @@ class TestPopoverSongRowScoring:
 
         monkeypatch.setattr(asc, "run_applescript", lambda *_a, **_k: (True, fixture))
 
-    def test_song_exact_beats_album_exact(self, monkeypatch):
-        """Tier 1 (Song EXACT) beats Tier 3 (Album EXACT)."""
-        import applemusic_mcp.applescript as asc
 
-        self._patch_applescript(
-            monkeypatch,
-            self._fixture(
-                [
-                    (5, "Brown Sugar", "Album · D'Angelo"),
-                    (7, "Brown Sugar", "Song · D'Angelo"),
-                ]
-            ),
-        )
-        result = asc._find_popover_song_row("Brown Sugar", "D'Angelo")
-        assert result == (7, "D'Angelo")
 
-    def test_canonical_marker_paren_beats_album_exact(self, monkeypatch):
-        """Tier 2 (canonical-marker parenthetical Song) beats Tier 3 (Album EXACT)."""
-        import applemusic_mcp.applescript as asc
 
-        self._patch_applescript(
-            monkeypatch,
-            self._fixture(
-                [
-                    (3, "Brown Sugar (2014 Remaster)", "Song · D'Angelo"),
-                    (5, "Brown Sugar", "Album · D'Angelo"),
-                ]
-            ),
-        )
-        result = asc._find_popover_song_row("Brown Sugar", "D'Angelo")
-        assert result == (3, "D'Angelo")
 
-    def test_album_now_rejected_returns_none_with_only_album(self, monkeypatch):
-        """Album rows are rejected entirely under the 'no album-dive' policy.
-        If only an album row exists, return None — caller fails loudly."""
-        import applemusic_mcp.applescript as asc
 
-        self._patch_applescript(
-            monkeypatch,
-            self._fixture(
-                [
-                    (5, "Brown Sugar", "Album · D'Angelo"),
-                ]
-            ),
-        )
-        result = asc._find_popover_song_row("Brown Sugar", "D'Angelo")
-        assert result is None
 
-    def test_brown_sugar_dangelo_real_popover_returns_remix_row(self, monkeypatch):
-        """The Brown Sugar / D'Angelo case: pop-over has no Song-EXACT row,
-        only Album + Song-with-non-canonical-paren. With album-dive removed,
-        the only navigable Song row is the 808 Mix variant (tier 4) — that's
-        what the matcher returns. Caller can decide whether to surface that
-        to the user or fail with 'no canonical match'."""
-        import applemusic_mcp.applescript as asc
 
-        # Mirrors the actual pop-over output we observed live.
-        self._patch_applescript(
-            monkeypatch,
-            self._fixture(
-                [
-                    (5, "Brown Sugar ￼", "Album · D'Angelo"),  # has U+FFFC artifact
-                    (7, "Brown Sugar (Soul Inside 808 Mix)", "Song · D'Angelo"),
-                    (11, "Brown Sugar (Verzuz Live)", "Music Video · D'Angelo"),
-                ]
-            ),
-        )
-        result = asc._find_popover_song_row("Brown Sugar", "D'Angelo")
-        # Album rejected; Music Video rejected; only the 808 Mix Song
-        # remains and it scores tier 4 (non-canonical paren).
-        assert result == (7, "D'Angelo")
 
-    def test_lower_idx_wins_within_same_tier(self, monkeypatch):
-        """Two Song-EXACT matches by same artist — Apple's earlier row
-        (lower idx) should win as the relevance signal."""
-        import applemusic_mcp.applescript as asc
 
-        self._patch_applescript(
-            monkeypatch,
-            self._fixture(
-                [
-                    (3, "Heaven", "Song · Talking Heads"),
-                    (8, "Heaven", "Song · Talking Heads"),  # duplicate (rare but possible)
-                ]
-            ),
-        )
-        result = asc._find_popover_song_row("Heaven", "Talking Heads")
-        assert result == (3, "Talking Heads")
 
-    def test_artist_filter_rejects_wrong_artist(self, monkeypatch):
-        """Same title by a different artist must NOT match when the caller
-        supplied an artist constraint."""
-        import applemusic_mcp.applescript as asc
 
-        self._patch_applescript(
-            monkeypatch,
-            self._fixture(
-                [
-                    (3, "Heaven", "Song · The Walkmen"),
-                    (5, "Heaven", "Song · Beyoncé"),
-                ]
-            ),
-        )
-        result = asc._find_popover_song_row("Heaven", "Talking Heads")
-        assert result is None
-
-    def test_artist_filter_picks_correct_artist(self, monkeypatch):
-        """Multiple artists with same title — picks the one matching artist."""
-        import applemusic_mcp.applescript as asc
-
-        self._patch_applescript(
-            monkeypatch,
-            self._fixture(
-                [
-                    (3, "Heaven", "Song · The Walkmen"),
-                    (5, "Heaven", "Song · Talking Heads"),
-                    (7, "Heaven", "Song · Beyoncé"),
-                ]
-            ),
-        )
-        result = asc._find_popover_song_row("Heaven", "Talking Heads")
-        assert result == (5, "Talking Heads")
-
-    def test_artist_optional_picks_first_song_exact(self, monkeypatch):
-        """Without artist filter — pick highest-tier match regardless,
-        using row index as tiebreaker."""
-        import applemusic_mcp.applescript as asc
-
-        self._patch_applescript(
-            monkeypatch,
-            self._fixture(
-                [
-                    (3, "Heaven", "Song · The Walkmen"),
-                    (5, "Heaven", "Song · Talking Heads"),
-                ]
-            ),
-        )
-        result = asc._find_popover_song_row("Heaven")
-        assert result == (3, "The Walkmen")  # lower idx wins on tier-tie
-
-    def test_non_song_rows_all_rejected(self, monkeypatch):
-        """Album, Artist, MusicVideo, Playlist all rejected — only Song scored."""
-        import applemusic_mcp.applescript as asc
-
-        self._patch_applescript(
-            monkeypatch,
-            self._fixture(
-                [
-                    (3, "Heaven", "Album · Talking Heads"),
-                    (5, "Talking Heads", "Artist"),
-                    (7, "Heaven", "Music Video · Talking Heads"),
-                    (9, "Heaven Mix", "Playlist · Apple Music"),
-                ]
-            ),
-        )
-        result = asc._find_popover_song_row("Heaven", "Talking Heads")
-        assert result is None
-
-    def test_no_results_in_popover_returns_none(self, monkeypatch):
-        """No-match-anywhere → None."""
-        import applemusic_mcp.applescript as asc
-
-        self._patch_applescript(
-            monkeypatch,
-            self._fixture(
-                [
-                    (3, "Something Else", "Song · Other Artist"),
-                ]
-            ),
-        )
-        result = asc._find_popover_song_row("Heaven", "Talking Heads")
-        assert result is None
-
-    def test_no_popover_returns_none(self, monkeypatch):
-        """If pop-over isn't visible, AppleScript probe returns NO_POPOVER."""
-        import applemusic_mcp.applescript as asc
-
-        monkeypatch.setattr(asc, "run_applescript", lambda *_a, **_k: (True, "NO_POPOVER"))
-        result = asc._find_popover_song_row("Heaven", "Talking Heads")
-        assert result is None
-
-    def test_canonical_paren_markers_are_recognized(self, monkeypatch):
-        """Each canonical-marker word should score in tier 2 (1700), so
-        a parenthetical-canonical Song should beat any non-canonical paren."""
-        import applemusic_mcp.applescript as asc
-
-        for marker in [
-            "Original Mix",
-            "Album Version",
-            "2014 Remaster",
-            "Stereo Version",
-            "Mono Version",
-            "Single Version",
-            "Radio Edit",
-            "Studio Version",
-        ]:
-            self._patch_applescript(
-                monkeypatch,
-                self._fixture(
-                    [
-                        (3, f"Test ({marker})", "Song · X"),
-                        (5, "Test (Live at Madison)", "Song · X"),  # non-canonical paren
-                    ]
-                ),
-            )
-            result = asc._find_popover_song_row("Test", "X")
-            assert result == (3, "X"), f"marker {marker!r} should win tier 2"
 
 
 @pytest.mark.skipif(
@@ -2209,56 +1662,3 @@ end tell"""
         )
 
 
-class TestOpenSearchPopoverSelfHeal:
-    """`_open_search_popover` must self-heal a stale search-field cache: when the
-    cached toolbar path no longer resolves in the current view (a hard
-    "Can't get group 1 of toolbar 1…" error), it invalidates the cache and
-    retries once. Regression guard — the pop-over path lacked this self-heal that
-    its sibling search path has, so it hard-failed intermittently on macOS 26."""
-
-    def test_invalidates_cache_and_retries_on_path_error(self, monkeypatch):
-        monkeypatch.setattr(asc, "_ensure_music_frontmost", lambda: None)
-        monkeypatch.setattr(asc, "_get_search_field", lambda: "FIELD")
-        monkeypatch.setattr(asc, "check_ui_accessible", lambda: (True, ""))
-        monkeypatch.setattr(asc, "_search_field_cache", "stale-path")
-
-        emits = {"n": 0}
-
-        def fake_run(script):
-            if "click FIELD" in script:
-                emits["n"] += 1
-                if emits["n"] == 1:
-                    # First attempt: cached path no longer resolves.
-                    return (False, "Can't get group 1 of toolbar 1 of window Music. (-1728)")
-                return (True, "")  # retry succeeds
-            if "first pop over" in script:
-                return (True, "true")  # pop-over appears
-            return (True, "")  # navigation steps
-
-        monkeypatch.setattr(asc, "run_applescript", fake_run)
-
-        ok, err = asc._open_search_popover("some query")
-        assert ok, f"self-heal should have recovered, got: {err}"
-        assert emits["n"] == 2, "the field interaction should have been retried once"
-        assert asc._search_field_cache is None, "stale cache must be invalidated"
-
-    def test_no_retry_on_non_path_error(self, monkeypatch):
-        # A non-path error (e.g. genuinely empty results) must NOT trigger the
-        # cache-invalidate retry — only "path no longer resolves" errors do.
-        monkeypatch.setattr(asc, "_ensure_music_frontmost", lambda: None)
-        monkeypatch.setattr(asc, "_get_search_field", lambda: "FIELD")
-        monkeypatch.setattr(asc, "check_ui_accessible", lambda: (True, ""))
-
-        emits = {"n": 0}
-
-        def fake_run(script):
-            if "click FIELD" in script:
-                emits["n"] += 1
-                return (False, "some unrelated AppleScript failure")
-            return (True, "")
-
-        monkeypatch.setattr(asc, "run_applescript", fake_run)
-
-        ok, _err = asc._open_search_popover("some query")
-        assert not ok
-        assert emits["n"] == 1, "must not retry on a non-path error"

@@ -622,28 +622,7 @@ class TestAuthTool:
         out = server.config(action="status")
         assert "signin" in out.lower()
 
-    def test_signin_success(self, monkeypatch):
-        import applemusic_mcp.browser as browser
 
-        monkeypatch.setattr(
-            browser,
-            "signin_interactive",
-            lambda *a, **k: (True, "Signed in — session captured and saved."),
-        )
-        out = server.config(action="signin")
-        assert "✓" in out and "Signed in" in out
-
-    def test_signin_still_waiting(self, monkeypatch):
-        import applemusic_mcp.browser as browser
-        from applemusic_mcp import safari
-
-        # Force the Chrome path: Safari harvest fails + Playwright present (signin now
-        # tries Safari first on macOS).
-        monkeypatch.setattr(safari, "media_user_token", lambda: (False, "no safari session"))
-        monkeypatch.setattr(browser, "is_available", lambda: True)
-        monkeypatch.setattr(browser, "signin_interactive", lambda *a, **k: (False, "still-waiting"))
-        out = server.config(action="signin")
-        assert "finish signing in" in out.lower()
 
     def test_logout_requires_confirm(self, mock_config_dir, mock_developer_token, mock_user_token):
         self._tokens(mock_config_dir, mock_developer_token, mock_user_token)
@@ -652,22 +631,6 @@ class TestAuthTool:
         # nothing deleted without confirm
         assert (mock_config_dir / "music_user_token.json").exists()
 
-    def test_logout_clears_user_session(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        self._tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        (mock_config_dir / "harvested_token.json").write_text("{}")
-        import applemusic_mcp.browser as browser
-
-        cleared = {}
-        monkeypatch.setattr(browser, "clear_session", lambda: cleared.update(done=True))
-        out = server.config(action="logout", confirm=True)
-        assert "Signed out" in out
-        assert not (mock_config_dir / "music_user_token.json").exists()
-        assert not (mock_config_dir / "harvested_token.json").exists()
-        # dev token is preserved on logout
-        assert (mock_config_dir / "developer_token.json").exists()
-        assert cleared.get("done") is True
 
     def test_reset_requires_confirm(self, mock_config_dir, mock_developer_token, mock_user_token):
         self._tokens(mock_config_dir, mock_developer_token, mock_user_token)
@@ -675,19 +638,6 @@ class TestAuthTool:
         assert "confirm=True" in out
         assert (mock_config_dir / "developer_token.json").exists()
 
-    def test_reset_wipes_everything(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        self._tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        (mock_config_dir / "config.json").write_text("{}")
-        import applemusic_mcp.browser as browser
-
-        monkeypatch.setattr(browser, "clear_session", lambda: None)
-        out = server.config(action="reset", confirm=True)
-        assert "Reset complete" in out
-        assert not (mock_config_dir / "developer_token.json").exists()
-        assert not (mock_config_dir / "config.json").exists()
-        assert not (mock_config_dir / "music_user_token.json").exists()
 
     def test_unknown_action(self):
         assert "Unknown action" in server.config(action="bogus")
@@ -697,27 +647,13 @@ class TestModePreference:
     """The single engine mode (playback follows it) must be switchable via the
     tool, not just by hand-editing config.json."""
 
-    def test_set_mode_web(self, mock_config_dir):
-        out = server.config(action="set-pref", preference="mode", string_value="web")
-        assert "mode = web" in out
-        from applemusic_mcp.auth import get_user_preferences
 
-        assert get_user_preferences()["mode"] == "web"
-
-    def test_set_mode_api_alias_accepted(self, mock_config_dir):
-        # `api` stays accepted as a back-compat alias for `web`.
-        out = server.config(action="set-pref", preference="mode", string_value="api")
-        assert "mode = api" in out
 
     def test_playback_pref_removed(self, mock_config_dir):
         # The separate playback knob is gone; setting it is rejected.
         out = server.config(action="set-pref", preference="playback", string_value="browser")
         assert "must be one of" in out.lower() or "preference must be" in out.lower()
 
-    def test_invalid_mode_rejected(self, mock_config_dir):
-        out = server.config(action="set-pref", preference="mode", string_value="bogus")
-        assert "must be one of" in out
-        assert "native" in out and "web" in out
 
     def test_mode_missing_value_lists_choices(self, mock_config_dir):
         out = server.config(action="set-pref", preference="mode")

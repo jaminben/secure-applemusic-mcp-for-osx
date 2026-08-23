@@ -1,8 +1,16 @@
-"""Engine resolution: mode × per-call override × platform → engine.
+"""Engine resolution for the single-engine (native Music.app) build.
 
-Covers _playback_engine / _queue_engine / _engine (data) across the five modes,
-the legacy `web` alias, per-call `engine=` overrides, and macOS vs non-macOS
-(APPLESCRIPT_AVAILABLE as the macOS proxy).
+Upstream resolved four engines — native / safari / chrome / api — from a `mode`
+preference plus a per-call `engine=` override. This build ships ONE: Apple
+Events to the local Music.app. The Chrome (Playwright) and Safari
+(`do JavaScript`) players were removed, so the contract these tests pin down is:
+
+  * every path resolves to 'native' on macOS and 'none' elsewhere, and
+  * a request for a REMOVED engine is refused, never silently substituted.
+
+That second property is the security-relevant one. Silently downgrading
+`engine='chrome'` to native would let a caller believe it was driving an
+isolated browser session when it was in fact driving the user's real library.
 """
 
 from __future__ import annotations
@@ -10,6 +18,8 @@ from __future__ import annotations
 import pytest
 
 import applemusic_mcp.server as server
+
+REMOVED_ENGINES = ["safari", "chrome", "web", "browser", "api"]
 
 
 @pytest.fixture
@@ -23,103 +33,81 @@ def mode(monkeypatch):
     return _set
 
 
-# -- plain playback ---------------------------------------------------------
+# -- playback engine --------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "mode_value,mac,expected",
-    [
-        ("auto", True, "native"),
-        ("auto", False, "chrome"),
-        ("native", True, "native"),
-        ("native", False, "none"),
-        ("safari", True, "safari"),
-        ("safari", False, "none"),
-        ("chrome", True, "chrome"),
-        ("chrome", False, "chrome"),
-        ("api", True, "none"),
-        ("web", True, "safari"),  # "web" forces the web engine → Safari on macOS
-        ("web", False, "chrome"),
-        ("browser", True, "chrome"),  # legacy alias for the Chrome web player
-    ],
-)
-def test_playback_engine(mode, mode_value, mac, expected):
+@pytest.mark.parametrize("mode_value", ["auto", "native"])
+@pytest.mark.parametrize("mac,expected", [(True, "native"), (False, "none")])
+def test_playback_engine_is_native_or_none(mode, mode_value, mac, expected):
     mode(mode_value, mac)
     assert server._playback_engine() == expected
 
 
-def test_playback_engine_override_wins(mode):
-    mode("chrome", mac=True)  # mode says chrome...
-    assert server._playback_engine(engine_override="safari") == "safari"  # ...override wins
-    assert server._playback_engine(engine_override="native") == "native"
+@pytest.mark.parametrize("removed", REMOVED_ENGINES)
+def test_removed_engine_override_resolves_to_none(mode, removed):
+    """A removed engine must resolve to 'none' — not fall back to native."""
+    mode("auto", True)
+    assert server._playback_engine(removed) == "none"
 
 
-def test_playback_engine_override_safari_off_mac(mode):
-    mode("auto", mac=False)
-    assert server._playback_engine(engine_override="safari") == "none"  # macOS-only
+@pytest.mark.parametrize("removed", REMOVED_ENGINES)
+def test_removed_engine_pref_does_not_silently_use_native(mode, removed):
+    """Same rule when the value comes from a stale config rather than a call."""
+    mode(removed, True)
+    assert server._playback_engine(removed) == "none"
 
 
-# -- queue (Up Next) --------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "mode_value,mac,expected",
-    [
-        ("auto", True, "safari"),  # macOS auto queue → Safari (no Chrome needed)
-        ("auto", False, "chrome"),
-        ("native", True, "none"),  # native Music.app has no exposed Up Next
-        ("safari", True, "safari"),
-        ("chrome", True, "chrome"),
-        ("api", True, "none"),
-        ("web", True, "safari"),  # legacy web → auto queue → Safari on mac
-    ],
-)
-def test_queue_engine(mode, mode_value, mac, expected):
-    mode(mode_value, mac)
-    assert server._queue_engine() == expected
-
-
-def test_queue_engine_override(mode):
-    mode("safari", mac=True)
-    assert server._queue_engine(engine_override="chrome") == "chrome"
+def test_native_override_wins_on_mac(mode):
+    mode("auto", True)
+    assert server._playback_engine("native") == "native"
 
 
 # -- data engine ------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "mode_value,mac,expected",
-    [
-        ("auto", True, "native"),
-        ("auto", False, "api"),
-        ("native", True, "native"),
-        ("safari", True, "api"),  # safari is a player; data still via API
-        ("chrome", True, "api"),
-        ("api", True, "api"),
-    ],
-)
-def test_data_engine(mode, monkeypatch, mode_value, mac, expected):
-    monkeypatch.delenv("APPLEMUSIC_FORCE_API_MODE", raising=False)
-    mode(mode_value, mac)
+@pytest.mark.parametrize("mac,expected", [(True, "native"), (False, "none")])
+def test_data_engine(mode, mac, expected):
+    mode("auto", mac)
     assert server._engine() == expected
 
 
-# -- module selection + error messaging -------------------------------------
+def test_data_engine_force_api_env(mode, monkeypatch):
+    """The APPLEMUSIC_FORCE_API_MODE test hook still works."""
+    mode("auto", True)
+    monkeypatch.setenv("APPLEMUSIC_FORCE_API_MODE", "1")
+    assert server._engine() == "api"
 
 
-def test_web_player_module():
-    from applemusic_mcp import browser, safari_player
-
-    assert server._web_player("safari") is safari_player
-    assert server._web_player("chrome") is browser
+# -- guidance ---------------------------------------------------------------
 
 
-def test_no_player_msg_native_queue(mode):
-    mode("native", mac=True)
-    msg = server._no_player_msg(for_queue=True)
-    assert "safari" in msg.lower() and "chrome" in msg.lower()
+@pytest.mark.parametrize("removed", REMOVED_ENGINES)
+def test_no_player_msg_names_the_removal(mode, removed):
+    """The error must say the engine was REMOVED, so a caller doesn't keep
+    retrying a mode that can never come back in this build."""
+    mode("auto", True)
+    msg = server._no_player_msg(removed)
+    assert "not available in this build" in msg
+    assert "native" in msg
 
 
-def test_no_player_msg_api(mode):
-    mode("api", mac=True)
-    assert "API mode" in server._no_player_msg()
+def test_no_player_msg_without_applescript(mode):
+    mode("auto", False)
+    msg = server._no_player_msg()
+    assert "Music.app" in msg
+
+
+# -- the removed modules must stay removed ----------------------------------
+
+
+@pytest.mark.parametrize("gone", ["browser", "safari", "safari_player", "musickit_js"])
+def test_web_engine_modules_are_absent(gone):
+    """Importing a removed engine must fail. If one of these ever imports again,
+    the browser-automation and Safari-Apple-Events attack surface is back."""
+    with pytest.raises(ImportError):
+        __import__(f"applemusic_mcp.{gone}", fromlist=[gone])
+
+
+def test_no_queue_tool():
+    """Up Next lived in the web player's MusicKit instance; it must not exist."""
+    assert not hasattr(server, "queue")

@@ -57,26 +57,8 @@ def test_playlist_rename_ambiguous_refuses(monkeypatch):
 # -- HIGH: in-MCP signin must offer the macOS Safari path -------------------
 
 
-def test_signin_prefers_safari_on_macos(monkeypatch):
-    monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-    from applemusic_mcp import auth, safari
-
-    saved = {}
-    monkeypatch.setattr(safari, "media_user_token", lambda: (True, "TOK"))
-    monkeypatch.setattr(auth, "save_user_token", lambda t: saved.setdefault("t", t))
-    out = server._auth_action("signin")
-    assert saved["t"] == "TOK"
-    assert "Safari" in out and out.startswith("✓")  # signed in via Safari, no Chrome flow
 
 
-def test_signin_safari_fail_no_playwright_guides_to_safari(monkeypatch):
-    monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-    from applemusic_mcp import browser, safari
-
-    monkeypatch.setattr(safari, "media_user_token", lambda: (False, "Safari blocked."))
-    monkeypatch.setattr(browser, "is_available", lambda: False)  # no Playwright
-    out = server._auth_action("signin")
-    assert "Apple Events" in out and "browser" in out.lower()  # Safari fix + [browser] option
 
 
 # -- MEDIUM: off-macOS playlist add must de-dup + honor auto_add -------------

@@ -11,7 +11,6 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import applemusic_mcp.browser as _browser_module  # ensure module is loaded for patching
 import pytest
 import requests
 import responses
@@ -701,34 +700,19 @@ class TestEngine:
         monkeypatch.setenv("APPLEMUSIC_FORCE_API_MODE", "1")
         assert server._engine() == "api"
 
-    def test_mode_api_pref(self, monkeypatch):
-        monkeypatch.setattr(server, "get_user_preferences", lambda: {"mode": "api"})
-        assert server._engine() == "api"
 
     def test_mode_native_with_applescript(self, monkeypatch):
         monkeypatch.setattr(server, "get_user_preferences", lambda: {"mode": "native"})
         monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
         assert server._engine() == "native"
 
-    def test_mode_native_without_applescript(self, monkeypatch):
-        monkeypatch.setattr(server, "get_user_preferences", lambda: {"mode": "native"})
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-        assert server._engine() == "api"
 
     def test_mode_auto_with_applescript(self, monkeypatch):
         monkeypatch.setattr(server, "get_user_preferences", lambda: {"mode": "auto"})
         monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
         assert server._engine() == "native"
 
-    def test_mode_auto_without_applescript(self, monkeypatch):
-        monkeypatch.setattr(server, "get_user_preferences", lambda: {"mode": "auto"})
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-        assert server._engine() == "api"
 
-    def test_no_mode_pref_defaults_auto(self, monkeypatch):
-        monkeypatch.setattr(server, "get_user_preferences", lambda: {})
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-        assert server._engine() == "api"
 
 
 # ---------------------------------------------------------------------------
@@ -736,32 +720,6 @@ class TestEngine:
 # ---------------------------------------------------------------------------
 
 
-class TestUseBrowserPlayback:
-    """Playback follows the engine: web -> browser, native -> Music.app. No
-    separate playback preference."""
-
-    def test_force_env(self, monkeypatch):
-        monkeypatch.setenv("APPLEMUSIC_FORCE_BROWSER_PLAYBACK", "1")
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        assert server._use_browser_playback() is True
-
-    def test_follows_engine_api(self, monkeypatch):
-        monkeypatch.delenv("APPLEMUSIC_FORCE_BROWSER_PLAYBACK", raising=False)
-        monkeypatch.setattr(server, "_engine", lambda: "api")
-        assert server._use_browser_playback() is True
-
-    def test_follows_engine_native(self, monkeypatch):
-        monkeypatch.delenv("APPLEMUSIC_FORCE_BROWSER_PLAYBACK", raising=False)
-        monkeypatch.setattr(server, "_engine", lambda: "native")
-        assert server._use_browser_playback() is False
-
-    def test_mode_pinned_native_helper(self, monkeypatch):
-        monkeypatch.setattr(server, "get_user_preferences", lambda: {"mode": "native"})
-        assert server._mode_pinned_native() is True
-        monkeypatch.setattr(server, "get_user_preferences", lambda: {"mode": "auto"})
-        assert server._mode_pinned_native() is False
-        monkeypatch.setattr(server, "get_user_preferences", lambda: {"mode": "web"})
-        assert server._mode_pinned_native() is False
 
 
 # ---------------------------------------------------------------------------
@@ -1791,62 +1749,6 @@ class TestAutoSearchAndAddToPlaylist:
         assert ok is True
         assert "Hey Jude" in msg
 
-    @responses.activate
-    def test_success_app_made_routes_to_native(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        """A Music.app-made (canEdit=False) playlist attaches via NATIVE AppleScript
-        — the web/amp-api rail 500s on these (verified), so it must not be used."""
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/catalog/us/search",
-            json={
-                "results": {
-                    "songs": {
-                        "data": [
-                            {"id": "cat1", "attributes": {"name": "So What", "artistName": "Miles"}}
-                        ]
-                    }
-                }
-            },
-            status=200,
-        )
-        responses.add(responses.POST, "https://api.music.apple.com/v1/me/library", status=202)
-        # user-made playlist (pl.u- globalId) → kind 'user'
-        monkeypatch.setattr(
-            server.amp_api,
-            "resolve_playlist",
-            lambda name, api_created_only=True: {
-                "id": "p.app",
-                "name": name,
-                "canEdit": False,
-                "globalId": "pl.u-abc",
-            },
-        )
-        monkeypatch.setattr(server.asc, "update_cloud_library", lambda: (True, "ok"))
-        # the catalog track is "synced locally" so the poll breaks and we attach
-        monkeypatch.setattr(server.asc, "find_library_track", lambda n, a: (True, f"{n}|||{a}"))
-        # the web rail must NOT be called for a user-made playlist
-        monkeypatch.setattr(
-            server.amp_api,
-            "add_tracks",
-            lambda pid, items: (_ for _ in ()).throw(AssertionError("web rail must not run")),
-        )
-        native_calls = []
-        monkeypatch.setattr(
-            server,
-            "_smart_as_add_track_to_playlist",
-            lambda pl, n, a, al: native_calls.append((pl, n)) or (True, "ok", None),
-        )
-        monkeypatch.setattr(server, "_verify_track_in_playlist", lambda pl, n, a: True)
-        ok, msg, steps = server._auto_search_and_add_to_playlist("So What", "Miles", "Jack & Norah")
-        assert ok is True and "So What" in msg
-        # per-leg method attribution: library via the API, playlist via Music.app
-        assert "added to library via the Apple Music API" in msg
-        assert "attached to playlist via Music.app" in msg
-        assert native_calls == [("Jack & Norah", "So What")]  # attached natively
 
     @responses.activate
     def test_catalog_search_not_found(self, mock_config_dir, mock_developer_token, mock_user_token):
@@ -1897,38 +1799,6 @@ class TestAutoSearchAndAddToPlaylist:
         ok, msg, steps = server._auto_search_and_add_to_playlist("Song", "Artist", "Playlist")
         assert ok is False
 
-    @responses.activate
-    def test_playlist_not_found(
-        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
-    ):
-        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/catalog/us/search",
-            json={
-                "results": {
-                    "songs": {
-                        "data": [
-                            {"id": "c1", "attributes": {"name": "Song", "artistName": "Artist"}}
-                        ]
-                    }
-                }
-            },
-            status=200,
-        )
-        responses.add(
-            responses.POST,
-            "https://api.music.apple.com/v1/me/library",
-            status=202,
-        )
-        monkeypatch.setattr(
-            server.amp_api, "resolve_playlist", lambda name, api_created_only=True: None
-        )
-        ok, msg, steps = server._auto_search_and_add_to_playlist(
-            "Song", "Artist", "Nonexistent Playlist"
-        )
-        assert ok is False
-        assert "Could not find playlist" in msg
 
     @responses.activate
     def test_playlist_id_provided_skips_lookup(
@@ -2125,70 +1995,6 @@ class TestRateSongApi:
 # ---------------------------------------------------------------------------
 
 
-class TestBrowserPlay:
-    """_browser_play imports `browser` locally inside the function so we patch
-    the module's attributes directly (applemusic_mcp.browser.play_url etc.)."""
-
-    def test_no_input(self):
-        out = server._browser_play(_browser_module)
-        assert "provide" in out.lower()
-
-    def test_url_success(self):
-        with patch.object(_browser_module, "play_url", return_value=(True, "Playing")):
-            out = server._browser_play(_browser_module, url="https://music.apple.com/song/123")
-        assert "Playing" in out
-
-    def test_url_failure(self):
-        with patch.object(_browser_module, "play_url", return_value=(False, "Session not ready")):
-            out = server._browser_play(_browser_module, url="https://music.apple.com/song/123")
-        assert "Error" in out
-        assert "Session not ready" in out
-
-    def test_playlist_success(self, monkeypatch):
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda n: ("p.rock", None))
-        with patch.object(
-            _browser_module, "play_descriptor", return_value=(True, "Playing playlist")
-        ):
-            out = server._browser_play(_browser_module, playlist="Rock Hits")
-        assert "Playing" in out
-
-    def test_playlist_not_found(self, monkeypatch):
-        monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda n: (None, None))
-        monkeypatch.setattr(server.amp_api, "resolve_playlist_id", lambda n, **k: None)
-        out = server._browser_play(_browser_module, playlist="Nonexistent Playlist")
-        assert "Error" in out
-
-    def test_track_not_found(self, monkeypatch):
-        monkeypatch.setattr(server, "_resolve_catalog_track_itunes", lambda n, a="": None)
-        out = server._browser_play(_browser_module, track="Nonexistent Song")
-        assert "Error" in out
-
-    def test_album_not_found(self, monkeypatch):
-        monkeypatch.setattr(
-            server, "_find_matching_catalog_album", lambda n, a="": (None, "Not found", None)
-        )
-        out = server._browser_play(_browser_module, album="Nonexistent Album")
-        assert "Error" in out
-
-    def test_album_success(self, monkeypatch):
-        mock_album = {"id": "alb123", "attributes": {"name": "Abbey Road"}}
-        monkeypatch.setattr(
-            server, "_find_matching_catalog_album", lambda n, a="": (mock_album, None, None)
-        )
-        with patch.object(_browser_module, "play_descriptor", return_value=(True, "Playing album")):
-            out = server._browser_play(_browser_module, album="Abbey Road")
-        assert "Playing" in out
-
-    def test_track_success(self, monkeypatch):
-        resolved = {
-            "name": "Hey Jude",
-            "artist": "The Beatles",
-            "url": "https://music.apple.com/song/hey-jude",
-        }
-        monkeypatch.setattr(server, "_resolve_catalog_track_itunes", lambda n, a="": resolved)
-        with patch.object(_browser_module, "play_url", return_value=(True, "Playing track")):
-            out = server._browser_play(_browser_module, track="Hey Jude", artist="The Beatles")
-        assert "Playing" in out
 
 
 # ---------------------------------------------------------------------------

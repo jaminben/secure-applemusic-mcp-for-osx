@@ -1,8 +1,8 @@
 """Coverage tests for the queue and playback tools (server.py lines ~6859–7955).
 
-Drives _queue_resolve_catalog_id, _format_queue, queue(), playback() dispatcher,
-and all nested AppleScript helpers: _catalog_song_name, _convert_song_url_to_album,
-_try_ui_catalog_play, _catalog_miss_play, _playback_play, _playback_control,
+Drives the playback() dispatcher and its nested AppleScript helpers:
+_catalog_song_name, _convert_song_url_to_album, _catalog_miss_play,
+_parse_apple_music_url, _playback_play, _playback_control,
 _playback_now_playing, _playback_settings, _playlist_remove, _library_remove,
 _playlist_delete, _playlist_rename, _playback_reveal, _playback_airplay.
 
@@ -38,19 +38,14 @@ def _reset_active_playback():
 def _native(monkeypatch):
     """Route playback() to the native (AppleScript) path.
 
-    Also stubs the cross-engine now-playing peek (``asc.now_playing_if_running``
-    and ``browser.now_playing_if_running``) to a quiet None default so the
-    ``control`` action's now-playing tail and the ``now_playing`` action don't
-    fall through to real AppleScript. Tests that need a specific peek value
+    Native is the only engine in this build, so this just asserts availability
+    and stubs the current-track read so the ``control`` action's now-playing tail
+    doesn't fall through to real AppleScript. Tests that need a specific value
     override these after calling ``_native`` (monkeypatch is last-wins)."""
-    from applemusic_mcp import browser
-
     monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
     monkeypatch.setattr(server, "_playback_engine", lambda *a, **k: "native")
     monkeypatch.setattr(server, "_get_active_playback", lambda: "native")
-    monkeypatch.setattr(server.asc, "now_playing_if_running", lambda: None)
     monkeypatch.setattr(server.asc, "get_current_track", lambda: (True, {"state": "stopped"}))
-    monkeypatch.setattr(browser, "now_playing_if_running", lambda: None)
 
 
 def _mock_headers(monkeypatch):
@@ -67,62 +62,6 @@ def _resolved_name(value="Strobe", artist="deadmau5"):
 # ===========================================================================
 
 
-class TestQueueMisc:
-    def test_resolve_catalog_id_empty_string_returns_none(self):
-        """Line 6864: empty / whitespace-only track -> None."""
-        assert server._queue_resolve_catalog_id("") is None
-        assert server._queue_resolve_catalog_id("   ") is None
-
-    def test_autoplay_enabled_none_error(self, monkeypatch):
-        """Line 6940: autoplay without enabled param."""
-        out = server.queue(action="autoplay")
-        assert "enabled" in out.lower()
-
-    def test_queue_clear_error_surfaces(self, monkeypatch):
-        """Error branch in queue clear — ok=False."""
-        from applemusic_mcp import browser
-
-        monkeypatch.setattr(browser, "queue_clear", lambda: (False, "not signed in"))
-        out = server.queue(action="clear", engine="chrome")
-        assert out.startswith("Error:")
-
-    def test_queue_play_next_error_surfaces(self, monkeypatch):
-        """ok=False for play_next."""
-        monkeypatch.setattr(server.amp_api, "search_catalog_songs", lambda q, n=1: [{"id": "1"}])
-        from applemusic_mcp import browser
-
-        monkeypatch.setattr(browser, "queue_play_next", lambda cid: (False, "browser offline"))
-        out = server.queue(action="play_next", track="X", engine="chrome")
-        assert out.startswith("Error:")
-
-    def test_queue_play_last_error_surfaces(self, monkeypatch):
-        monkeypatch.setattr(server.amp_api, "search_catalog_songs", lambda q, n=1: [{"id": "1"}])
-        from applemusic_mcp import browser
-
-        monkeypatch.setattr(browser, "queue_play_later", lambda cid: (False, "offline"))
-        out = server.queue(action="play_last", track="X", engine="chrome")
-        assert out.startswith("Error:")
-
-    def test_queue_remove_error_surfaces(self, monkeypatch):
-        from applemusic_mcp import browser
-
-        monkeypatch.setattr(browser, "queue_remove", lambda i: (False, "remove failed"))
-        out = server.queue(action="remove", index=0, engine="chrome")
-        assert out.startswith("Error:")
-
-    def test_queue_jump_error_surfaces(self, monkeypatch):
-        from applemusic_mcp import browser
-
-        monkeypatch.setattr(browser, "queue_jump", lambda i: (False, "jump failed"))
-        out = server.queue(action="jump", index=0, engine="chrome")
-        assert out.startswith("Error:")
-
-    def test_queue_autoplay_error_surfaces(self, monkeypatch):
-        from applemusic_mcp import browser
-
-        monkeypatch.setattr(browser, "queue_autoplay", lambda e: (False, "autoplay failed"))
-        out = server.queue(action="autoplay", enabled=True, engine="chrome")
-        assert out.startswith("Error:")
 
 
 # ===========================================================================
@@ -137,21 +76,7 @@ class TestPlaybackDispatcher:
         monkeypatch.setattr(server, "_playback_play", lambda *a, **k: "native result")
         assert server.playback(action="play", track="X") == "native result"
 
-    def test_engine_override_web_forces_browser(self, monkeypatch):
-        """engine='web' uses the browser path even when mode resolves to native."""
-        monkeypatch.setattr(server, "_use_browser_playback", lambda: False)
-        monkeypatch.setattr(server, "_browser_play", lambda *a, **k: "browser played")
-        monkeypatch.setattr(server, "_playback_play", lambda *a, **k: "native played")
-        assert server.playback(action="play", track="X", engine="web") == "browser played"
 
-    def test_engine_override_native_forces_native(self, monkeypatch):
-        """engine='native' uses Music.app even when mode resolves to web."""
-        # Real resolver — engine='native' must win over a web-leaning mode.
-        monkeypatch.setattr(server, "get_user_preferences", lambda: {"mode": "chrome"})
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_browser_play", lambda *a, **k: "browser played")
-        monkeypatch.setattr(server, "_playback_play", lambda *a, **k: "native played")
-        assert server.playback(action="play", track="X", engine="native") == "native played"
 
     def test_engine_override_invalid_value_errors(self, monkeypatch):
         _native(monkeypatch)
@@ -164,29 +89,7 @@ class TestPlaybackDispatcher:
         out = server.playback(action="control")
         assert "control param" in out.lower() or "Error" in out
 
-    def test_control_browser_success(self, monkeypatch):
-        """Lines 7008-7011: control via browser, success."""
-        monkeypatch.setattr(server, "_playback_engine", lambda *a, **k: "chrome")
-        monkeypatch.setattr(server, "_get_active_playback", lambda: "chrome")
-        from applemusic_mcp import browser
 
-        monkeypatch.setattr(browser, "playback_control", lambda c, s: (True, "Paused"))
-        # The control tail re-renders now_playing; stub both engines' peeks so it
-        # stays offline (web peek + native peek at the dispatcher).
-        monkeypatch.setattr(browser, "now_playing", lambda: None)
-        monkeypatch.setattr(server.asc, "now_playing_if_running", lambda: None)
-        out = server.playback(action="control", control="pause")
-        assert "Paused" in out
-
-    def test_control_browser_error(self, monkeypatch):
-        """Line 7011: control via browser, error branch."""
-        monkeypatch.setattr(server, "_playback_engine", lambda *a, **k: "chrome")
-        monkeypatch.setattr(server, "_get_active_playback", lambda: "chrome")
-        from applemusic_mcp import browser
-
-        monkeypatch.setattr(browser, "playback_control", lambda c, s: (False, "offline"))
-        out = server.playback(action="control", control="next")
-        assert out.startswith("Error:")
 
     def test_control_no_applescript_needs_browser(self, monkeypatch):
         """control with the native engine active but no AppleScript → needs web."""
@@ -202,160 +105,16 @@ class TestPlaybackDispatcher:
         out = server.playback(action="control", control="play")
         assert "Playback: play" in out
 
-    def test_now_playing_browser_track_found(self, monkeypatch):
-        """now_playing primary = the active Chrome engine's track."""
-        monkeypatch.setattr(server, "_get_active_playback", lambda: "chrome")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)  # chrome-only host
-        from applemusic_mcp import browser
 
-        monkeypatch.setattr(
-            browser,
-            "now_playing",
-            lambda: {"name": "Strobe", "artist": "deadmau5", "album": "4x4=12"},
-        )
-        out = server.playback(action="now_playing")
-        assert "Strobe" in out and "deadmau5" in out
 
-    def test_now_playing_browser_nothing(self, monkeypatch):
-        """Active Chrome engine, nothing playing → 'Nothing playing (Chrome...)'."""
-        monkeypatch.setattr(server, "_get_active_playback", lambda: "chrome")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-        from applemusic_mcp import browser
 
-        monkeypatch.setattr(browser, "now_playing", lambda: None)
-        out = server.playback(action="now_playing")
-        assert "Nothing" in out
 
-    def test_now_playing_surfaces_other_engines(self, monkeypatch):
-        """Primary = active engine; OTHER engines also playing are surfaced below it
-        with a hint to drive a specific one (replaces the old single-split warning)."""
-        monkeypatch.setattr(server, "_get_active_playback", lambda: "chrome")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        from applemusic_mcp import browser, safari_player
 
-        # active engine primary (direct read)
-        monkeypatch.setattr(
-            browser,
-            "now_playing",
-            lambda: {"name": "Now's The Time", "artist": "Charlie Parker", "album": "X"},
-        )
-        # other engine peek (no-launch)
-        monkeypatch.setattr(
-            server.asc,
-            "now_playing_if_running",
-            lambda: {"name": "Jeanie", "artist": "Foster", "state": "playing"},
-        )
-        monkeypatch.setattr(safari_player, "now_playing_if_running", lambda: None)
-        monkeypatch.setattr(safari_player, "music_tab_count", lambda: 0)
-        out = server.playback(action="now_playing")
-        assert "Now's The Time" in out  # primary (active chrome)
-        assert "Jeanie" in out and "also on Music.app" in out  # other engine surfaced
-        assert "engine=" in out  # how to drive a specific one
 
-    def test_now_playing_lists_paused_other_engine(self, monkeypatch):
-        """A loaded-but-paused OTHER engine is still surfaced (with its state)."""
-        monkeypatch.setattr(server, "_get_active_playback", lambda: "chrome")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        from applemusic_mcp import browser, safari_player
 
-        monkeypatch.setattr(
-            browser, "now_playing", lambda: {"name": "Now's The Time", "artist": "Bird"}
-        )
-        monkeypatch.setattr(
-            server.asc,
-            "now_playing_if_running",
-            lambda: {"name": "Top Back", "artist": "TI", "state": "paused"},
-        )
-        monkeypatch.setattr(safari_player, "now_playing_if_running", lambda: None)
-        monkeypatch.setattr(safari_player, "music_tab_count", lambda: 0)
-        out = server.playback(action="now_playing")
-        assert "Top Back" in out and "paused" in out.lower()
 
-    def test_now_playing_multi_tab_fyi(self, monkeypatch):
-        """Multiple Safari Apple Music tabs → an FYI note (a consistent one is driven)."""
-        monkeypatch.setattr(server, "_get_active_playback", lambda: "safari")
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        from applemusic_mcp import browser, safari_player
 
-        monkeypatch.setattr(
-            safari_player, "now_playing", lambda: {"name": "Strobe", "artist": "deadmau5"}
-        )
-        monkeypatch.setattr(server.asc, "now_playing_if_running", lambda: None)
-        monkeypatch.setattr(browser, "now_playing_if_running", lambda: None)
-        monkeypatch.setattr(safari_player, "music_tab_count", lambda: 3)
-        out = server.playback(action="now_playing")
-        assert "Strobe" in out and "3 Apple Music tabs" in out
 
-    def test_now_playing_no_applescript(self, monkeypatch):
-        """Off-mac, active Chrome engine, nothing playing → 'Nothing playing (Chrome...)'."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-        from applemusic_mcp import browser
-
-        monkeypatch.setattr(browser, "now_playing", lambda: None)
-        out = server.playback(action="now_playing")
-        assert "Chrome" in out and "Nothing" in out
-
-    def test_now_playing_native(self, monkeypatch):
-        """now_playing primary = native Music.app, with its rich detail."""
-        _native(monkeypatch)
-        monkeypatch.setattr(
-            server.asc,
-            "get_current_track",
-            lambda: (True, {"state": "playing", "name": "X", "artist": "Y"}),
-        )
-        from applemusic_mcp import browser, safari_player
-
-        monkeypatch.setattr(browser, "now_playing_if_running", lambda: None)
-        monkeypatch.setattr(safari_player, "now_playing_if_running", lambda: None)
-        monkeypatch.setattr(safari_player, "music_tab_count", lambda: 0)
-        out = server.playback(action="now_playing")
-        assert "X" in out and "playing" in out.lower()
-
-    def test_settings_browser_success(self, monkeypatch):
-        """Lines 7028-7036: settings via browser."""
-        monkeypatch.setattr(server, "_playback_engine", lambda *a, **k: "chrome")
-        monkeypatch.setattr(server, "_get_active_playback", lambda: "chrome")
-        from applemusic_mcp import browser
-
-        monkeypatch.setattr(browser, "browser_settings", lambda v, s, r: (True, "Volume set to 80"))
-        out = server.playback(action="settings", volume=80)
-        assert "Volume" in out
-
-    def test_settings_browser_shuffle_none(self, monkeypatch):
-        """Line 7031: shuffle_mode empty -> shuffle_b=None passed to browser."""
-        monkeypatch.setattr(server, "_playback_engine", lambda *a, **k: "chrome")
-        monkeypatch.setattr(server, "_get_active_playback", lambda: "chrome")
-        from applemusic_mcp import browser
-
-        seen = {}
-        monkeypatch.setattr(
-            browser, "browser_settings", lambda v, s, r: seen.update(s=s) or (True, "OK")
-        )
-        server.playback(action="settings")  # no shuffle_mode
-        assert seen.get("s") is None
-
-    def test_settings_browser_shuffle_on(self, monkeypatch):
-        """Line 7031-7033: shuffle_mode='on' -> True."""
-        monkeypatch.setattr(server, "_playback_engine", lambda *a, **k: "chrome")
-        monkeypatch.setattr(server, "_get_active_playback", lambda: "chrome")
-        from applemusic_mcp import browser
-
-        seen = {}
-        monkeypatch.setattr(
-            browser, "browser_settings", lambda v, s, r: seen.update(s=s) or (True, "OK")
-        )
-        server.playback(action="settings", shuffle_mode="on")
-        assert seen.get("s") is True
-
-    def test_settings_browser_error(self, monkeypatch):
-        """Line 7036: settings browser returns error."""
-        monkeypatch.setattr(server, "_playback_engine", lambda *a, **k: "chrome")
-        monkeypatch.setattr(server, "_get_active_playback", lambda: "chrome")
-        from applemusic_mcp import browser
-
-        monkeypatch.setattr(browser, "browser_settings", lambda v, s, r: (False, "oops"))
-        out = server.playback(action="settings", volume=50)
-        assert out.startswith("Error:")
 
     def test_settings_no_applescript(self, monkeypatch):
         """settings with the native engine active but no AppleScript → needs web."""
@@ -377,43 +136,8 @@ class TestPlaybackDispatcher:
         out = server.playback(action="reveal")
         assert "required" in out.lower()
 
-    def test_reveal_browser_resolve_fails(self, monkeypatch):
-        """Line 7051: reveal via browser, catalog resolve returns None."""
-        monkeypatch.setattr(server, "_playback_engine", lambda *a, **k: "chrome")
-        monkeypatch.setattr(server, "_get_active_playback", lambda: "chrome")
-        monkeypatch.setattr(server, "_resolve_catalog_track_itunes", lambda n, a="": None)
-        out = server.playback(action="reveal", track="zzznope")
-        assert "not found" in out.lower()
 
-    def test_reveal_browser_url_ok(self, monkeypatch):
-        """Lines 7044-7054: reveal via browser with a resolved URL."""
-        monkeypatch.setattr(server, "_playback_engine", lambda *a, **k: "chrome")
-        monkeypatch.setattr(server, "_get_active_playback", lambda: "chrome")
-        from applemusic_mcp import browser as br
 
-        monkeypatch.setattr(
-            server,
-            "_resolve_catalog_track_itunes",
-            lambda n, a="": {"url": "https://music.apple.com/us/song/x/1"},
-        )
-        monkeypatch.setattr(br, "reveal_url", lambda u: (True, f"Showing: {u}"))
-        out = server.playback(action="reveal", track="Strobe")
-        assert "Showing" in out
-
-    def test_reveal_browser_url_error(self, monkeypatch):
-        """Line 7054: reveal_url returns error."""
-        monkeypatch.setattr(server, "_playback_engine", lambda *a, **k: "chrome")
-        monkeypatch.setattr(server, "_get_active_playback", lambda: "chrome")
-        from applemusic_mcp import browser as br
-
-        monkeypatch.setattr(
-            server,
-            "_resolve_catalog_track_itunes",
-            lambda n, a="": {"url": "https://music.apple.com/us/song/x/1"},
-        )
-        monkeypatch.setattr(br, "reveal_url", lambda u: (False, "no browser"))
-        out = server.playback(action="reveal", track="Strobe")
-        assert out.startswith("Error:")
 
     def test_reveal_native_routes(self, monkeypatch):
         """Lines 7055-7057: reveal in native macOS mode."""
@@ -581,39 +305,6 @@ class TestConvertSongUrlToAlbum:
 # ===========================================================================
 
 
-class TestTryUiCatalogPlay:
-    def test_applescript_unavailable_returns_false_none(self, monkeypatch):
-        """Lines 7157-7158: APPLESCRIPT_AVAILABLE=False."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-        ok, msg = server._try_ui_catalog_play("Song", "Artist")
-        assert ok is False
-        assert msg is None
-
-    def test_success(self, monkeypatch):
-        """Lines 7159-7166: UI play succeeds."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "ui_play_result_by_query", lambda q: (True, "Playing Song"))
-        ok, msg = server._try_ui_catalog_play("Song", "Artist")
-        assert ok is True
-        assert "Playing Song" in msg
-
-    def test_custom_prefix(self, monkeypatch):
-        """Custom prefix and source_label."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "ui_play_result_by_query", lambda q: (True, "Playing"))
-        ok, msg = server._try_ui_catalog_play(
-            "Song", "Artist", source_label="ui_search", prefix="[UI Search]"
-        )
-        assert ok is True
-        assert "[UI Search]" in msg
-
-    def test_failure_returns_error_msg(self, monkeypatch):
-        """Line 7167: UI play fails."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "ui_play_result_by_query", lambda q: (False, "UI error"))
-        ok, msg = server._try_ui_catalog_play("Song", "Artist")
-        assert ok is False
-        assert msg == "UI error"
 
 
 # ===========================================================================
@@ -622,90 +313,17 @@ class TestTryUiCatalogPlay:
 
 
 class TestCatalogMissPlay:
-    def test_reveal_with_url_success(self, monkeypatch):
-        """Lines 7181-7183: reveal=True + url -> open_catalog_song."""
-        monkeypatch.setattr(server.asc, "open_catalog_song", lambda url: (True, "Opened"))
-        out = server._catalog_miss_play(
-            "Strobe", "deadmau5", "https://music.apple.com/...", reveal=True
-        )
-        assert "click play" in out or "Opened" in out
 
-    def test_reveal_with_url_open_fails(self, monkeypatch):
-        """reveal=True but open_catalog_song fails -> falls through to open_and_play."""
-        monkeypatch.setattr(server.asc, "open_catalog_song", lambda url: (False, "fail"))
-        monkeypatch.setattr(
-            server.asc, "open_catalog_and_play", lambda url, track_name="": (True, "Playing!")
-        )
-        monkeypatch.setattr(server, "get_user_preferences", lambda: {"playback": "auto"})
-        out = server._catalog_miss_play(
-            "Strobe", "deadmau5", "https://music.apple.com/...", reveal=True
-        )
-        assert "[Catalog]" in out
 
     def test_no_url_returns_found_message(self):
         """Line 7185: no url -> found message without playing."""
         out = server._catalog_miss_play("Strobe", "deadmau5", "", reveal=False)
         assert "Strobe" in out and "deadmau5" in out
 
-    def test_open_and_play_success(self, monkeypatch):
-        """Lines 7187-7192: asc.open_catalog_and_play succeeds."""
-        monkeypatch.setattr(
-            server.asc, "open_catalog_and_play", lambda url, track_name="": (True, "Playing!")
-        )
-        out = server._catalog_miss_play(
-            "Strobe", "deadmau5", "https://music.apple.com/...", reveal=False
-        )
-        assert "[Catalog]" in out and "Playing!" in out
 
-    def test_native_fails_browser_fallback(self, monkeypatch):
-        """Lines 7194-7201: native play fails, auto pref -> browser fallback."""
-        monkeypatch.setattr(
-            server.asc, "open_catalog_and_play", lambda url, track_name="": (False, "UI fail")
-        )
-        monkeypatch.setattr(server, "get_user_preferences", lambda: {"playback": "auto"})
-        monkeypatch.setattr(server, "has_user_token", lambda: True)
-        monkeypatch.setattr(server, "_browser_play", lambda *a, **k: "Playing via browser")
-        out = server._catalog_miss_play(
-            "Strobe", "deadmau5", "https://music.apple.com/...", reveal=False
-        )
-        assert "Browser" in out
 
-    def test_browser_fallback_itself_errors(self, monkeypatch):
-        """Browser fallback returns Error: -> falls through to Accessibility message."""
-        monkeypatch.setattr(
-            server.asc, "open_catalog_and_play", lambda url, track_name="": (False, "UI fail")
-        )
-        monkeypatch.setattr(server, "get_user_preferences", lambda: {"playback": "auto"})
-        monkeypatch.setattr(server, "has_user_token", lambda: True)
-        monkeypatch.setattr(server, "_browser_play", lambda *a, **k: "Error: not signed in")
-        out = server._catalog_miss_play(
-            "Strobe", "deadmau5", "https://music.apple.com/...", reveal=False
-        )
-        assert "Accessibility" in out or "couldn't" in out.lower()
 
-    def test_pinned_native_no_browser(self, monkeypatch):
-        """Line 7197: pinned native -> actionable error, no browser attempt."""
-        monkeypatch.setattr(
-            server.asc, "open_catalog_and_play", lambda url, track_name="": (False, "UI fail")
-        )
-        monkeypatch.setattr(server, "get_user_preferences", lambda: {"playback": "native"})
-        monkeypatch.setattr(server, "has_user_token", lambda: True)
-        out = server._catalog_miss_play(
-            "Strobe", "deadmau5", "https://music.apple.com/...", reveal=False
-        )
-        assert "Accessibility" in out and ("web" in out.lower() or "engine=" in out.lower())
 
-    def test_no_user_token_signin_message(self, monkeypatch):
-        """Line 7210: no user token -> 'signin' in message."""
-        monkeypatch.setattr(
-            server.asc, "open_catalog_and_play", lambda url, track_name="": (False, "UI fail")
-        )
-        monkeypatch.setattr(server, "get_user_preferences", lambda: {"playback": "auto"})
-        monkeypatch.setattr(server, "has_user_token", lambda: False)
-        out = server._catalog_miss_play(
-            "Strobe", "deadmau5", "https://music.apple.com/...", reveal=False
-        )
-        assert "login" in out.lower()
 
 
 # ===========================================================================
@@ -725,111 +343,11 @@ class TestPlaybackPlay:
         out = server.playback(action="play", url="https://music.apple.com/...", track="Song")
         assert "Error" in out and "url" in out.lower()
 
-    @responses.activate
-    def test_url_song_path_converts_to_album(self, monkeypatch):
-        """Lines 7237-7240: /song/ URL without ?i= -> _convert_song_url_to_album."""
-        self._setup(monkeypatch)
-        _mock_headers(monkeypatch)
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/catalog/us/songs/12345",
-            json={
-                "data": [
-                    {
-                        "attributes": {"albumName": "4x4=12"},
-                        "relationships": {"albums": {"data": [{"id": "9999"}]}},
-                    }
-                ]
-            },
-            status=200,
-        )
-        seen_url = []
-        monkeypatch.setattr(
-            server.asc,
-            "open_catalog_and_play",
-            lambda url, shuffle=False, track_name="": seen_url.append(url) or (True, "Playing"),
-        )
-        monkeypatch.setattr(server, "get_user_preferences", lambda: {"playback": "auto"})
-        server.playback(action="play", url="https://music.apple.com/us/song/strobe/12345")
-        assert seen_url and "9999" in seen_url[0]
 
-    @responses.activate
-    def test_url_with_i_param_looks_up_song_name(self, monkeypatch):
-        """Lines 7243-7246: URL with ?i= calls _catalog_song_name."""
-        self._setup(monkeypatch)
-        _mock_headers(monkeypatch)
-        responses.add(
-            responses.GET,
-            "https://api.music.apple.com/v1/catalog/us/songs/77777",
-            json={"data": [{"attributes": {"name": "Strobe"}}]},
-            status=200,
-        )
-        seen = []
-        monkeypatch.setattr(
-            server.asc,
-            "open_catalog_and_play",
-            lambda url, shuffle=False, track_name="": seen.append(track_name)
-            or (True, f"Playing {track_name}"),
-        )
-        monkeypatch.setattr(server, "get_user_preferences", lambda: {"playback": "auto"})
-        out = server.playback(action="play", url="https://music.apple.com/us/album/x/9999?i=77777")
-        assert seen and seen[0] == "Strobe"
 
-    def test_url_success(self, monkeypatch):
-        """Lines 7247-7252: URL play succeeds."""
-        self._setup(monkeypatch)
-        _mock_headers(monkeypatch)
-        monkeypatch.setattr(
-            server.asc,
-            "open_catalog_and_play",
-            lambda url, shuffle=False, track_name="": (True, "Playing album X"),
-        )
-        monkeypatch.setattr(server, "get_user_preferences", lambda: {"playback": "auto"})
-        out = server.playback(action="play", url="https://music.apple.com/us/album/x/9999")
-        assert "Playing album X" in out
 
-    def test_url_fail_browser_fallback(self, monkeypatch):
-        """Lines 7254-7259: URL play fails, browser fallback succeeds."""
-        self._setup(monkeypatch)
-        _mock_headers(monkeypatch)
-        monkeypatch.setattr(
-            server.asc,
-            "open_catalog_and_play",
-            lambda url, shuffle=False, track_name="": (False, "UI failed"),
-        )
-        monkeypatch.setattr(server, "get_user_preferences", lambda: {"playback": "auto"})
-        monkeypatch.setattr(server, "has_user_token", lambda: True)
-        monkeypatch.setattr(server, "_browser_play", lambda *a, **k: "Playing via browser")
-        out = server.playback(action="play", url="https://music.apple.com/us/album/x/9999")
-        assert "[Browser]" in out
 
-    def test_url_fail_browser_also_errors(self, monkeypatch):
-        """Line 7259: browser fallback also fails -> falls through to Error."""
-        self._setup(monkeypatch)
-        _mock_headers(monkeypatch)
-        monkeypatch.setattr(
-            server.asc,
-            "open_catalog_and_play",
-            lambda url, shuffle=False, track_name="": (False, "UI failed"),
-        )
-        monkeypatch.setattr(server, "get_user_preferences", lambda: {"playback": "auto"})
-        monkeypatch.setattr(server, "has_user_token", lambda: True)
-        monkeypatch.setattr(server, "_browser_play", lambda *a, **k: "Error: not signed in")
-        out = server.playback(action="play", url="https://music.apple.com/us/album/x/9999")
-        assert "Error" in out
 
-    def test_url_fail_pinned_native(self, monkeypatch):
-        """Line 7261: URL play fails, pinned native -> error returned."""
-        self._setup(monkeypatch)
-        _mock_headers(monkeypatch)
-        monkeypatch.setattr(
-            server.asc,
-            "open_catalog_and_play",
-            lambda url, shuffle=False, track_name="": (False, "UI failed"),
-        )
-        monkeypatch.setattr(server, "get_user_preferences", lambda: {"playback": "native"})
-        out = server.playback(action="play", url="https://music.apple.com/us/album/x/9999")
-        assert "Error" in out and "UI failed" in out
 
     # --- target count checks ---
 
@@ -1124,24 +642,6 @@ class TestPlaybackPlay:
         out = server.playback(action="play", track="X")
         assert "Error" in out and "resolve" in out.lower()
 
-    def test_catalog_id_track_ui_play_success(self, monkeypatch):
-        """Lines 7388-7428: catalog ID -> API lookup -> UI play succeeds."""
-        self._setup(monkeypatch)
-        _mock_headers(monkeypatch)
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "data": [
-                {"attributes": {"name": "Strobe", "artistName": "deadmau5", "url": "https://..."}}
-            ]
-        }
-        monkeypatch.setattr(server.requests, "get", lambda *a, **k: mock_resp)
-        monkeypatch.setattr(
-            server, "_try_ui_catalog_play", lambda n, a, **k: (True, "[UI Catalog] Playing")
-        )
-        # "1234567890" is 10 digits -> InputType.CATALOG_ID
-        out = server.playback(action="play", track="1234567890")
-        assert "[UI Catalog]" in out or "Playing" in out
 
     def test_catalog_id_track_catalog_miss(self, monkeypatch):
         """Line 7429: catalog ID -> UI play fails -> catalog_miss_play."""
@@ -1155,7 +655,6 @@ class TestPlaybackPlay:
             ]
         }
         monkeypatch.setattr(server.requests, "get", lambda *a, **k: mock_resp)
-        monkeypatch.setattr(server, "_try_ui_catalog_play", lambda n, a, **k: (False, None))
         monkeypatch.setattr(server, "_catalog_miss_play", lambda n, a, u, r: f"[Miss] {n}")
         out = server.playback(action="play", track="1234567890")
         assert "[Miss]" in out
@@ -1271,57 +770,10 @@ class TestPlaybackPlay:
         )
         monkeypatch.setattr(server.asc, "play_track", lambda n, a: (False, "Player busy"))
         monkeypatch.setattr(server, "_search_catalog_songs", lambda t, limit=5: [])
-        monkeypatch.setattr(server.asc, "ui_play_result_by_query", lambda q: (False, "Not found"))
         out = server.playback(action="play", track="Strobe")
         assert "not found" in out.lower()
 
-    def test_track_in_catalog_ui_success(self, monkeypatch):
-        """Lines 7504-7506: track in catalog, UI play succeeds."""
-        self._setup(monkeypatch)
-        monkeypatch.setattr(server.asc, "search_library", lambda q, t: (True, []))
-        monkeypatch.setattr(
-            server,
-            "_search_catalog_songs",
-            lambda t, limit=5: [
-                {
-                    "id": "111",
-                    "attributes": {
-                        "name": "Strobe",
-                        "artistName": "deadmau5",
-                        "url": "https://...",
-                    },
-                }
-            ],
-        )
-        monkeypatch.setattr(
-            server, "_try_ui_catalog_play", lambda n, a, **k: (True, "[UI Catalog] Playing Strobe")
-        )
-        out = server.playback(action="play", track="Strobe", artist="deadmau5")
-        assert "[UI Catalog]" in out
 
-    def test_track_in_catalog_ui_fails_with_msg(self, monkeypatch):
-        """Lines 7507-7511: UI attempted and failed with a message -> surface error."""
-        self._setup(monkeypatch)
-        monkeypatch.setattr(server.asc, "search_library", lambda q, t: (True, []))
-        monkeypatch.setattr(
-            server,
-            "_search_catalog_songs",
-            lambda t, limit=5: [
-                {
-                    "id": "111",
-                    "attributes": {
-                        "name": "Strobe",
-                        "artistName": "deadmau5",
-                        "url": "https://...",
-                    },
-                }
-            ],
-        )
-        monkeypatch.setattr(
-            server, "_try_ui_catalog_play", lambda n, a, **k: (False, "Accessibility denied")
-        )
-        out = server.playback(action="play", track="Strobe", artist="deadmau5")
-        assert "UI Catalog failed" in out or "Accessibility denied" in out
 
     def test_track_in_catalog_ui_none_catalog_miss(self, monkeypatch):
         """Lines 7513-7514: UI returns (False, None) -> fall through to _catalog_miss_play."""
@@ -1341,7 +793,6 @@ class TestPlaybackPlay:
                 }
             ],
         )
-        monkeypatch.setattr(server, "_try_ui_catalog_play", lambda n, a, **k: (False, None))
         monkeypatch.setattr(server, "_catalog_miss_play", lambda n, a, u, r: f"[CatalogMiss] {n}")
         out = server.playback(action="play", track="Strobe", artist="deadmau5")
         assert "[CatalogMiss]" in out
@@ -1447,23 +898,12 @@ class TestPlaybackPlay:
         server.playback(action="play", track="Strobe", add_to_library=True, reveal=True)
         assert len(revealed) == 1
 
-    def test_track_not_found_ui_search_last_resort_success(self, monkeypatch):
-        """Lines 7519-7523: catalog search empty -> UI search last resort succeeds."""
-        self._setup(monkeypatch)
-        monkeypatch.setattr(server.asc, "search_library", lambda q, t: (True, []))
-        monkeypatch.setattr(server, "_search_catalog_songs", lambda t, limit=5: [])
-        monkeypatch.setattr(
-            server.asc, "ui_play_result_by_query", lambda q: (True, "Playing via UI search")
-        )
-        out = server.playback(action="play", track="Strobe", artist="deadmau5")
-        assert "[UI Search]" in out or "Playing" in out
 
     def test_track_not_found_anywhere(self, monkeypatch):
         """Line 7525: not found in library, catalog, or UI."""
         self._setup(monkeypatch)
         monkeypatch.setattr(server.asc, "search_library", lambda q, t: (True, []))
         monkeypatch.setattr(server, "_search_catalog_songs", lambda t, limit=5: [])
-        monkeypatch.setattr(server.asc, "ui_play_result_by_query", lambda q: (False, "Not found"))
         out = server.playback(action="play", track="zzznopereallynothing9999")
         assert "not found" in out.lower()
 
@@ -2342,21 +1782,18 @@ class TestRemainingCoverage:
 
     def _native(self, monkeypatch):
         monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server, "_use_browser_playback", lambda: False)
 
     # --- Lines 7056, 7060: _macos_only returns error for reveal / airplay ---
 
     def test_reveal_macos_only_gate(self, monkeypatch):
         """Line 7056: reveal with no AppleScript and no browser -> _macos_only error."""
         monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-        monkeypatch.setattr(server, "_use_browser_playback", lambda: False)
         out = server.playback(action="reveal", track="Strobe")
         assert "macOS" in out or "Error" in out
 
     def test_airplay_macos_only_gate(self, monkeypatch):
         """Line 7060: airplay with no AppleScript -> _macos_only error."""
         monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-        monkeypatch.setattr(server, "_use_browser_playback", lambda: False)
         out = server.playback(action="airplay")
         assert "macOS" in out or "Error" in out
 
@@ -2583,44 +2020,11 @@ class TestRemainingCoverage:
         )
         # Falls through to catalog search -> nothing found
         monkeypatch.setattr(server, "_search_catalog_songs", lambda t, limit=5: [])
-        monkeypatch.setattr(server.asc, "ui_play_result_by_query", lambda q: (False, "Not found"))
         out = server.playback(action="play", track="Strobe", artist="deadmau5")
         assert "not found" in out.lower()
 
     # --- Lines 7470, 7477: catalog song filter continues ---
 
-    def test_track_catalog_name_mismatch_skips(self, monkeypatch):
-        """Line 7470: catalog song name doesn't match -> continue."""
-        self._native(monkeypatch)
-        monkeypatch.setattr(server.asc, "search_library", lambda q, t: (True, []))
-        # Return a song with wrong name, then one with right name
-        monkeypatch.setattr(
-            server,
-            "_search_catalog_songs",
-            lambda t, limit=5: [
-                {
-                    "id": "1",
-                    "attributes": {
-                        "name": "Completely Different",
-                        "artistName": "deadmau5",
-                        "url": "https://...",
-                    },
-                },
-                {
-                    "id": "2",
-                    "attributes": {
-                        "name": "Strobe",
-                        "artistName": "deadmau5",
-                        "url": "https://url",
-                    },
-                },
-            ],
-        )
-        monkeypatch.setattr(
-            server, "_try_ui_catalog_play", lambda n, a, **k: (True, "[UI Catalog] Playing")
-        )
-        out = server.playback(action="play", track="Strobe", artist="deadmau5")
-        assert "[UI Catalog]" in out
 
     def test_track_catalog_artist_mismatch_skips(self, monkeypatch):
         """Line 7477: catalog song name matches but artist doesn't -> continue."""
@@ -2641,7 +2045,6 @@ class TestRemainingCoverage:
                 },
             ],
         )
-        monkeypatch.setattr(server.asc, "ui_play_result_by_query", lambda q: (False, "Not found"))
         out = server.playback(action="play", track="Strobe", artist="deadmau5")
         assert "not found" in out.lower()
 

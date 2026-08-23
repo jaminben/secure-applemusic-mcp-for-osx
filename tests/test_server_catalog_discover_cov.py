@@ -1777,40 +1777,9 @@ class TestCatalogDispatcher:
         result = server.catalog(action="nonexistent_action")
         assert "Unknown action" in result
 
-    def test_search_no_api_token_no_applescript(self, mock_config_dir, monkeypatch):
-        """When no tokens and no AppleScript, returns token-required error."""
-        # Don't write any tokens; get_headers() will raise FileNotFoundError
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
-        result = server.catalog(action="search", query="Test")
-        assert "API token required" in result or "Error" in result
 
-    def test_search_no_api_token_applescript_ui_ok(self, mock_config_dir, monkeypatch):
-        """When no tokens but AppleScript works, returns UI search results."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        ui_results = [{"index": 1, "name": "UI Song", "artist": "UI Artist", "type": "song"}]
-        monkeypatch.setattr(server.asc, "ui_search_catalog", lambda q: (True, ui_results, None))
-        monkeypatch.setattr(server.asc, "ui_clear_search", lambda: None)
-        result = server.catalog(action="search", query="Test")
-        assert "UI Song" in result
-        assert "UI Artist" in result
 
-    def test_search_no_api_token_applescript_ui_fail_with_why(self, mock_config_dir, monkeypatch):
-        """When UI search fails with a reason, returns the reason."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(
-            server.asc, "ui_search_catalog", lambda q: (False, [], "Music.app not running")
-        )
-        monkeypatch.setattr(server.asc, "ui_clear_search", lambda: None)
-        result = server.catalog(action="search", query="Test")
-        assert "Music.app not running" in result or "Error" in result
 
-    def test_search_no_api_token_applescript_ui_ok_no_results(self, mock_config_dir, monkeypatch):
-        """UI search returns ok=True but empty results, no why → token error."""
-        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(server.asc, "ui_search_catalog", lambda q: (True, [], None))
-        monkeypatch.setattr(server.asc, "ui_clear_search", lambda: None)
-        result = server.catalog(action="search", query="Test")
-        assert "API token required" in result or "Error" in result
 
     def test_search_no_query_no_applescript(self, mock_config_dir, monkeypatch):
         """No query and no AppleScript returns token required (APPLESCRIPT guard False)."""
