@@ -201,7 +201,61 @@ def cmd_status(args):
             print("API: not configured (optional — run `applemusic-mcp login --dev`)")
     except Exception as e:
         print(f"API: error ({e})")
+
+    _print_update_status()
     return 0
+
+
+def _print_update_status():
+    """Show what the last update check found. Reads cache; never blocks.
+
+    `status` is the one place that reports even an already-dismissed update:
+    suppression exists to stop notifications from nagging, not to hide the
+    answer from someone who came here to ask.
+    """
+    from . import update_check
+
+    print()
+    if update_check.disabled():
+        print(f"Updates: check disabled ({update_check._OPT_OUT} is set)")
+        return
+    result = update_check.check()
+    if result.get("status") == "unreachable" and not result.get("latest"):
+        print("Updates: could not reach GitHub (this is not an error)")
+        return
+    lines = update_check.summary_lines(result)
+    if lines:
+        print("\n".join(lines))
+    elif result.get("latest"):
+        print(f"Updates: up to date ({result['current']})")
+    else:
+        print(f"Updates: no releases published yet ({result['current']})")
+
+
+def cmd_update_check(args):
+    """Ask GitHub whether a newer release exists. Reports; never installs."""
+    from . import update_check
+
+    if update_check.disabled() and not args.force:
+        print(f"Update check disabled ({update_check._OPT_OUT} is set).")
+        return 0
+    result = update_check.check(force=args.force)
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return 0
+
+    if result.get("status") == "unreachable":
+        print("Could not reach GitHub. Nothing changed.")
+        return 0
+    lines = update_check.summary_lines(result)
+    if lines:
+        print("\n".join(lines))
+    elif result.get("latest"):
+        print(f"Up to date ({result['current']}).")
+    else:
+        print(f"No releases published yet ({result['current']}).")
+    # An advisory is worth a non-zero exit so a wrapper script can act on it.
+    return 2 if result.get("advisory") else 0
 
 
 def cmd_serve(args):
@@ -281,6 +335,15 @@ def main():
     signin.add_argument("--days", type=int, default=180)
     signin.add_argument("--port", type=int, default=8765)
 
+    upd = sub.add_parser(
+        "update-check",
+        help="Check GitHub for a newer release (reports a link; never installs)",
+    )
+    upd.add_argument(
+        "--force", action="store_true", help="Ignore the once-a-day cache and the opt-out"
+    )
+    upd.add_argument("--json", action="store_true", help="Machine-readable output")
+
     sub.add_parser("logout", help="Sign out (switch accounts)")
     sub.add_parser("status", help="Show auth status")
     reset = sub.add_parser("reset", help="Wipe all credentials (keeps your .p8 key file)")
@@ -300,6 +363,8 @@ def main():
         sys.exit(cmd_logout(args))
     elif args.command == "status":
         sys.exit(cmd_status(args))
+    elif args.command == "update-check":
+        sys.exit(cmd_update_check(args))
     elif args.command == "reset":
         sys.exit(cmd_reset(args))
     elif args.command == "serve":

@@ -197,8 +197,17 @@ def test_every_cli_subcommand_has_its_handler():
     handlers were only ever exercised via mocks."""
     import applemusic_mcp.cli as cli_mod
 
-    for name in ("cmd_login", "_login_dev", "cmd_logout", "cmd_reset",
-                 "cmd_status", "cmd_serve", "cmd_shim", "cmd_helper", "cmd_app_setup"):
+    for name in (
+        "cmd_login",
+        "_login_dev",
+        "cmd_logout",
+        "cmd_reset",
+        "cmd_status",
+        "cmd_serve",
+        "cmd_shim",
+        "cmd_helper",
+        "cmd_app_setup",
+    ):
         assert hasattr(cli_mod, name), f"cli.{name} is missing"
 
 

@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0] - 2026-08-22
 
+### Added — update checking, with a security-advisory escalation
+
+- **`update-check` command and a once-a-day background check.** Asks GitHub for
+  the latest release and for published security advisories, compares against the
+  installed version, and reports. It never downloads, installs, or opens a URL:
+  this process holds the Automation grant, so applying an update automatically
+  would turn a compromised release channel into code execution with Music
+  control.
+- **Advisories are not suppressible.** A routine update notice is shown once per
+  version so a daily check can't become a daily nag; an advisory whose affected
+  range covers the running version re-notifies until the install is out of range.
+  Ranges that can't be parsed fail closed — reported as "not affected", because a
+  false alarm trains people to ignore the real one.
+- **Everything the API returns is treated as hostile.** Tags are validated against
+  a version shape (with length-capped components) rather than escaped, URLs must
+  live under this repo, and free text is stripped of control characters and capped
+  before reaching a terminal or a notification.
+- **Runs in the helper**, forked so a slow lookup never stalls `accept()`, and
+  triggered by a client connecting rather than by a timer of its own. Notifications
+  go through the single existing `osascript` call site, keeping the
+  process-execution surface at one module.
+- Opt out with `APPLEMUSIC_MCP_NO_UPDATE_CHECK=1`. `status` always reports the
+  last result, including one already dismissed. Documented in SECURITY.md.
+
 ### Added — standalone app and scoped permissions
 
 - **`AppleMusicMCP.app`** — a self-contained bundle with its own vendored Python

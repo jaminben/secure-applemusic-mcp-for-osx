@@ -55,3 +55,44 @@ docs/plans/
 
 # compiled Swift helper (built by swift/amcp-musickit/build.sh)
 swift/amcp-musickit/amcp-musickit
+
+# ---------------------------------------------------------------------------
+# Signing material and Apple credentials — NEVER commit these.
+#
+# The .p8 is the catastrophic one: it signs developer tokens for your team and
+# does not expire, so anyone who gets it can mint tokens as you until the key is
+# revoked. The rest are less severe but still leak your team identity, and none
+# of them belong in a repository.
+#
+# Note the helper does NOT need a provisioning profile — MusicKit validates the
+# app's Team ID and bundle id server-side (see docs/PERMISSIONS.md), so there is
+# no reason for one to be here at all.
+# ---------------------------------------------------------------------------
+*.p8
+AuthKey_*.p8
+*.cer
+*.p12
+*.pfx
+*.certSigningRequest
+*.provisionprofile
+*.mobileprovision
+*.keychain
+*.keychain-db
+embedded.provisionprofile
+
+# Private keys of any flavour. certifi ships a CA bundle as .pem, but that lives
+# in .venv/ and dist/, both ignored above.
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# Built Swift helper: a signed binary, rebuilt by swift/amcp-musickit/build.sh.
+swift/amcp-musickit/AMCPMusicKit.app/
+swift/**/*.app/
+
+# Local runtime state that can contain tokens or library data.
+*.token.json
+music_user_token.json
+developer_token.json
+harvested_token.json

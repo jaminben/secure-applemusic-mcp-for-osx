@@ -106,6 +106,22 @@ find "${RES}/lib" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/nu
 # `-m applemusic_mcp` instead, so they would only be a stale trap.
 rm -rf "${RES}/lib/bin" 2>/dev/null || true
 
+# --- 2b. the MusicKit helper -------------------------------------------------
+# A signed Swift .app nested inside ours. It is the only way to add a catalog
+# track without shipping an Apple Music credential: MusicKit signs the API call
+# from the app's own identity. It must be a real .app (Info.plist with a bundle
+# id and NSAppleMusicUsageDescription) signed with Developer ID — an entitlement
+# plist is NOT how this is granted, and requesting one gets the process killed.
+HELPER_SRC="${REPO}/swift/amcp-musickit/AMCPMusicKit.app"
+if [[ -d "$HELPER_SRC" ]]; then
+  mkdir -p "${APP}/Contents/Helpers"
+  ditto "$HELPER_SRC" "${APP}/Contents/Helpers/AMCPMusicKit.app"
+  echo "    bundled the MusicKit helper"
+else
+  echo "    note: no MusicKit helper (swift/amcp-musickit/build.sh) — catalog add will" >&2
+  echo "          need a developer token instead" >&2
+fi
+
 # --- 3. launcher + Info.plist ------------------------------------------------
 cat > "${APP}/Contents/MacOS/${APP_NAME}" <<'LAUNCHER'
 #!/bin/sh
@@ -158,6 +174,10 @@ if [[ -n "$SIGN_ID" ]]; then
   find "${RES}/python" "${RES}/lib" \( -name '*.dylib' -o -name '*.so' \) -print0 2>/dev/null \
     | xargs -0 -r codesign --force --timestamp=none --sign "$SIGN_ID" 2>/dev/null || true
   codesign --force --timestamp=none --sign "$SIGN_ID" "$VENDORED_PY" 2>/dev/null || true
+  if [[ -d "${APP}/Contents/Helpers/AMCPMusicKit.app" ]]; then
+    codesign --force --options runtime --timestamp=none --sign "$SIGN_ID" \
+      "${APP}/Contents/Helpers/AMCPMusicKit.app"
+  fi
   codesign --force --deep --timestamp=none --sign "$SIGN_ID" "$APP"
   codesign --verify --deep --strict "$APP" && echo "    signature verifies"
 else

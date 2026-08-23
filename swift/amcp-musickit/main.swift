@@ -9,8 +9,14 @@
 // Why this removes the credential problem entirely
 // ------------------------------------------------
 // `MusicDataRequest` performs an authenticated Apple Music API call with
-// MusicKit supplying BOTH tokens itself, from this app's
-// `com.apple.developer.musickit` entitlement plus the user's consent. So:
+// MusicKit supplying BOTH tokens itself, from this app's identity plus the
+// user's consent. The identity is the Team ID and bundle id, validated
+// server-side against an App ID that has MusicKit enabled — NOT a
+// provisioning-profile entitlement. Requesting
+// `com.apple.developer.musickit` in an entitlements plist actually breaks it:
+// nothing grants that entitlement, so the kernel SIGKILLs the process at
+// launch. It must be a proper .app with an Info.plist (bundle id +
+// NSAppleMusicUsageDescription), signed with Developer ID. So:
 //
 //   * no developer token is embedded in the shipped app (nothing to extract),
 //   * no `.p8` leaves the developer's machine,
@@ -70,7 +76,10 @@ func describe(_ status: MusicAuthorization.Status) -> String {
 /// interpolated into a URL that reaches Apple's service, and a helper that
 /// accepts arbitrary text is a helper that can be aimed somewhere else.
 func validCatalogID(_ raw: String) -> String? {
-    guard !raw.isEmpty, raw.count <= 32, raw.allSatisfy({ $0.isNumber }) else { return nil }
+    // ASCII digits only: Character.isNumber is true for Unicode digits such as
+    // Arabic-Indic "٣٤٥", which must not reach the URL.
+    guard !raw.isEmpty, raw.count <= 32,
+          raw.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
     return raw
 }
 
@@ -102,7 +111,7 @@ func cmdAdd(_ raw: String) async -> Never {
 
     do {
         // MusicKit signs this with the developer token AND the user token,
-        // both derived from the entitlement. We never see or store either.
+        // both derived from the app identity. We never see or store either.
         let response = try await MusicDataRequest(urlRequest: request).response()
         let code = response.urlResponse.statusCode
         // 202 Accepted is the documented success for a library add.

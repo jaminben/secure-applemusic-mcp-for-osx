@@ -872,13 +872,23 @@ class TestSearchCatalogSongsHelper:
 
 
 class TestAddSongsToLibraryHelper:
-    """Tests for _add_songs_to_library internal helper."""
+    """Tests for _add_songs_to_library internal helper.
+
+    Two rails now: the credential-free MusicKit helper (preferred, present in
+    the packaged app) and the developer-token REST call (a source checkout, or
+    anyone who ran `login --dev`). These tests pin the REST rail, so they stub
+    the helper away; the MusicKit rail has its own tests.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_musickit_helper(self, monkeypatch):
+        monkeypatch.setattr(server.musickit, "is_available", lambda: False)
 
     def test_returns_error_for_empty_ids(self):
         """Should return error tuple for empty ID list."""
         success, msg = server._add_songs_to_library([])
         assert success is False
-        assert "No catalog IDs" in msg
+        assert "no catalog ids" in msg.lower()
 
     @responses.activate
     def test_returns_success_on_valid_response(

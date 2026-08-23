@@ -6,6 +6,38 @@ Report privately via [GitHub Security Advisories](https://github.com/jaminben/se
 If the issue also affects [upstream](https://github.com/epheterson/applemusic-mcp),
 please tell them too — this fork exists to reduce capability, not to hoard fixes.
 
+### How a security fix reaches users
+
+Advisories published on this repo are also the channel the tool reads. Once a
+day — triggered by the helper actually being used, never on a timer of its own —
+it asks GitHub for the latest release and for published advisories, and it
+compares the *installed* version against each advisory's affected range.
+
+That distinction is the point. A routine "0.2.0 is out" notice is shown once and
+then suppressed, so a daily check can't become a daily nag. An advisory whose
+range covers the running version is **never** suppressed: it re-notifies until
+the installed version is out of the affected range.
+
+What it deliberately does not do:
+
+- **It never downloads or installs anything.** This process holds the Automation
+  grant over Music.app, so an auto-updater would convert a compromised release
+  channel into code execution with Music control. It reports a version and a URL;
+  a human decides.
+- **It never opens a URL.** Consistent with the `open`/`webbrowser` removal above.
+- **It never trusts what it reads.** Tags are validated against a version shape
+  rather than escaped, URLs must live under this repo or are replaced with a
+  known-good one, and free text is stripped of control characters and length-capped
+  before it reaches a terminal or a notification. An advisory range that can't be
+  parsed fails closed — reported as "not affected", because a false security alarm
+  trains people to ignore the real one.
+- **It never blocks or fails loudly.** Unreachable network, rate limiting, and a
+  corrupt state file are all silence.
+
+Turn it off entirely with `APPLEMUSIC_MCP_NO_UPDATE_CHECK=1`. Ask on demand with
+`secure-applemusic-mcp update-check`; `status` always shows the last result,
+including one you've already dismissed.
+
 ## What this is, plainly
 
 A **local stdio MCP server** that drives the Music.app on your Mac through Apple
@@ -29,7 +61,7 @@ of capabilities than upstream**, with the removals enforced by tests
 | Handing a URL to `open` / `webbrowser` | **Removed.** URLs are parsed, never opened. |
 | Process execution | One binary: `osascript`, argv list, 30s timeout, in one module. |
 | Shell | None. No `shell=True`, no `do shell script`, no `eval`/`exec`. |
-| Network | `api.music.apple.com` and `itunes.apple.com` only, HTTPS, with timeouts. |
+| Network | `api.music.apple.com` and `itunes.apple.com`, plus `api.github.com` for the update check (at most once a day, opt-out). HTTPS, with timeouts. |
 | Filesystem writes | Three state dirs under `$HOME`, all `0700`. |
 | Filesystem reads | The export dir, via a resolved-path containment check. |
 

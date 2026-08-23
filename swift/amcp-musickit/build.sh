@@ -1,31 +1,70 @@
 #!/usr/bin/env bash
-# Build (and optionally sign) the MusicKit helper.
+# Build the MusicKit helper as a signed .app.
 #
-#   ./build.sh                                  unsigned — `add` will fail with
-#                                               "Permission denied", as expected
-#   ./build.sh --sign "Developer ID Application: You (TEAMID)" \
-#              --profile /path/to.provisionprofile
+#   ./build.sh --sign "Developer ID Application: You (TEAMID)"
+#   ./build.sh                      # unsigned: builds, but `add` will be denied
 #
-# The entitlement is a managed capability, so an unsigned or ad-hoc build cannot
-# use it no matter what the plist says. See docs/PERMISSIONS.md.
+# Three things are required for MusicKit to authorise the call, and it took a
+# while to establish which (see docs/PERMISSIONS.md):
+#
+#   1. A real .app bundle — an Info.plist carrying the bundle id and
+#      NSAppleMusicUsageDescription. A bare Mach-O has no identity and is denied.
+#   2. A Developer ID signature from a team whose App ID has MusicKit enabled.
+#      That App ID is what Apple checks, SERVER-SIDE.
+#   3. Nothing else. In particular NO entitlements plist and NO provisioning
+#      profile: MusicKit is one of the capabilities (with In-App Purchase,
+#      ShazamKit, WeatherKit) that inject no profile entitlement. Requesting
+#      `com.apple.developer.musickit` makes it strictly worse — nothing grants
+#      it, so the kernel SIGKILLs the process at launch with "restricted
+#      entitlements ... validation failed". Verified: removing the profile
+#      entirely still returns HTTP 202.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
-SIGN=""; PROFILE=""
+
+BUNDLE_ID="io.github.jaminben.secure-applemusic-mcp"
+APP="AMCPMusicKit.app"
+SIGN=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --sign) SIGN="${2:?}"; shift 2 ;;
-    --profile) PROFILE="${2:?}"; shift 2 ;;
+    --sign) SIGN="${2:?--sign needs an identity}"; shift 2 ;;
+    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+
 swiftc -O -target arm64-apple-macosx14.0 -o amcp-musickit main.swift
-echo "built: $(pwd)/amcp-musickit"
+
+rm -rf "$APP"
+mkdir -p "${APP}/Contents/MacOS"
+mv amcp-musickit "${APP}/Contents/MacOS/AMCPMusicKit"
+
+cat > "${APP}/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key><string>${BUNDLE_ID}</string>
+    <key>CFBundleName</key><string>AMCPMusicKit</string>
+    <key>CFBundleExecutable</key><string>AMCPMusicKit</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>0.1.0</string>
+    <key>LSMinimumSystemVersion</key><string>14.0</string>
+    <key>LSUIElement</key><true/>
+    <!-- Shown in the Apple Music permission prompt. Required: without it the
+         request is denied rather than shown. -->
+    <key>NSAppleMusicUsageDescription</key>
+    <string>Adds songs you ask for to your Apple Music library.</string>
+</dict>
+</plist>
+PLIST
+plutil -lint "${APP}/Contents/Info.plist" >/dev/null
+
 if [[ -n "$SIGN" ]]; then
-  codesign --force --options runtime --entitlements entitlements.plist \
-           --sign "$SIGN" amcp-musickit
-  codesign -d --entitlements - amcp-musickit 2>&1 | grep -q musickit \
-    && echo "signed with the MusicKit entitlement"
-  [[ -n "$PROFILE" ]] && echo "remember: copy the profile to the .app as Contents/embedded.provisionprofile"
+  codesign --force --options runtime --sign "$SIGN" "$APP"
+  echo "built and signed: $(pwd)/$APP"
+  "${APP}/Contents/MacOS/AMCPMusicKit" status
 else
-  echo "unsigned — 'add' will report Permission denied until signed with a MusicKit profile"
+  echo "built (unsigned): $(pwd)/$APP"
+  echo "  'add' will be denied until signed with a Developer ID from a team"
+  echo "  whose App ID has MusicKit enabled."
 fi

@@ -155,6 +155,16 @@ dev helper running
   tools/mcp-call --dev playback action=now_playing
   tools/dev-helper.sh logs | stop | restart
 
-Edits to the source are live on the NEXT call — no restart needed. Restart only
-after changing helper.py, ipc.py or shim.py, which the parent process holds.
+Most edits are live on the NEXT call: the server module is imported inside the
+forked child, so each mcp-call picks up current source.
+
+Restart after editing a module the PARENT holds, because a fork inherits its
+already-imported copy:
+
+  helper.py, ipc.py, __init__.py   always held
+  paths.py, update_check.py,       held once the daily update check has run,
+  applescript.py                   so this varies by how long the helper is up
+
+If a change does not seem to take effect, restart before debugging it — that
+ambiguity costs more time than the restart does.
 DONE

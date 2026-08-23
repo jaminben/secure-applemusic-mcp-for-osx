@@ -187,6 +187,15 @@ def get_user_preferences() -> dict:
         # is the old name for this key and is still honored from existing configs.
         "auto_add": prefs.get("auto_add", prefs.get("auto_search", False)),
         "storefront": prefs.get("storefront", "us"),  # Apple Music region (default: US)
+        # What may happen when you ask to play a track you do not own.
+        #   "add" — add it to the library (the only way macOS can play it), and
+        #           file it under the "Added by Music MCP" playlist so the
+        #           additions stay reviewable and undoable in one gesture.
+        #   "off" — never touch the library; say the track isn't owned instead.
+        # There is deliberately no in-process-player option: it is killed the
+        # moment Music.app plays anything, while still reporting "playing", so
+        # it can claim success while producing silence.
+        "catalog_play": prefs.get("catalog_play", "add"),
         # Single engine mode, governs BOTH data ops and playback: "auto"
         # (native Music.app on macOS, web API + Chrome web player elsewhere),
         # "native" (all-in on the local Music.app, macOS, no token), or "web"

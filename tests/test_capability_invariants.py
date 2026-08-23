@@ -46,7 +46,16 @@ SUBPROCESS_ALLOWED = {
     "applescript.py": {"osascript"},
     # The installer has to talk to launchd and show a native dialog.
     "app_setup.py": {"launchctl", "osascript"},
+    # The MusicKit helper: our own signed Swift binary, the only way to add a
+    # catalog track without shipping an Apple Music credential. Its argv[0] is
+    # computed rather than literal (the path differs between the packaged app
+    # and a source checkout), so it is exempt from the literal-name check below
+    # and covered by test_musickit_helper_path_is_constrained instead.
+    "musickit.py": {"<computed: AMCPMusicKit>"},
 }
+
+# Modules whose argv[0] cannot be a literal, each with a dedicated test.
+COMPUTED_ARGV0 = {"musickit.py"}
 
 
 def _source(path: Path) -> str:
@@ -279,3 +288,121 @@ def test_clean_filter_columns_survive_export():
     import json
 
     assert "explicit" in json.loads(server.format_output(items, "json"))[0]
+
+
+def test_musickit_helper_path_is_constrained():
+    """The one computed argv[0] must not be reachable from user input.
+
+    musickit.py runs our own signed Swift helper, whose path differs between the
+    packaged app and a source checkout, so argv[0] cannot be a string literal.
+    That exemption is only safe while the candidate paths are derived from fixed
+    locations — never from a tool argument.
+    """
+    from applemusic_mcp import musickit
+
+    src = (SRC / "musickit.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+
+    # Exactly one subprocess call, and it must be bounded.
+    calls = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "run"
+        and isinstance(n.func.value, ast.Name)
+        and n.func.value.id == "subprocess"
+    ]
+    assert len(calls) == 1, "expected a single subprocess call site"
+    assert "timeout" in {k.arg for k in calls[0].keywords}, "must be bounded by a timeout"
+
+    # Every candidate location is built from fixed parts: an env override (an
+    # operator decision, not tool input), the running bundle, or the repo.
+    for path in musickit._candidates():
+        assert path.name == "AMCPMusicKit", f"unexpected helper name: {path}"
+
+    # And the id it is handed is validated as numeric before it ever gets there.
+    ok, msg = musickit.add_to_library("not-a-number; rm -rf /")
+    assert not ok and "numeric" in msg
+
+
+# --- nothing secret may be committed ---------------------------------------------
+#
+# .gitignore prevents the accident; this catches it if the ignore rules are ever
+# loosened, a file is force-added, or someone commits from a tool that bypasses
+# them. The .p8 is the one that really matters: it signs developer tokens for the
+# whole team and does not expire, so a leak is unrecoverable without revoking the
+# key.
+
+SECRET_SUFFIXES = (
+    ".p8", ".cer", ".p12", ".pfx", ".pem", ".key",
+    ".certSigningRequest", ".provisionprofile", ".mobileprovision",
+    ".keychain", ".keychain-db",
+)
+
+
+def _tracked_files() -> list[str]:
+    import subprocess
+
+    out = subprocess.run(
+        ["git", "ls-files"], capture_output=True, text=True,
+        cwd=SRC.parent.parent, timeout=60,
+    )
+    return [line for line in out.stdout.splitlines() if line.strip()]
+
+
+def test_no_credential_files_are_tracked():
+    offenders = [f for f in _tracked_files() if f.endswith(SECRET_SUFFIXES)]
+    assert offenders == [], f"credential material is tracked by git: {offenders}"
+
+
+def test_gitignore_covers_the_dangerous_extensions():
+    """Belt and braces: the ignore rules must actually name these."""
+    rules = (SRC.parent.parent / ".gitignore").read_text(encoding="utf-8")
+    for pattern in ("*.p8", "*.provisionprofile", "*.p12", "*.certSigningRequest"):
+        assert pattern in rules, f".gitignore is missing {pattern}"
+
+
+def test_no_apple_team_or_key_identifiers_in_tracked_files():
+    """A Team ID or Key ID is not catastrophic on its own, but it identifies the
+    developer account and belongs in local config, never in the repository."""
+    import re
+    import subprocess
+
+    repo = SRC.parent.parent
+    # Ten-char uppercase alphanumerics, as Apple issues them, next to a word
+    # that says what they are — narrow enough not to trip on hashes.
+    pattern = re.compile(r"(team[_ -]?id|key[_ -]?id)\W{0,4}[A-Z0-9]{10}\b", re.I)
+    hits = []
+    for path in _tracked_files():
+        full = repo / path
+        if not full.is_file() or full.suffix in {".png", ".jpg", ".mov", ".zip", ".lock"}:
+            continue
+        try:
+            text = full.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for match in pattern.finditer(text):
+            snippet = match.group(0)
+            value = snippet[-10:].upper()
+            # Obvious placeholders are fine; a real Apple id is 10 mixed
+            # alphanumerics with no such tell.
+            placeholder = (
+                any(w in value for w in ("XXXX", "TEAM", "KEY", "TEST", "FAKE",
+                                         "EXAMPLE", "SAMPLE", "ABC", "A1B2C3"))
+                or "1234" in value
+            )
+            if placeholder:
+                continue
+            hits.append(f"{path}: {snippet}")
+    assert hits == [], f"possible Apple identifiers committed: {hits}"
+
+
+def test_the_musickit_helper_needs_no_entitlements_file():
+    """Requesting com.apple.developer.musickit is not merely unnecessary — it
+    gets the process SIGKILLed, because nothing grants that entitlement. The
+    file must stay gone so nobody reintroduces it from muscle memory."""
+    helper_dir = SRC.parent.parent / "swift" / "amcp-musickit"
+    assert not (helper_dir / "entitlements.plist").exists()
+    build = (helper_dir / "build.sh").read_text(encoding="utf-8")
+    assert "--entitlements" not in build

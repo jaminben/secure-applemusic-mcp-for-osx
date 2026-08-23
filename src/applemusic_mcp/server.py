@@ -7,6 +7,7 @@ deleting tracks from playlists, and other operations not supported by the REST A
 import csv
 import io
 import json
+import logging
 import os
 import re
 import sys
@@ -47,10 +48,13 @@ from . import applescript as asc
 from . import rate_limit
 from .track_cache import get_track_cache, get_cache_dir
 from . import audit_log
+from . import musickit
 from . import __version__ as _pkg_version
 from . import paths
 
 # Check if AppleScript is available (macOS only)
+logger = logging.getLogger(__name__)
+
 APPLESCRIPT_AVAILABLE = asc.is_available()
 
 # Max characters for track listing output
@@ -2234,9 +2238,112 @@ def _add_to_library_api(catalog_ids: list[str], content_type: str = "songs") -> 
         return False, str(e)
 
 
-def _add_songs_to_library(catalog_ids: list[str]) -> tuple[bool, str]:
-    """Add songs to library by catalog ID. (Legacy wrapper)"""
-    return _add_to_library_api(catalog_ids, "songs")
+AUTO_ADD_PLAYLIST = "Added by Music MCP"
+
+
+def _add_songs_to_library(
+    catalog_ids: list[str], known: "Optional[list[tuple[str, str]]]" = None
+) -> tuple[bool, str]:
+    """Add songs to the library, preferring the credential-free MusicKit rail.
+
+    Two rails, in order of preference:
+
+    1. **MusicKit helper** — a signed Swift binary calling ``MusicDataRequest``.
+       MusicKit supplies both tokens itself from the app's identity, so nothing
+       secret is shipped or stored. Available in the packaged app.
+    2. **REST + developer token** — the original path, for a source checkout or
+       anyone who has run ``login --dev``.
+
+    Honours the ``catalog_play`` preference: with ``off``, nothing is ever added
+    and the caller is told to add it by hand instead. Adding to someone's music
+    library is a real side effect, and it should be refusable.
+    """
+    if not catalog_ids:
+        return False, "no catalog ids"
+    if get_user_preferences().get("catalog_play") == "off":
+        return False, (
+            "catalog_play is 'off', so nothing was added to your library. "
+            "Add the track in Music.app and ask again, or "
+            "config(action='set-pref', preference='catalog_play', string_value='add')."
+        )
+
+    if musickit.is_available():
+        failures = []
+        for cid in catalog_ids:
+            ok, msg = musickit.add_to_library(cid)
+            if not ok:
+                failures.append(f"{cid}: {msg}")
+        if not failures:
+            _record_auto_added(catalog_ids, known)
+            return True, f"Added {len(catalog_ids)} track(s) (MusicKit)"
+        # Fall through to the token rail — a helper that is present but refused
+        # (permission not granted yet) should not block a working credential.
+        logger.info("MusicKit add failed, trying the developer-token rail: %s", failures)
+
+    ok, msg = _add_to_library_api(catalog_ids, "songs")
+    if ok:
+        _record_auto_added(catalog_ids, known)
+    return ok, msg
+
+
+def _record_auto_added(
+    catalog_ids: list[str], known: "Optional[list[tuple[str, str]]]" = None
+) -> None:
+    """File automatic additions under one playlist so they stay reviewable.
+
+    Playing a track you do not own necessarily puts it in your library — there
+    is no way around that on macOS (see docs/PERMISSIONS.md). Collecting those
+    additions in a single named playlist means they can be found and undone in
+    one gesture, instead of silently accumulating among music you chose.
+
+    Best-effort: never let bookkeeping turn a successful add into a reported
+    failure. The audit log already has the authoritative record.
+    """
+    if not APPLESCRIPT_AVAILABLE:
+        return
+    audit_log.log_action(
+        "auto_added", {"catalog_ids": list(catalog_ids), "playlist": AUTO_ADD_PLAYLIST}
+    )
+    try:
+        names = [(n, a or None) for n, a in (known or []) if n]
+        if not names:
+            for cid in catalog_ids:
+                info = get_track_cache().get_track_info(cid) or {}
+                if info.get("name"):
+                    names.append((info["name"], info.get("artist") or None))
+        for name, artist in names:
+            file_under_auto_playlist(name, artist)
+    except Exception as exc:  # noqa: BLE001 - bookkeeping must not fail the add
+        logger.info("could not file the track under %r: %s", AUTO_ADD_PLAYLIST, exc)
+
+
+def file_under_auto_playlist(name: str, artist: "Optional[str]" = None) -> bool:
+    """Put one just-added track into the "Added by Music MCP" playlist.
+
+    Call this only AFTER the track is present locally: the add returns HTTP 202
+    (accepted), and iCloud takes a few seconds to propagate it, so filing
+    immediately finds nothing to file and silently does nothing — which is
+    exactly how the first version of this failed.
+
+    Creates the playlist on first use; ``add_track_to_playlist`` resolves an
+    existing playlist and errors otherwise. Best-effort throughout: bookkeeping
+    must never turn a successful add into a reported failure.
+    """
+    if not APPLESCRIPT_AVAILABLE or not name:
+        return False
+    try:
+        exists, _ = asc.get_playlist_tracks(AUTO_ADD_PLAYLIST)
+        if not exists:
+            asc.create_playlist(
+                AUTO_ADD_PLAYLIST,
+                "Tracks this server added to your library so you could play them. "
+                "Safe to delete; removing the playlist does not remove the songs.",
+            )
+        ok, _msg = asc.add_track_to_playlist(AUTO_ADD_PLAYLIST, name, artist=artist)
+        return bool(ok)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("could not file %r under %r: %s", name, AUTO_ADD_PLAYLIST, exc)
+        return False
 
 
 def _add_album_to_library(album_id: str) -> tuple[bool, str]:
@@ -7355,7 +7462,7 @@ def config(
         # === SET PREFERENCE ===
         if action == "set-pref":
             bool_prefs = ["fetch_explicit", "clean_only", "auto_add"]
-            string_prefs = ["storefront", "mode"]
+            string_prefs = ["storefront", "mode", "catalog_play"]
             # Enum string prefs: only these values are accepted. This build has
             # ONE engine — the local Music.app — so `mode` is effectively a
             # no-op kept for config compatibility; "auto" resolves to native.
@@ -7363,6 +7470,7 @@ def config(
             # removed, and accepting the value would misdescribe what runs.
             enum_prefs = {
                 "mode": ("auto", "native"),
+                "catalog_play": ("add", "off"),
             }
             all_prefs = bool_prefs + string_prefs
 
@@ -7530,6 +7638,11 @@ def config(
             output.append(f"  fetch_explicit: {prefs['fetch_explicit']}")
             output.append(f"  clean_only: {prefs['clean_only']}")
             output.append(f"  auto_add: {prefs['auto_add']}")
+            output.append(
+                f"  catalog_play: {prefs['catalog_play']}"
+                "  (add = may add unowned tracks to your library; off = never)"
+            )
+            output.append(f"  config dir: {get_config_dir()}")
             output.append("")
 
             # Track Metadata Cache
@@ -7733,25 +7846,34 @@ def _config_auth_status(mutation_status: "Optional[str]" = None) -> str:
         except Exception as e:
             status.append(f"API Connection: ERROR - {str(e)}")
 
-    # Mutation path (catalog add, playlist edit, rate): amp-api + the harvested
-    # web token. Reported separately because it can fail while the read path above
-    # is fine — that mismatch is what makes "add works" claims untrustworthy.
-    if mutation_status is not None:
+    # Catalog-add path, reported separately because it can fail while the read
+    # path above is fine — that mismatch is what makes "add works" claims
+    # untrustworthy. The amp-api rail this used to describe was removed.
+    if musickit.is_available():
         status.append(
             {
-                "ok": "Web fallback writes (amp-api): OK",
+                "authorized": "Catalog add: OK (MusicKit — no credential stored)",
+                "notDetermined": (
+                    "Catalog add: needs one-time approval — "
+                    "config(action='signin') shows the Apple Music prompt."
+                ),
+                "denied": (
+                    "Catalog add: DENIED — allow this app under System Settings → "
+                    "Privacy & Security → Media & Apple Music."
+                ),
+            }.get(musickit.authorization_status(), "Catalog add: MusicKit helper unavailable")
+        )
+    elif mutation_status is not None:
+        status.append(
+            {
+                "ok": "Catalog add: OK (Apple Music API, developer token)",
                 "expired": (
-                    "Web fallback writes (amp-api): UNAUTHORIZED — the web-player "
-                    "session expired. Re-run `applemusic-mcp login`."
+                    "Catalog add: UNAUTHORIZED — the developer-token session "
+                    "expired. Re-run `applemusic-mcp login --dev`."
                 ),
-                "throttled": (
-                    f"Web fallback writes (amp-api): RATE-LIMITED (429) — {_THROTTLED_REASON}"
-                ),
-                "error": (
-                    "Web fallback writes (amp-api): ERROR reaching amp-api "
-                    "(check your connection)."
-                ),
-            }.get(mutation_status, f"Web fallback writes (amp-api): {mutation_status}")
+                "throttled": f"Catalog add: RATE-LIMITED (429) — {_THROTTLED_REASON}",
+                "error": "Catalog add: ERROR reaching the Apple Music API.",
+            }.get(mutation_status, f"Catalog add: {mutation_status}")
         )
 
     return "\n".join(status)
@@ -8124,20 +8246,44 @@ def _auth_action(action: str = "status", confirm: bool = False) -> str:
         return f"{body}\nMode: {mode}\n{engines}\nWrites: {write_rail}\n\n{nxt}"
 
     if action in ("signin", "login"):
-        # Upstream signed in by harvesting the media-user-token from a signed-in
-        # Safari (Apple Events -> document.cookie) or by driving a Playwright
-        # Chrome. Both were removed: the Safari path requires "Allow JavaScript
-        # from Apple Events", which grants JS execution in EVERY Safari tab, and
-        # the Chrome path keeps a full browser-automation handle in-process.
-        # This build stores no session credential by default.
+        # Upstream signed in by harvesting the media-user-token from Safari
+        # (Apple Events -> document.cookie) or by driving a Playwright Chrome.
+        # Both were removed. What remains needs no credential at all: MusicKit
+        # authorizes THIS app against the user's own Apple Music account, with a
+        # native prompt, and signs its own API calls afterwards.
+        if musickit.is_available():
+            current = musickit.authorization_status()
+            if current == "authorized":
+                return (
+                    "✓ Already connected. Apple Music access is granted to this app, "
+                    "and nothing is stored — MusicKit signs each request itself."
+                )
+            if current == "denied":
+                return (
+                    "Apple Music access was denied for this app. Turn it back on in "
+                    "System Settings → Privacy & Security → Media & Apple Music, "
+                    "then ask again."
+                )
+            ok, detail = musickit.request_authorization()
+            if ok:
+                return (
+                    "✓ Connected. Apple Music access granted to this app — no token "
+                    "is stored, and adding catalog tracks now works."
+                )
+            return (
+                f"Couldn't get Apple Music access ({detail or 'no reason given'}). "
+                "A prompt should have appeared; if it didn't, check System Settings → "
+                "Privacy & Security → Media & Apple Music."
+            )
+
         return (
-            "This build has no browser sign-in, and doesn't need one.\n\n"
+            "This build has no browser sign-in.\n\n"
             "Library, playlists, ratings and playback run through the local "
             "Music.app over Apple Events — no token, no cookie, nothing stored. "
-            "Catalog search uses Apple's public iTunes Search API (no auth).\n\n"
-            "The only feature needing a credential is adding a catalog track you "
-            "don't own yet to your library. That's opt-in via an official Apple "
-            "Developer token: `applemusic-mcp login --dev`."
+            "Catalog search uses Apple's public iTunes Search API.\n\n"
+            "Adding a catalog track you don't own yet needs either the packaged "
+            "app (which ships a MusicKit helper and asks for permission natively) "
+            "or an Apple Developer token: `applemusic-mcp login --dev`."
         )
 
     if action == "logout":
@@ -8375,24 +8521,6 @@ def _catalog_miss_play(name: str, artist: str, url: str, reveal: bool) -> str:
     # `play` needs an object specifier and an unowned catalog track has no
     # library specifier — but `selection` IS a specifier, so this reaches the
     # track with no Accessibility, no browser and no developer token.
-    # Only when nothing is playing. A deep link REPLACES what Music is doing,
-    # and it succeeds only when the wanted track is first in its collection
-    # (Music plays the collection from the start, not the ?i= selection). So
-    # attempting it mid-song risks stopping the user's music to land on the
-    # wrong track — a bad trade for a best-effort win. Idle, it costs nothing.
-    already_playing = False
-    if asc.is_available():
-        got, info = asc.get_current_track()
-        already_playing = bool(got and isinstance(info, dict) and info.get("state") == "playing")
-
-    if url and asc.is_available() and not already_playing:
-        ok, msg = asc.open_catalog_and_play_selection(url, want_name=name)
-        if ok:
-            audit_log.log_action(
-                "play_track", {"track": name, "artist": artist, "source": "deep_link_selection"}
-            )
-            return f"[Catalog] Playing: {msg}"
-
     if reveal:
         # "Reveal" meant opening a music.apple.com URL in a browser/Music.app.
         # This build never hands a URL to the OS, so report rather than open.
@@ -8411,7 +8539,7 @@ def _catalog_miss_play(name: str, artist: str, url: str, reveal: bool) -> str:
     catalog_id = _find_catalog_id_for(name, artist)
     if not catalog_id:
         return f"[Catalog] Couldn't resolve a catalog id for {label}."
-    ok, msg = _add_songs_to_library([catalog_id])
+    ok, msg = _add_songs_to_library([catalog_id], known=[(name, artist)])
     if not ok:
         return f"Error: couldn't add {label} to your library: {msg}"
     audit_log.log_action("add_to_library", {"tracks": [label], "source": "play_add_then_play"})
@@ -8421,6 +8549,8 @@ def _catalog_miss_play(name: str, artist: str, url: str, reveal: bool) -> str:
     while time.monotonic() < deadline:
         found, _ = asc.find_library_track(name, artist or "")
         if found:
+            # Now that it exists locally it can be filed for review/undo.
+            file_under_auto_playlist(name, artist or None)
             ok2, res = asc.play_track(name, artist or None)
             if ok2:
                 audit_log.log_action(

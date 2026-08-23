@@ -59,6 +59,42 @@ def _serve_connection(conn: socket.socket) -> None:
     server_main()
 
 
+def _maybe_check_for_updates(listener: socket.socket) -> None:
+    """Run the daily update check in a throwaway child, if it is due.
+
+    The helper is the only long-lived process in this design, so it is the only
+    place a "once a day" cadence means anything — but it spends its life blocked
+    in ``accept()``, so the check cannot run inline: a slow DNS lookup would
+    stall every new session behind it. Hence a fork that reports and exits.
+
+    Triggered by a client connecting rather than by a timer, which is the
+    behaviour users expect anyway: a tool nobody is running has no business
+    reaching out to the network on its own schedule.
+    """
+    from . import update_check
+
+    if update_check.disabled() or not update_check.due():
+        return
+    try:
+        pid = os.fork()
+    except OSError:
+        return
+    if pid != 0:
+        return  # parent: SIGCHLD reaping already covers this child
+    try:
+        listener.close()  # never hold the socket open past a helper restart
+    except OSError:
+        pass
+    try:
+        signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+        result = update_check.check()
+        if update_check.should_notify(result) and update_check.notify_macos(result):
+            update_check.mark_notified(result)
+    except Exception:  # noqa: BLE001 - an update check must never affect the helper
+        pass
+    os._exit(0)
+
+
 def _reap(*_args) -> None:
     """Collect finished children so sessions don't accumulate as zombies."""
     try:
@@ -121,6 +157,7 @@ def main() -> int:
                     os._exit(1)
                 os._exit(0)
             conn.close()  # parent keeps only the listener
+            _maybe_check_for_updates(listener)
     finally:
         try:
             listener.close()
