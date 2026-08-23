@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import sys
 
@@ -167,7 +168,7 @@ def test_pages_are_short_enough_to_read():
 
 
 def test_the_splash_is_titled_for_what_the_app_does():
-    assert app_setup._build_plan()["pages"][0]["title"] == "Control Apple Music"
+    assert app_setup._build_plan()["pages"][0]["title"] == "Control Apple Music with AI"
 
 
 def test_the_permission_page_states_the_limit_and_how_to_undo_it():
@@ -326,3 +327,75 @@ def test_examples_are_things_a_person_would_actually_say():
             assert len(example) <= 60, f"too long to read at a glance: {example!r}"
             assert not example.endswith("."), f"not a sentence to read aloud: {example!r}"
             assert "MCP" not in example and "server" not in example.lower()
+
+
+# --- naming ----------------------------------------------------------------------
+
+
+def test_the_product_is_never_presented_as_apples():
+    """It appears in a client's server list beside names the user does trust,
+    and asks for a permission dialog with its name in it. Anywhere the product
+    is named to a user, that name says Unofficial."""
+    plan = app_setup._build_plan()
+    haystack = [plan["title"]] + [
+        f"{p.get('title','')} {prose(p)}" for p in plan["pages"]
+    ]
+    for text in haystack:
+        for match in re.finditer(r"Apple Music MCP", text):
+            start = max(0, match.start() - 12)
+            assert "Unofficial" in text[start:match.start()], f"bare name in: {text[:80]!r}"
+
+
+def test_the_server_identifies_itself_as_unofficial():
+    from applemusic_mcp import server
+
+    assert server.SERVER_NAME == "Unofficial Apple Music MCP"
+    assert server.mcp.name == server.SERVER_NAME
+
+
+def test_the_server_offers_its_icon_to_clients():
+    """Clients that show an icon beside a server should show ours."""
+    from applemusic_mcp import icon, server
+
+    icons = getattr(server.mcp._mcp_server, "icons", None)
+    assert icons, "no icon advertised"
+    assert icons[0].mimeType == "image/png"
+    assert icons[0].src.startswith("data:image/png;base64,")
+    assert icon.DATA_URI == icons[0].src
+
+
+def test_the_embedded_icon_is_a_real_png():
+    import base64
+
+    from applemusic_mcp import icon
+
+    raw = base64.b64decode(icon.PNG_BASE64)
+    assert raw[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG"
+    assert len(raw) < 200_000, "too large to send on every handshake"
+
+
+# --- links -----------------------------------------------------------------------
+
+
+def test_no_link_is_shown_when_none_is_configured(monkeypatch):
+    """A placeholder URL is worse than no link."""
+    monkeypatch.setattr(app_setup, "YOUTUBE_URL", "")
+    assert find("summary")["links"] == []
+
+
+def test_a_configured_link_appears_on_the_last_page(monkeypatch):
+    monkeypatch.setattr(app_setup, "YOUTUBE_URL", "https://www.youtube.com/@someone")
+    links = find("summary")["links"]
+    assert len(links) == 1
+    assert links[0]["url"] == "https://www.youtube.com/@someone"
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    ["http://insecure.example", "file:///etc/passwd", "javascript:alert(1)", "not a url"],
+)
+def test_only_https_links_are_offered(monkeypatch, hostile):
+    """The window opens these in a browser, so the scheme is checked on both
+    sides -- here, and again in the window itself."""
+    monkeypatch.setattr(app_setup, "YOUTUBE_URL", hostile)
+    assert find("summary")["links"] == []

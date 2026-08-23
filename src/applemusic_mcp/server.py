@@ -907,10 +907,54 @@ def get_storefront() -> str:
 # and reports the mcp library's own version there instead (a client would show
 # "Apple Music 1.25.0"); 2.x accepts one but leaves it blank if unset. Pass it
 # where it is supported.
-try:
-    mcp = FastMCP("Apple Music", version=_pkg_version)
-except TypeError:  # mcp 1.x
-    mcp = FastMCP("Apple Music")
+#
+# The name says "Unofficial" because this is not Apple software and must never
+# be mistaken for it: it appears in the client's server list, right next to
+# names the user does trust.
+SERVER_NAME = "Unofficial Apple Music MCP"
+WEBSITE_URL = "https://github.com/jaminben/secure-applemusic-mcp-for-osx"
+
+
+def _identity() -> dict:
+    """Optional identity fields, for the SDK versions that accept them."""
+    extra: dict = {"website_url": WEBSITE_URL}
+    try:
+        from mcp.types import Icon
+
+        from . import icon as icon_data
+
+        extra["icons"] = [
+            Icon(
+                src=icon_data.DATA_URI,
+                mimeType=icon_data.MIME_TYPE,
+                sizes=[icon_data.SIZE],
+            )
+        ]
+    except Exception:  # noqa: BLE001 - an icon is decoration, never a failure
+        pass
+    return extra
+
+
+def _build_server():
+    """Construct the server, degrading through what this SDK supports.
+
+    Older SDKs accept neither the identity fields nor a version, and passing an
+    unknown keyword is a TypeError rather than something ignorable.
+    """
+    for attempt in (
+        {"version": _pkg_version, **_identity()},
+        {**_identity()},
+        {"version": _pkg_version},
+        {},
+    ):
+        try:
+            return FastMCP(SERVER_NAME, **attempt)
+        except TypeError:
+            continue
+    return FastMCP(SERVER_NAME)
+
+
+mcp = _build_server()
 
 
 # ============ MCP RESOURCES ============

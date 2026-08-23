@@ -53,7 +53,7 @@ cat > "${APP}/Contents/Info.plist" <<PLIST
     <!-- Shown in the Apple Music permission prompt. Required: without it the
          request is denied rather than shown. -->
     <key>NSAppleMusicUsageDescription</key>
-    <string>Adds songs you ask for to your Apple Music library.</string>
+    <string>Adds the songs you ask for to your Apple Music library.</string>
 </dict>
 </plist>
 PLIST

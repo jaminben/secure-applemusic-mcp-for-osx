@@ -367,12 +367,12 @@ def notify_macos(result: dict) -> bool:
 
     adv = result.get("advisory")
     if adv:
-        title = f"Apple Music MCP — {str(adv.get('severity', '')).upper()} security update"
+        title = f"Unofficial Apple Music MCP — {str(adv.get('severity', '')).upper()} security update"
         body = adv.get("summary") or "A published advisory affects your installed version."
         if adv.get("patched"):
             body = f"{body} Fixed in {adv['patched']}."
     elif result.get("update_available"):
-        title = "Apple Music MCP — update available"
+        title = "Unofficial Apple Music MCP — update available"
         body = f"Version {result['latest']} is out (you have {result['current']})."
     else:
         return False

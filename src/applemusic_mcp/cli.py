@@ -158,7 +158,7 @@ def cmd_status(args):
     from .auth import developer_token_info, has_user_token
 
     config_dir = get_config_dir()
-    print("Apple Music MCP status")
+    print("Unofficial Apple Music MCP status")
     print("=" * 40)
     print(f"Config: {config_dir}")
 

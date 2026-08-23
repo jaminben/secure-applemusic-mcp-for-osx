@@ -1,4 +1,4 @@
-"""First-run setup for the standalone AppleMusicMCP.app.
+"""First-run setup for the standalone app.
 
 Runs when someone double-clicks the app. Three jobs, in this order:
 
@@ -31,6 +31,9 @@ from typing import Optional
 from . import clients, ipc, musickit, setup_ui
 
 APP_NAME = "AppleMusicMCP"
+# Tips-and-tricks video channel, shown on the last page of setup. Empty means
+# no link is shown at all -- a placeholder URL is worse than none.
+YOUTUBE_URL = ""
 BUNDLE_ID = ipc.BUNDLE_ID
 
 CLAUDE_CONFIG = (
@@ -53,7 +56,7 @@ def _as_applescript_string(value: str) -> str:
     return json.dumps(str(value), ensure_ascii=False)
 
 
-def _dialog(text: str, title: str = "Apple Music MCP", buttons=("OK",), default: int = 1) -> str:
+def _dialog(text: str, title: str = "Unofficial Apple Music MCP", buttons=("OK",), default: int = 1) -> str:
     """Show a native dialog and return the button pressed (or "" if unavailable).
 
     Uses plain ``display dialog``, which runs in osascript's own context and
@@ -86,7 +89,7 @@ def _dialog(text: str, title: str = "Apple Music MCP", buttons=("OK",), default:
     return ""
 
 
-def _choose(prompt: str, items: list[str], title: str = "Apple Music MCP") -> "Optional[list[str]]":
+def _choose(prompt: str, items: list[str], title: str = "Unofficial Apple Music MCP") -> "Optional[list[str]]":
     """Native multi-select list. Returns the chosen labels, or None if cancelled.
 
     A checklist rather than one dialog per client: the consent that matters is
@@ -351,7 +354,7 @@ def _confirm(text: str, ok_label: str) -> bool:
 
 
 _INTRO = (
-    "Apple Music MCP setup\n\n"
+    "Unofficial Apple Music MCP setup\n\n"
     "This lets Claude control the Music app on this Mac.\n\n"
     "There are three steps, and each one asks before it does anything:\n\n"
     "  1. Install a background helper (starts at login)\n"
@@ -468,12 +471,12 @@ def _build_plan() -> dict:
     optional = _musickit_page()
 
     return {
-        "title": "Apple Music MCP Setup",
+        "title": "Unofficial Apple Music MCP",
         "icon": setup_ui.icon_path(),
         "pages": [
             {
                 "id": "splash",
-                "title": "Control Apple Music",
+                "title": "Control Apple Music with AI",
                 "body": (
                     "Ask your AI assistant to put music on — in your own words."
                 ),
@@ -536,7 +539,8 @@ def _build_plan() -> dict:
                 "id": "permission",
                 "title": "Allow control of Music",
                 "body": (
-                    "macOS will ask whether this app can control Music. "
+                    "macOS will ask whether Unofficial Apple Music MCP can "
+                    "control Music. "
                     "Choose OK, and you'll be able to say things like:"
                 ),
                 "examples": [
@@ -565,6 +569,11 @@ def _build_plan() -> dict:
                     "new connection.\n\n"
                     "You can change these permissions any time in System "
                     "Settings > Privacy & Security."
+                ),
+                "links": (
+                    [{"label": "Tips and tricks on YouTube", "url": YOUTUBE_URL}]
+                    if YOUTUBE_URL.startswith("https://")
+                    else []
                 ),
                 "next": "Done",
             },

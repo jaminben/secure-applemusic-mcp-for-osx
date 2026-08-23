@@ -323,6 +323,8 @@ def save_user_token(token: str) -> None:
 
 def create_auth_html(developer_token: str, port: int) -> str:
     """Generate the HTML for browser-based authorization with auto-submit."""
+    from . import __version__ as version
+
     return f"""<!DOCTYPE html>
 <html>
 <head>
@@ -382,7 +384,7 @@ def create_auth_html(developer_token: str, port: int) -> str:
             try {{
                 await MusicKit.configure({{
                     developerToken: developerToken,
-                    app: {{ name: 'Apple Music MCP Server', build: '0.16.0' }}
+                    app: {{ name: 'Unofficial Apple Music MCP', build: '{version}' }}
                 }});
                 document.getElementById('status').innerHTML = '<p class="success">MusicKit loaded. Click the button to authorize.</p>';
             }} catch (err) {{

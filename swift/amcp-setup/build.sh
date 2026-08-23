@@ -38,8 +38,8 @@ cat > "${APP}/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key><string>${BUNDLE_ID}</string>
-    <key>CFBundleName</key><string>Apple Music MCP Setup</string>
-    <key>CFBundleDisplayName</key><string>Apple Music MCP Setup</string>
+    <key>CFBundleName</key><string>Unofficial Apple Music MCP</string>
+    <key>CFBundleDisplayName</key><string>Unofficial Apple Music MCP</string>
     <key>CFBundleExecutable</key><string>AMCPSetup</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>1.0</string>

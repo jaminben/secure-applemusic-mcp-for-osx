@@ -167,8 +167,8 @@ cat > "${APP}/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key><string>${BUNDLE_ID}</string>
-    <key>CFBundleName</key><string>${APP_NAME}</string>
-    <key>CFBundleDisplayName</key><string>Apple Music MCP</string>
+    <key>CFBundleName</key><string>Unofficial Apple Music MCP</string>
+    <key>CFBundleDisplayName</key><string>Unofficial Apple Music MCP</string>
     <key>CFBundleExecutable</key><string>${APP_NAME}</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>${VERSION}</string>
@@ -179,7 +179,7 @@ cat > "${APP}/Contents/Info.plist" <<PLIST
     <key>LSUIElement</key><true/>
     <!-- Shown verbatim in the Automation permission prompt. -->
     <key>NSAppleEventsUsageDescription</key>
-    <string>Apple Music MCP controls Music.app to manage your library, playlists, and playback.</string>
+    <string>Lets your AI assistants play music, search your library, and build playlists.</string>
 </dict>
 </plist>
 PLIST

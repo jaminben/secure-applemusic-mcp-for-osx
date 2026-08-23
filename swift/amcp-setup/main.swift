@@ -48,6 +48,11 @@ struct Bullet: Decodable {
     var iconPath: String?
 }
 
+struct Link: Decodable {
+    var label: String
+    var url: String
+}
+
 struct Page: Decodable {
     var id: String
     var title: String
@@ -61,6 +66,7 @@ struct Page: Decodable {
     /// The quieter half: caveats, limits, how to undo it. Set below the
     /// examples in secondary text, so the page leads with what you get.
     var footer: String?
+    var links: [Link]?
     /// Button that performs this page's work. Absent on pages that only read.
     var action: String?
     /// Button that moves on once the work is done (or immediately, if none).
@@ -249,6 +255,7 @@ final class WizardController: NSObject, NSWindowDelegate {
     private var nextButton: NSButton?
     private var spinner: NSProgressIndicator?
     private var skipButton: NSButton?
+    private var openableLinks: [ObjectIdentifier: URL] = [:]
     private var resultStack: NSStackView?
     private var ranCurrentPage = false
 
@@ -278,6 +285,7 @@ final class WizardController: NSObject, NSWindowDelegate {
 
     private func render() {
         checkboxes = []
+        openableLinks = [:]
         actionButton = nil
         nextButton = nil
         skipButton = nil
@@ -340,6 +348,13 @@ final class WizardController: NSObject, NSWindowDelegate {
             if index == 0 { label.alignment = .center }
             body.addArrangedSubview(label)
             body.setCustomSpacing(Metrics.group, after: label)
+        }
+
+        for link in page.links ?? [] {
+            if let view = makeLink(link) {
+                body.addArrangedSubview(view)
+                body.setCustomSpacing(Metrics.related, after: view)
+            }
         }
 
         for bullet in page.bullets ?? [] {
@@ -433,6 +448,35 @@ final class WizardController: NSObject, NSWindowDelegate {
                 lessThanOrEqualToConstant: Metrics.contentWidth),
         ])
         return bubble
+    }
+
+    /// A text link that opens in the browser.
+    ///
+    /// https only, and validated here rather than trusted: the plan arrives on
+    /// stdin, and a process that opens whatever URL it is handed is a more
+    /// useful thing to compromise than one that does not.
+    private func makeLink(_ link: Link) -> NSView? {
+        guard let url = URL(string: link.url), url.scheme == "https" else { return nil }
+
+        let button = NSButton(title: link.label, target: self, action: #selector(openLink(_:)))
+        button.bezelStyle = .inline
+        button.isBordered = false
+        button.contentTintColor = .linkColor
+        button.toolTip = link.url
+        button.attributedTitle = NSAttributedString(
+            string: link.label,
+            attributes: [
+                .foregroundColor: NSColor.linkColor,
+                .underlineStyle: NSUnderlineStyle.single.rawValue,
+                .font: NSFont.preferredFont(forTextStyle: .body),
+            ])
+        openableLinks[ObjectIdentifier(button)] = url
+        return button
+    }
+
+    @objc private func openLink(_ sender: NSButton) {
+        guard let url = openableLinks[ObjectIdentifier(sender)] else { return }
+        NSWorkspace.shared.open(url)
     }
 
     private func makeBullet(_ bullet: Bullet) -> NSView {
