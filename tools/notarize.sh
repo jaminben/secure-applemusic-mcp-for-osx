@@ -21,8 +21,11 @@
 #
 #        xcrun notarytool store-credentials amcp-notary \
 #          --apple-id you@example.com \
-#          --team-id TEAMID \
+#          --team-id <YOUR-TEAM-ID> \
 #          --password <app-specific-password>
+#
+#      Your Team ID is in the signing certificate; this script prints the exact
+#      command with it filled in if the credentials are missing.
 #
 # Then:  tools/build-app.sh --sign "Developer ID Application: ..."
 #        tools/notarize.sh
@@ -82,6 +85,12 @@ codesign --verify --deep --strict "$APP" || {
 }
 echo "    Developer ID, hardened runtime, secure timestamp, signature verifies"
 
+# Read the Team ID off the certificate instead of hardcoding it: it identifies
+# the developer account and does not belong in the repository (a test enforces
+# that), and deriving it means this script works for anyone who forks it.
+TEAM_ID="$(sed -n 's/.*Authority=Developer ID Application: .*(\([A-Z0-9]\{10\}\)).*/\1/p' <<<"$info" | head -1)"
+: "${TEAM_ID:=<YOUR-TEAM-ID>}"
+
 if ! xcrun notarytool history --keychain-profile "$PROFILE" >/dev/null 2>&1; then
   cat >&2 <<MSG
 
@@ -92,7 +101,7 @@ Security -> App-Specific Passwords), then run:
 
   xcrun notarytool store-credentials $PROFILE \\
     --apple-id you@example.com \\
-    --team-id TEAMID \\
+    --team-id $TEAM_ID \\
     --password <app-specific-password>
 
 MSG

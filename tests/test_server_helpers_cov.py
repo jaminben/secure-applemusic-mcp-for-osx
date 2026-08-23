@@ -853,7 +853,13 @@ class TestDetectIdType:
         assert server._detect_id_type("short") == "unknown"
 
     def test_digits_too_short(self):
-        assert server._detect_id_type("12345678") == "unknown"  # 8 digits < 9 MIN
+        assert server._detect_id_type("1234567") == "unknown"  # 7 digits, below MIN
+
+    def test_eight_digits_is_a_catalog_id(self):
+        # Store-era catalog ids really are 8 digits (89285956 is "Hedwig's
+        # Theme"), so the threshold is 8, not the 10 modern ids happen to use.
+        assert server._detect_id_type("89285956") == "catalog"
+        assert server.MIN_CATALOG_ID_LENGTH == 8
 
     def test_pure_digits_12_is_catalog_not_persistent(self):
         # 12 pure digits: catalog wins (isdigit() and len >= 9) before persistent check
@@ -883,7 +889,10 @@ class TestDetectInputType:
         assert server._detect_input_type("1234567890") == server.InputType.CATALOG_ID
 
     def test_catalog_id_short(self):
-        assert server._detect_input_type("12345678") == server.InputType.NAME  # < 9 digits
+        assert server._detect_input_type("1234567") == server.InputType.NAME  # below MIN
+
+    def test_catalog_id_eight_digits(self):
+        assert server._detect_input_type("89285956") == server.InputType.CATALOG_ID
 
     def test_persistent_id(self):
         assert server._detect_input_type("ABC123DEF456") == server.InputType.PERSISTENT_ID
