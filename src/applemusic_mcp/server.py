@@ -5389,7 +5389,35 @@ def _library_recently_played(
     export: str = "none",
     full: bool = False,
 ) -> str:
-    """Get recently played tracks from your Apple Music history."""
+    """Get recently played tracks, newest first.
+
+    Music.app's own `played date` is preferred over the API. The API reports
+    what the *service* knows, and local playback through Apple Events never
+    reaches it -- so a song played minutes ago is missing while months-old
+    plays sit at the top, which makes it useless for "what did I play
+    yesterday". The API stays as the fallback for the case where there is no
+    local Music.app to ask.
+    """
+    if APPLESCRIPT_AVAILABLE:
+        ok, rows = asc.get_recently_played(limit=max(1, limit))
+        if not ok:
+            # Falling back silently would serve API data that answers a
+            # different question, with nothing to say why.
+            logger.warning("local play history unavailable, using the API: %s", rows)
+        if ok and rows:
+            track_data = [
+                {
+                    "name": r["name"],
+                    "artist": r["artist"],
+                    "album": r["album"],
+                    "played": r["played"],
+                }
+                for r in rows
+            ]
+            return format_output(track_data, format, export, full, "recently_played")
+        # Nothing locally (a fresh library, or the window held no plays):
+        # fall through rather than reporting an empty history as fact.
+
     try:
         headers = get_headers()
         all_tracks = []

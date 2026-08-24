@@ -1011,6 +1011,7 @@ class TestLibraryRecentlyPlayed:
         self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
     ):
         _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
         track = _make_api_song("Recent Song", "Recent Artist", "9999999999")
         responses.add(
             responses.GET,
@@ -1026,6 +1027,7 @@ class TestLibraryRecentlyPlayed:
         self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
     ):
         _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
         responses.add(
             responses.GET,
             "https://api.music.apple.com/v1/me/recent/played/tracks",
@@ -1041,6 +1043,7 @@ class TestLibraryRecentlyPlayed:
     ):
         """Connection-level error (not a 4xx/5xx) triggers RequestException."""
         _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
         import requests as _requests
 
         responses.add(
@@ -1057,6 +1060,7 @@ class TestLibraryRecentlyPlayed:
     ):
         """A non-200 status on the first batch means no tracks."""
         _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
         responses.add(
             responses.GET,
             "https://api.music.apple.com/v1/me/recent/played/tracks",
@@ -1070,6 +1074,7 @@ class TestLibraryRecentlyPlayed:
         self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
     ):
         _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
         batch1 = [_make_api_song(f"Song {i}", "Artist", str(1000000000 + i)) for i in range(10)]
         batch2 = [_make_api_song(f"Song {i + 10}", "Artist", str(1000000010 + i)) for i in range(5)]
         # First call returns 10, second returns 5
@@ -1089,11 +1094,58 @@ class TestLibraryRecentlyPlayed:
         assert "Song 0" in result
 
     def test_valueerror_returns_string(self, monkeypatch):
+        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
         monkeypatch.setattr(
             server, "get_headers", lambda: (_ for _ in ()).throw(ValueError("no token"))
         )
         result = server._library_recently_played(limit=10)
         assert "no token" in result
+
+    def test_prefers_local_history_over_api(self, monkeypatch):
+        """Music.app's own played dates win over the API.
+
+        The API only knows what the *service* saw, so anything played locally
+        through Apple Events is missing from it. No responses are registered
+        here: if the API were consulted the request would fail outright, which
+        is the assertion.
+        """
+        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
+        monkeypatch.setattr(
+            server.asc,
+            "get_recently_played",
+            lambda **kw: (
+                True,
+                [
+                    {
+                        "name": "Local Song",
+                        "artist": "Local Artist",
+                        "album": "Local Album",
+                        "played": "2026-08-24 16:30",
+                    }
+                ],
+            ),
+        )
+        result = server._library_recently_played(limit=10)
+        assert "Local Song" in result
+
+    @responses.activate
+    def test_falls_back_to_api_when_local_unavailable(
+        self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
+    ):
+        """No local history (no Music.app, or an empty window) still answers."""
+        _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
+        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
+        monkeypatch.setattr(
+            server.asc, "get_recently_played", lambda **kw: (False, "no playlist")
+        )
+        responses.add(
+            responses.GET,
+            "https://api.music.apple.com/v1/me/recent/played/tracks",
+            json={"data": [_make_api_song("Api Song", "Api Artist", "9999999999")]},
+            status=200,
+        )
+        result = server._library_recently_played(limit=10)
+        assert "Api Song" in result
 
 
 # ============================================================================

@@ -2595,3 +2595,84 @@ def library_diff(before: dict, after: dict) -> dict:
         result["is_clean"] = False
 
     return result
+
+
+def get_recently_played(limit: int = 25, days: int = 30) -> tuple[bool, list]:
+    """Tracks played on this Mac, most recent first.
+
+    Not the Apple Music API. ``/me/recent/played/tracks`` reports what the
+    *service* knows, and music played out of the local library through Apple
+    Events never reaches it -- so songs played minutes ago are absent while
+    months-old plays sit at the top, which makes it useless for "what did I
+    play yesterday".
+
+    Reads Music.app's own "Recently Played" playlist, which the app maintains,
+    and sorts it by ``played date`` here: the playlist's own order is not
+    chronological (today's plays arrive at the end of it). Sorting in Python
+    rather than AppleScript because AppleScript cannot sort, and a whole-library
+    ``whose played date > ...`` filter returns nothing on a cloud library.
+
+    ``days`` drops anything older than the window. Returns
+    (success, [{name, artist, album, played}]) with ``played`` an ISO-ish
+    timestamp, or (False, error).
+    """
+    if limit < 1:
+        return False, "limit must be >= 1"
+    if days < 1:
+        return False, "days must be >= 1"
+
+    script = """
+    tell application "Music"
+        set output to ""
+        try
+            set src to playlist "Recently Played"
+        on error
+            return "NOPLAYLIST"
+        end try
+        repeat with t in (every track of src)
+            try
+                set pd to played date of t
+                set tStamp to ((year of pd) as string) & "-" & ¬
+                    text -2 thru -1 of ("0" & ((month of pd) as integer as string)) & "-" & ¬
+                    text -2 thru -1 of ("0" & ((day of pd) as string)) & " " & ¬
+                    text -2 thru -1 of ("0" & ((hours of pd) as string)) & ":" & ¬
+                    text -2 thru -1 of ("0" & ((minutes of pd) as string))
+                set output to output & (name of t) & "|||" & (artist of t) & "|||" & ¬
+                    (album of t) & "|||" & tStamp & "\n"
+            on error
+                -- no played date, or unreadable metadata: not a recent play
+            end try
+        end repeat
+        return output
+    end tell
+    """
+    success, output = run_applescript(script)
+    if not success:
+        return False, output
+    if (output or "").strip() == "NOPLAYLIST":
+        return False, 'Music.app has no "Recently Played" playlist'
+
+    rows = []
+    for line in (output or "").split("\n"):
+        parts = line.split("|||")
+        if len(parts) != 4 or not parts[0].strip():
+            continue
+        rows.append(
+            {
+                "name": parts[0].strip(),
+                "artist": parts[1].strip(),
+                "album": parts[2].strip(),
+                "played": parts[3].strip(),
+            }
+        )
+
+    # Zero-padded timestamps, so a string sort is a chronological sort.
+    rows.sort(key=lambda r: r["played"], reverse=True)
+    if days:
+        import datetime
+
+        cutoff = (
+            datetime.datetime.now() - datetime.timedelta(days=days)
+        ).strftime("%Y-%m-%d %H:%M")
+        rows = [r for r in rows if r["played"] >= cutoff]
+    return True, rows[:limit]
