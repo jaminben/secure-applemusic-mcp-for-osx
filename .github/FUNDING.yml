@@ -1,0 +1,6 @@
+# GitHub reads this to put a "Sponsor" button on the repository.
+#
+# It renders the button only when the listing behind it is live, so this is
+# safe to commit before approval comes through: nothing appears until there is
+# something for it to point at, and then it appears without another commit.
+github: jaminben
