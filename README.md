@@ -1,9 +1,60 @@
-# secure-applemusic-mcp-for-osx
+# Unofficial Apple Music MCP
 
 <!-- mcp-name: io.github.jaminben/secure-applemusic-mcp-for-osx -->
 
-An MCP server for Apple Music on macOS that controls **Music.app and nothing
-else**.
+**Let Claude play your music. Download, drag, double-click — that's the install.**
+
+<p align="center">
+  <img src="docs/images/installer-welcome.png" alt="The first-run setup window: Control Apple Music with AI" width="460">
+</p>
+
+<p align="center">
+  <a href="https://github.com/jaminben/secure-applemusic-mcp-for-osx/releases/latest">
+    <b>⬇ Download for macOS (Apple Silicon)</b>
+  </a>
+  &nbsp;·&nbsp; notarized by Apple &nbsp;·&nbsp; no terminal &nbsp;·&nbsp; no developer account
+</p>
+
+---
+
+*"What was the best song of 2024 I've probably never heard?" "Play the album
+that defined 90s hip-hop." "Something like Khruangbin, but faster."*
+
+I wanted an Apple Music MCP server I could hand to a friend.
+
+Every one I looked at was built for developers. Clone a repo, run a package
+manager, hand-edit a JSON config; one wanted an Apple Developer account, a
+MusicKit key and a `.p8` file before it would play a note. That is a fair ask of
+a developer and an impossible one for everybody else — and "let my AI put music
+on" is not a developer's request.
+
+The security half is the same problem from the other side. Handing someone
+software means handing them whatever it can reach. The most capable server I
+found needs **Accessibility** for a few features: macOS's system-wide synthetic
+input, which cannot be scoped to one app. Grant it and the process can type into
+any window, click anything on screen, and read other applications' interfaces —
+and you are granting that to a program taking instructions from a model reading
+text nobody controls. Track names. Playlist titles. Whatever it just searched.
+
+So I built this one to ask for as little as macOS lets me:
+
+| It gets | It does not get |
+|---|---|
+| **AppleScript to Music.app** — one app, revocable in System Settings | Accessibility. Ever. It cannot use it |
+| **MusicKit**, so it can add songs to your library | Any browser, your cookies, your tabs |
+| **One background process**, started at login | Your terminal's permissions. Nothing on your `PATH` |
+
+That is the whole list, and it is enforced by
+[a test suite](tests/test_capability_invariants.py) that fails the build if a
+removed capability creeps back.
+
+**The limits are what make it useful.** A tool nobody can safely install helps
+nobody. Because this one asks for three specific, revocable things — and
+because the permission lands on *the app* rather than on whatever launched your
+AI client — it is something you can actually give to a person, which was the
+point.
+
+---
 
 A hardened fork of [epheterson/applemusic-mcp](https://github.com/epheterson/applemusic-mcp)
 (forked at `0acf697`). Upstream is the more capable project — cross-platform, web
