@@ -1178,6 +1178,7 @@ dependencies = [
     { name = "mcp" },
     { name = "pyjwt", extra = ["crypto"] },
     { name = "requests" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
 ]
 
 [package.optional-dependencies]
@@ -1204,6 +1205,7 @@ requires-dist = [
     { name = "requests", specifier = ">=2.31.0" },
     { name = "responses", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
+    { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0.1" },
 ]
 provides-extras = ["dev"]
 

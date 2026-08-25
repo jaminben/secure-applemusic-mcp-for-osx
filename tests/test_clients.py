@@ -373,7 +373,10 @@ def test_toml_append_preserves_everything_else(home):
     ok, _ = clients.configure(client, {"command": "/a/b", "args": ["shim"]})
     assert ok
 
-    import tomllib
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10
+        import tomli as tomllib
 
     text = client.config.read_text()
     data = tomllib.loads(text)
@@ -386,7 +389,10 @@ def test_toml_append_preserves_everything_else(home):
 def test_toml_update_replaces_rather_than_duplicating(home):
     """Two tables with the same name is a TOML parse error, so a naive append
     on the second run would corrupt the file."""
-    import tomllib
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10
+        import tomli as tomllib
 
     client = _codex(home)
     clients.configure(client, {"command": "/first", "args": ["shim"]})
@@ -398,7 +404,10 @@ def test_toml_update_replaces_rather_than_duplicating(home):
 
 def test_toml_replacement_keeps_the_following_table(home):
     """The span to replace ends at the next table header, not at end of file."""
-    import tomllib
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10
+        import tomli as tomllib
 
     client = _codex(home)
     client.config.write_text(
@@ -442,7 +451,10 @@ def test_a_new_toml_config_is_private(home):
 
 def test_toml_append_to_a_file_without_a_trailing_newline(home):
     """Appending directly onto the last line would fuse our header onto it."""
-    import tomllib
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10
+        import tomli as tomllib
 
     client = _codex(home)
     client.config.write_text('model = "gpt-5"', encoding="utf-8")
@@ -458,7 +470,10 @@ def test_toml_append_to_a_file_without_a_trailing_newline(home):
 )
 def test_toml_strings_round_trip_hostile_paths(home, value):
     """A path is not ours to sanitise -- it has to survive verbatim."""
-    import tomllib
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10
+        import tomli as tomllib
 
     client = _codex(home)
     clients.configure(client, {"command": value, "args": ["shim"]})
@@ -581,7 +596,10 @@ def test_json_migration_runs_even_when_new_entry_already_correct(home):
 
 
 def test_toml_rename_drops_the_superseded_table(home):
-    import tomllib
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10
+        import tomli as tomllib
 
     client = _codex(home)
     client.config.parent.mkdir(parents=True, exist_ok=True)

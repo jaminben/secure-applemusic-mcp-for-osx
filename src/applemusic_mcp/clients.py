@@ -459,7 +459,14 @@ def configure(
 
 def _configure_toml(client: Client, entry: dict, path: Path) -> tuple[bool, str]:
     """The Codex branch of configure(). Same guarantees, different syntax."""
-    import tomllib
+    # tomllib is stdlib only from 3.11. This package claims >=3.10, so on 3.10
+    # this import used to raise ModuleNotFoundError and take the whole Codex
+    # branch down -- a crash for a supported interpreter, invisible because CI
+    # had never run. tomli is the same parser, and is only pulled in there.
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # pragma: no cover - only on Python 3.10
+        import tomli as tomllib
 
     raw = ""
     if path.exists():
