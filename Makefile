@@ -2,7 +2,7 @@
 # no venv activated. Override for a specific interpreter:  PY="python3.12" make test
 PY ?= uv run python
 
-.PHONY: help test test-all preflight preflight-ui invariants app notarize release clean-dist dev dev-stop reset
+.PHONY: help test test-all preflight preflight-ui invariants app notarize release publish-release clean-dist dev dev-stop reset
 
 # Needed to name the release zip the way the README tells people to expect it.
 VERSION := $(shell sed -nE 's/^version = "(.*)"/\1/p' pyproject.toml | head -1)
@@ -22,6 +22,7 @@ help:
 	@echo "make app          - build the standalone UnofficialAppleMusicMCP.app"
 	@echo "make notarize     - submit the built app to Apple, staple the ticket, re-zip"
 	@echo "make reset        - wipe this Mac back to a first-run machine (backs up creds)"
+	@echo "make publish-release - attach the notarized .app to its GitHub Release"
 	@echo "make release      - invariants + tests + wheel/sdist + signed, NOTARIZED .app + checksums"
 	@echo ""
 	@echo "  SIGN_ID=\"My Cert\" make app     # sign the bundle (recommended: TCC keys on it)"
@@ -80,6 +81,16 @@ notarize:
 # ~/.config first and refuses to continue unless the backup verifies.
 reset:
 	./scripts/reset-install.sh
+
+# Attach the notarized app to its GitHub Release. Separate from `release` on
+# purpose: building is local and repeatable, publishing is outward-facing and
+# not undoable, so it should be a decision rather than a side effect.
+#
+# This cannot live in release.yml -- that runs on ubuntu-latest, which cannot
+# build a .app, sign it with a Developer ID held in a Mac keychain, or
+# notarize. CI makes the Release; only a Mac can fill it.
+publish-release:
+	./scripts/publish-release.sh
 
 # Everything a release needs, in the order that fails cheapest first.
 release: clean-dist invariants test
