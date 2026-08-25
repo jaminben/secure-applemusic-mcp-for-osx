@@ -47,6 +47,19 @@ die()  { echo; echo "error: $*" >&2; exit 1; }
 step() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 ok()   { printf '    ✓ %s\n' "$*"; }
 
+# Pin the repository explicitly, from OUR origin remote.
+#
+# This is a GitHub fork, and `gh` resolves a bare command to the PARENT repo by
+# default. So `gh release list` here lists upstream's releases, and
+# `gh release create` would try to publish into upstream's repo -- someone
+# else's project. Discovered the hard way: a delete loop aimed at 24 of
+# epheterson's live releases and was stopped only by lacking write access.
+# Never let gh infer the repo.
+GH_REPO="$(git remote get-url origin \
+  | sed -E 's|^git@github\.com:|https://github.com/|' \
+  | sed -E 's|^https://github\.com/||; s|\.git$||')"
+[[ "$GH_REPO" == */* ]] || die "could not read owner/repo from origin: $GH_REPO"
+
 VERSION="$(sed -nE 's/^version = "(.*)"/\1/p' pyproject.toml | head -1)"
 ARCH="$(uname -m)"
 TAG="v${VERSION}"
@@ -54,7 +67,7 @@ ZIP="dist/UnofficialAppleMusicMCP-${VERSION}-macos-${ARCH}.zip"
 APP="dist/UnofficialAppleMusicMCP.app"
 
 echo "──────────────────────────────────────────────────────────"
-echo " publish-release · ${TAG} · ${ARCH}"
+echo " publish-release · ${GH_REPO} · ${TAG} · ${ARCH}"
 [[ $DRY -eq 1 ]] && echo " DRY RUN — nothing will be uploaded"
 echo "──────────────────────────────────────────────────────────"
 
@@ -147,7 +160,7 @@ ASSETS=("$ZIP")
 [[ -f "${ZIP}.sha256"     ]] && ASSETS+=("${ZIP}.sha256")
 [[ -f dist/SHA256SUMS.txt ]] && ASSETS+=("dist/SHA256SUMS.txt")
 
-if gh release view "$TAG" >/dev/null 2>&1; then
+if gh release view "$TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
   ok "release ${TAG} exists — will add/replace its assets"
   ACTION="upload"
 else
@@ -164,7 +177,7 @@ if [[ $DRY -eq 1 ]]; then
 fi
 
 if [[ "$ACTION" == "create" ]]; then
-  gh release create "$TAG" "${ASSETS[@]}" \
+  gh release create "$TAG" "${ASSETS[@]}" --repo "$GH_REPO" \
     --title "Unofficial Apple Music MCP ${TAG}" \
     --generate-notes \
     $([[ $DRAFT -eq 1 ]] && echo --draft) \
@@ -172,10 +185,10 @@ if [[ "$ACTION" == "create" ]]; then
 else
   # --clobber so re-running after a rebuild replaces the asset instead of
   # failing on a name collision and leaving the old one in place.
-  gh release upload "$TAG" "${ASSETS[@]}" --clobber
+  gh release upload "$TAG" "${ASSETS[@]}" --repo "$GH_REPO" --clobber
 fi
 
-URL="$(gh release view "$TAG" --json url --jq .url)"
+URL="$(gh release view "$TAG" --repo "$GH_REPO" --json url --jq .url)"
 echo
 echo "Published:"
 printf '    %s\n' "${ASSETS[@]}"
