@@ -335,6 +335,13 @@ def _offer_restart(configured: list) -> list[str]:
 # --- 3. Permission -----------------------------------------------------------
 
 
+# Properties AppleScript answers from the app bundle, WITHOUT sending an Apple
+# Event -- so reading one never consults TCC and never prompts. Anything used to
+# probe for permission must not be in here. Verified against osascript: each of
+# these returns exit 0 with Music not running and no authorisation granted.
+PRIMER_LOCAL_PROPS = ("name", "version", "running", "frontmost")
+
+
 def prime_permission() -> tuple[bool, str]:
     """Trigger the Automation prompt now, under THIS app's identity.
 
@@ -343,9 +350,21 @@ def prime_permission() -> tuple[bool, str]:
     than letting it surface on the first tool call, attributed to whatever
     spawned the MCP client — is the whole point of having a setup step.
 
-    The script is a read: it asks Music for its name and starts nothing.
+    The property matters. AppleScript answers an application's ``name``,
+    ``version``, ``running`` and ``frontmost`` from the app bundle itself,
+    without sending an Apple Event at all -- so ``get name`` returns "Music"
+    and exits 0 whether or not permission exists. This function used to run
+    exactly that, which meant it never triggered the prompt and always
+    reported success: setup said "Automation permission granted" on a machine
+    that had granted nothing, and the -1743 branch below was unreachable.
+
+    ``player state`` is a real property of the running application, so reading
+    it is a genuine Apple Event and does face TCC. The cost is that it launches
+    Music if it is not already open, which ``get name`` avoided -- but a check
+    that cannot fail is worth nothing, and this app exists to drive Music.
     """
-    script = 'tell application "Music" to get name'
+    # Must be a property only the running app can answer. See PRIMER_SAFE_PROPS.
+    script = 'tell application "Music" to get player state'
     try:
         res = subprocess.run(
             ["osascript", "-e", script], capture_output=True, text=True, timeout=120

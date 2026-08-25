@@ -514,3 +514,79 @@ def test_log_environment_records_the_basics(tmp_path, monkeypatch):
     assert app_setup.BUNDLE_ID in text
     assert "bundle:" in text
     assert "wizard:" in text
+
+
+# ============================================================================
+# prime_permission must send a REAL Apple Event
+# ============================================================================
+
+
+def test_primer_does_not_use_a_locally_answered_property():
+    """The regression this guard exists for.
+
+    AppleScript answers an application's name/version/running/frontmost from
+    the app bundle, with no Apple Event and therefore no TCC check. The primer
+    used `get name`, so it exited 0 on a machine with no permission at all and
+    reported success -- no prompt ever appeared, on any machine.
+    """
+    import inspect
+
+    src = inspect.getsource(app_setup.prime_permission)
+    script_line = next(
+        ln for ln in src.splitlines() if "tell application" in ln and "script =" in ln
+    )
+    for prop in app_setup.PRIMER_LOCAL_PROPS:
+        assert f"get {prop}'" not in script_line, (
+            f"primer reads '{prop}', which AppleScript answers without an "
+            "Apple Event -- it can never trigger the permission prompt"
+        )
+    assert "player state" in script_line
+
+
+def test_primer_reports_success_only_on_exit_zero(monkeypatch):
+    import subprocess as sp
+
+    monkeypatch.setattr(
+        app_setup.subprocess, "run",
+        lambda *a, **k: sp.CompletedProcess(a[0] if a else [], 0, "playing", ""),
+    )
+    ok, msg = app_setup.prime_permission()
+    assert ok and "granted" in msg.lower()
+
+
+def test_primer_recognises_the_declined_error(monkeypatch):
+    """-1743 was unreachable while the primer used `get name`."""
+    import subprocess as sp
+
+    monkeypatch.setattr(
+        app_setup.subprocess, "run",
+        lambda *a, **k: sp.CompletedProcess(
+            a[0] if a else [], 1, "",
+            "execution error: Not authorized to send Apple events to Music. (-1743)",
+        ),
+    )
+    ok, msg = app_setup.prime_permission()
+    assert not ok
+    assert "System Settings" in msg
+
+
+def test_primer_surfaces_an_unexpected_error(monkeypatch):
+    import subprocess as sp
+
+    monkeypatch.setattr(
+        app_setup.subprocess, "run",
+        lambda *a, **k: sp.CompletedProcess(a[0] if a else [], 1, "", "something else broke"),
+    )
+    ok, msg = app_setup.prime_permission()
+    assert not ok and "something else broke" in msg
+
+
+def test_primer_survives_a_timeout(monkeypatch):
+    import subprocess as sp
+
+    def boom(*a, **k):
+        raise sp.TimeoutExpired(cmd="osascript", timeout=120)
+
+    monkeypatch.setattr(app_setup.subprocess, "run", boom)
+    ok, _ = app_setup.prime_permission()
+    assert not ok
