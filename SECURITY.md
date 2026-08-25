@@ -89,7 +89,7 @@ spawned by an MCP client is usually the *client* (your terminal, or Claude Code)
 — not this server. So granting "Automation → Music" the naive way gives that
 permission to everything you run from that terminal.
 
-- **Do not grant Accessibility.** This build cannot use it; if something asks,
+- **Do not grant the Accessibility permission.** This build cannot use it; if something asks,
   something is wrong.
 - Grant **Automation → Music only**, and deny prompts for Safari, Finder, or
   System Events.

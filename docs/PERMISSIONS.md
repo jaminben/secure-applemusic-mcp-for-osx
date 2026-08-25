@@ -142,7 +142,12 @@ Caveats, stated plainly:
   — the synthetic-input code is gone and a test keeps it gone — but do not
   assume a seatbelt profile alone would stop it in some other program.
 
-## What "no Accessibility" buys you
+## What declining the Accessibility permission buys you
+
+> **On the name:** macOS's "Accessibility" permission is its app-automation
+> API — synthetic keystrokes, clicks, and reading other apps' windows. It is
+> unrelated to assistive technology. Declining it says nothing about whether
+> this app works with VoiceOver; it does.
 
 Denying Accessibility is the highest-value single control, and this build is
 designed so you never need it:

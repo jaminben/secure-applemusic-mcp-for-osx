@@ -71,7 +71,7 @@ what it requires, not in what you can ask for.
 | Now playing | ✅ | ✅ | ❌ | ✅ |
 | Play a specific track by name | ✅ | ✅ | ❌ | ✅ |
 | Play an album / playlist | ❌ | ✅ | ❌ | ✅ |
-| Play a catalog track you don't own | ❌ | ✅ (UI automation) | ❌ | ✅ (add-then-play, needs token) |
+| Play a catalog track you don't own | ❌ | ✅ (needs Accessibility) | ❌ | ✅ (MusicKit — subscription only) |
 | **Up Next queue** (list/set/jump/remove/autoplay) | ❌ | ✅ | ❌ | ❌ |
 | **AirPlay output switching** | ❌ | ✅ | ❌ | ✅ |
 | Library search | ✅ | ✅ | ✅ | ✅ |
@@ -109,9 +109,27 @@ the browser engine — Up Next lives inside the web player's MusicKit instance a
 has no AppleScript equivalent, and the web player was what made Windows and
 Linux work.
 
+**Playing the whole catalog is the one to look at.** All four rows in that
+line deserve unpacking, because it is where the projects differ most:
+
+- kennethreitz and Cifero74 cannot do it at all (Cifero74 cannot play audio).
+- Upstream can, by deep-linking Music.app and clicking play with a synthetic
+  mouse event — which is why it needs the **Accessibility** automation
+  permission, granted system-wide to every app or none.
+- This fork does it through **MusicKit**, from the signed app's own identity.
+  No Accessibility. No developer account. No credential stored anywhere. An
+  Apple Music subscriber approves one prompt and can then play anything in the
+  catalog, not just what they already own.
+
+So the differentiator is not the capability — upstream has it too. It is
+getting that capability without the system-wide permission or the developer
+account, which is the difference between software you can hand to a friend and
+software you cannot.
+
 **What needs a credential differs.** On this fork, everything above works with
-no account at all *except* adding a catalog track you don't already own, which
-needs an optional Apple Developer token. Upstream covers that case without one
+no account at all. A source checkout without the bundled MusicKit helper falls
+back to an optional Apple Developer token for catalog adds; the packaged app
+never needs one. Upstream covers that case without one
 by harvesting Apple's web-player token; Cifero74 requires a developer account
 for everything.
 
@@ -125,7 +143,7 @@ The dimension this fork exists for. "Can it, in principle, do the thing" — not
 
 | | kennethreitz | epheterson | Cifero74 | this fork |
 |---|---|---|---|---|
-| Needs **Accessibility** (system-wide synthetic input) | no | **yes**, for some paths | no | **never** |
+| Needs the **Accessibility API** (system-wide synthetic input; not assistive tech) | no | **yes**, for some paths | no | **never** |
 | Drives a **browser** (Playwright/Chrome) | no | yes | no | no |
 | Reads your **Safari cookies** | no | yes (opt-in sign-in) | no | no |
 | Hands URLs to the OS (`open`) | no | yes | no | no |

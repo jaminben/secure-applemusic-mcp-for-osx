@@ -30,23 +30,38 @@ on" is not a developer's request.
 
 The security half is the same problem from the other side. Handing someone
 software means handing them whatever it can reach. The most capable server I
-found needs **Accessibility** for a few features: macOS's system-wide synthetic
-input, which cannot be scoped to one app. Grant it and the process can type into
-any window, click anything on screen, and read other applications' interfaces —
-and you are granting that to a program taking instructions from a model reading
-text nobody controls. Track names. Playlist titles. Whatever it just searched.
+found needs the macOS permission confusingly named **Accessibility** — the
+automation API that lets one app drive another with synthetic keystrokes and
+clicks. Grant it and the process can type into any window, click anything on
+screen, and read other applications' interfaces. It cannot be scoped to a single
+app; it is all of them or none. And you would be granting that to a program
+taking its instructions from a model reading text nobody controls. Track names.
+Playlist titles. Whatever it just searched.
+
+> **To be clear about the name:** macOS's "Accessibility" permission is about
+> *controlling your Mac programmatically*, not about assistive technology. This
+> app never asks for it, and that has nothing to do with screen readers — the
+> setup window and everything in it work with VoiceOver like any other Mac app.
 
 So I built this one to ask for as little as macOS lets me:
 
 | It gets | It does not get |
 |---|---|
-| **AppleScript to Music.app** — one app, revocable in System Settings | Accessibility. Ever. It cannot use it |
+| **AppleScript to Music.app** — one app, revocable in System Settings | The Accessibility automation API. Ever. It cannot use it |
 | **MusicKit**, so it can add songs to your library | Any browser, your cookies, your tabs |
 | **One background process**, started at login | Your terminal's permissions. Nothing on your `PATH` |
 
 That is the whole list, and it is enforced by
 [a test suite](tests/test_capability_invariants.py) that fails the build if a
 removed capability creeps back.
+
+**And it still plays the whole catalog.** If you subscribe to Apple Music, you
+can ask for anything Apple has — not just what is already in your library. That
+usually costs you something: the one other server that manages it drives
+Music.app's interface with synthetic clicks, which is exactly the system-wide
+permission above. This one goes through MusicKit, signed with the app's own
+identity — one approval prompt, no developer account, and no credential stored
+anywhere on your Mac.
 
 **The limits are what make it useful.** A tool nobody can safely install helps
 nobody. Because this one asks for three specific, revocable things — and
@@ -106,7 +121,7 @@ who is never going to read its source.
 
 | | |
 |---|---|
-| **No Accessibility** | No synthetic keystrokes, no synthetic clicks, no reading other apps' windows. |
+| **No Accessibility API** | No synthetic keystrokes, no synthetic clicks, no reading other apps' windows. (The macOS automation permission — unrelated to assistive tech.) |
 | **No browser automation** | No Playwright, no Chrome driven in-process. |
 | **No reading your browser** | Never touches Safari cookies or runs JavaScript in your tabs. |
 | **No opening URLs** | URLs are *parsed*, never handed to `open` or a browser. |
@@ -129,16 +144,20 @@ Through Apple Events to Music.app — **no credential required**:
   now-playing, reveal, AirPlay device selection
 - Catalog search via Apple's **public** iTunes Search API
 
-Optional, via an official Apple Developer token (`login --dev`) — needed for one
-thing only: **adding a catalog track you don't already own** to your library.
-Also unlocks richer catalog metadata, charts, and recommendations.
+**Play anything in the Apple Music catalog** — not just what's already in your
+library — if you have a subscription. The packaged app does this through
+MusicKit, signed with its own identity: one approval prompt, no developer
+account, no credential stored. A source checkout without the bundled MusicKit
+helper falls back to an optional Apple Developer token (`login --dev`), which
+also unlocks richer catalog metadata, charts, and recommendations.
 
 ### What upstream has that this doesn't
 
 Windows/Linux support, the Chrome and Safari web players, the **Up Next queue**
 (it lives in the web player's MusicKit instance and cannot survive its removal),
-and playing catalog tracks without owning them and without a developer token
-(upstream did that with UI automation; here it's add-then-play).
+and the Up Next queue. Upstream also plays catalog tracks you don't own, but
+reaches that through UI automation and therefore the Accessibility permission;
+here the same thing runs on MusicKit instead.
 
 ## Install
 
@@ -248,8 +267,9 @@ to it), and delete `~/.config/applemusic-mcp` and `~/.cache/applemusic-mcp` if
 you want the credentials and audit log gone too. From a source install:
 `./install.sh --uninstall`.
 
-> **Never grant this Accessibility.** It cannot use it. If something asks, that's
-> a bug — please file it.
+> **Never grant this the Accessibility permission.** It cannot use it. If
+> something asks, that's a bug — please file it. (That permission is macOS's
+> app-automation API, not anything to do with assistive technology.)
 
 ## Security
 
