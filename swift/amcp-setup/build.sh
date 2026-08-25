@@ -19,10 +19,15 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 # place and every build artefact follows. Hardcoding it here was how the same
 # string ended up in five files: the launchd label, the socket path and the TCC
 # row all key on it, so a fork that misses one collides with the original.
+# NB: the script has already cd'd to its own directory above, so the repo
+# root is simply ../.. from here. Re-deriving it from ${BASH_SOURCE[0]} is
+# wrong AFTER that cd: BASH_SOURCE is whatever the caller typed, so an
+# invocation like ./swift/amcp-setup/build.sh from the repo root resolves
+# against the new cwd and points somewhere that does not exist.
 _ipc_bundle_id() {
   sed -nE 's/^BUNDLE_ID = "(.*)"/\1/p' "$1/src/applemusic_mcp/ipc.py" | head -1
 }
-BUNDLE_ID="${BUNDLE_ID:-$(_ipc_bundle_id "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)").setup}"
+BUNDLE_ID="${BUNDLE_ID:-$(_ipc_bundle_id "$(cd ../.. && pwd)").setup}"
 APP="AMCPSetup.app"
 SIGN=""
 while [[ $# -gt 0 ]]; do

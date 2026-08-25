@@ -66,23 +66,30 @@ def test_build_scripts_derive_rather_than_hardcode(script):
 
 
 def _resolve(script: str, env: "dict | None" = None) -> subprocess.CompletedProcess:
-    """Run a script's own derivation with a REAL BASH_SOURCE.
+    """Run a script's derivation exactly the way `make` invokes the script.
 
-    BASH_SOURCE cannot be faked through `bash -c` -- assigning to it leaves it
-    empty, `dirname ""` becomes `.`, and the snippet then reads a path relative
-    to the test runner's cwd instead of the script's own directory. That looked
-    like a broken derivation when the derivation was fine. So write the snippet
-    to a real file beside the script and execute it.
+    Two things have to be reproduced, and an earlier version of this helper
+    reproduced neither -- so it passed green while `make release` failed:
+
+    1. The RELATIVE path. Every script is called as ./swift/.../build.sh from
+       the repo root, so ${BASH_SOURCE[0]} holds that relative string.
+    2. The script's own `cd` to its directory, which happens BEFORE the
+       derivation. Re-resolving BASH_SOURCE after that cd points at a path that
+       does not exist -- which is the bug this now catches.
+
+    So: take the whole prologue up to the assignment (cd included), write it at
+    the same path shape, and invoke it relatively with cwd at the repo root.
     """
     path = ROOT / script
     body = path.read_text(encoding="utf-8")
-    start = body.index("_ipc_bundle_id() {")
-    end = body.index("\n", body.index('BUNDLE_ID="${BUNDLE_ID:-', start))
+    end = body.index("\n", body.index('BUNDLE_ID="${BUNDLE_ID:-'))
     probe = path.parent / ".bundle-id-probe.sh"
-    probe.write_text(body[start:end] + '\nprintf "%s" "$BUNDLE_ID"\n', encoding="utf-8")
+    probe.write_text(body[:end] + '\nprintf "%s" "$BUNDLE_ID"\n', encoding="utf-8")
+    rel = probe.relative_to(ROOT).as_posix()
     try:
         return subprocess.run(
-            ["bash", str(probe)], capture_output=True, text=True, timeout=30, env=env
+            ["bash", f"./{rel}"], capture_output=True, text=True, timeout=30,
+            cwd=ROOT, env=env,
         )
     finally:
         probe.unlink(missing_ok=True)
