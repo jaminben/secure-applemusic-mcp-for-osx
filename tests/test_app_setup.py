@@ -423,3 +423,94 @@ def test_a_terminal_client_is_reported_never_restarted(monkeypatch):
     lines = app_setup._offer_restart([cc])
     assert quit_calls == [], "never kill the user's terminal session"
     assert any("Restart your Claude Code session" in line for line in lines)
+
+
+# ============================================================================
+# Setup logging and environment diagnostics
+# ============================================================================
+
+
+def test_log_writes_to_a_file_not_only_stderr(tmp_path, monkeypatch):
+    """Double-clicked, stderr goes nowhere the user can reach."""
+    log_dir = tmp_path / "Logs"
+    monkeypatch.setattr(app_setup, "LOG_DIR", log_dir)
+    monkeypatch.setattr(app_setup, "SETUP_LOG", log_dir / "setup.log")
+    app_setup._log("hello")
+    assert (log_dir / "setup.log").exists()
+    assert "hello" in (log_dir / "setup.log").read_text()
+
+
+def test_log_appends_across_runs(tmp_path, monkeypatch):
+    """A second run after a failed first is the history worth keeping."""
+    log_dir = tmp_path / "Logs"
+    monkeypatch.setattr(app_setup, "LOG_DIR", log_dir)
+    monkeypatch.setattr(app_setup, "SETUP_LOG", log_dir / "setup.log")
+    app_setup._log("first")
+    app_setup._log("second")
+    text = (log_dir / "setup.log").read_text()
+    assert "first" in text and "second" in text
+
+
+def test_log_survives_an_unwritable_directory(tmp_path, monkeypatch, capsys):
+    """Setup must not die because logging failed."""
+    blocked = tmp_path / "nope"
+    blocked.write_text("I am a file, not a directory")
+    monkeypatch.setattr(app_setup, "LOG_DIR", blocked)
+    monkeypatch.setattr(app_setup, "SETUP_LOG", blocked / "setup.log")
+    app_setup._log("still fine")          # must not raise
+    assert "still fine" in capsys.readouterr().err
+
+
+def test_log_splits_multiline_messages(tmp_path, monkeypatch):
+    """The summary is written as one multi-line blob; stamp every line."""
+    log_dir = tmp_path / "Logs"
+    monkeypatch.setattr(app_setup, "LOG_DIR", log_dir)
+    monkeypatch.setattr(app_setup, "SETUP_LOG", log_dir / "setup.log")
+    app_setup._log("one\ntwo")
+    lines = [ln for ln in (log_dir / "setup.log").read_text().splitlines() if ln.strip()]
+    assert len(lines) == 2
+    assert all(ln[:4].isdigit() for ln in lines)
+
+
+def test_is_translocated_detects_the_randomized_mount(tmp_path):
+    """A quarantined app opened from Downloads runs from a path that vanishes."""
+    from pathlib import Path
+
+    assert app_setup.is_translocated(
+        Path("/private/var/folders/ab/AppTranslocation/DEAD-BEEF/d/AppleMusicMCP.app")
+    )
+    assert not app_setup.is_translocated(Path("/Applications/AppleMusicMCP.app"))
+    assert not app_setup.is_translocated(tmp_path / "AppleMusicMCP.app")
+
+
+def test_log_environment_warns_when_translocated(tmp_path, monkeypatch):
+    """The warning is the whole point: it names the fix, in the log."""
+    log_dir = tmp_path / "Logs"
+    monkeypatch.setattr(app_setup, "LOG_DIR", log_dir)
+    monkeypatch.setattr(app_setup, "SETUP_LOG", log_dir / "setup.log")
+    monkeypatch.setattr(
+        app_setup,
+        "app_bundle_path",
+        lambda: __import__("pathlib").Path(
+            "/private/var/folders/ab/AppTranslocation/X/d/AppleMusicMCP.app"
+        ),
+    )
+    app_setup._log_environment()
+    text = (log_dir / "setup.log").read_text()
+    assert "translocated" in text
+    assert "/Applications" in text
+
+
+def test_log_environment_records_the_basics(tmp_path, monkeypatch):
+    log_dir = tmp_path / "Logs"
+    monkeypatch.setattr(app_setup, "LOG_DIR", log_dir)
+    monkeypatch.setattr(app_setup, "SETUP_LOG", log_dir / "setup.log")
+    monkeypatch.setattr(
+        app_setup, "app_bundle_path",
+        lambda: __import__("pathlib").Path("/Applications/AppleMusicMCP.app"),
+    )
+    app_setup._log_environment()
+    text = (log_dir / "setup.log").read_text()
+    assert app_setup.BUNDLE_ID in text
+    assert "bundle:" in text
+    assert "wizard:" in text

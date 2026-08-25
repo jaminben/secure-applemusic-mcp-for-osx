@@ -935,23 +935,39 @@ def _identity() -> dict:
     return extra
 
 
+def _set_version(mcp) -> None:
+    """Advertise OUR version, not the SDK's.
+
+    FastMCP takes no ``version`` keyword in any SDK we support -- passing one
+    is a TypeError. The handshake reads the version off the low-level server,
+    and when that is None the SDK substitutes its own. So a server that never
+    sets it reports the MCP SDK's version as its own: a dependency's number,
+    wrong today and drifting on every SDK bump. Set it where it is read.
+    """
+    try:
+        mcp._mcp_server.version = _pkg_version
+    except Exception:  # noqa: BLE001 - a version is metadata, never a failure
+        pass
+
+
 def _build_server():
     """Construct the server, degrading through what this SDK supports.
 
-    Older SDKs accept neither the identity fields nor a version, and passing an
-    unknown keyword is a TypeError rather than something ignorable.
+    Older SDKs accept none of the identity fields, and passing an unknown
+    keyword is a TypeError rather than something ignorable. Version is not in
+    the ladder because no SDK accepts it as a keyword -- see _set_version.
     """
-    for attempt in (
-        {"version": _pkg_version, **_identity()},
-        {**_identity()},
-        {"version": _pkg_version},
-        {},
-    ):
+    mcp = None
+    for attempt in ({**_identity()}, {}):
         try:
-            return FastMCP(SERVER_NAME, **attempt)
+            mcp = FastMCP(SERVER_NAME, **attempt)
+            break
         except TypeError:
             continue
-    return FastMCP(SERVER_NAME)
+    if mcp is None:
+        mcp = FastMCP(SERVER_NAME)
+    _set_version(mcp)
+    return mcp
 
 
 mcp = _build_server()

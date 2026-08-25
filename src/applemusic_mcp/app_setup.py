@@ -28,7 +28,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from . import clients, ipc, musickit, setup_ui
+from . import __version__, clients, ipc, musickit, setup_ui
 
 APP_NAME = "AppleMusicMCP"
 # Tips-and-tricks video channel, shown on the last page of setup. Empty means
@@ -124,8 +124,31 @@ def _choose(prompt: str, items: list[str], title: str = "Unofficial Apple Music 
     return chosen
 
 
+SETUP_LOG = LOG_DIR / "setup.log"
+
+
 def _log(msg: str) -> None:
+    """Record a setup step to stderr AND to a file.
+
+    stderr alone is unrecoverable in the case that matters. Double-clicking
+    means LaunchServices started us, so stderr goes nowhere the user can reach
+    -- and asking them to re-run the binary from a terminal to see it is the
+    wrong advice, because that makes the terminal the responsible process and
+    the permission grant lands there instead of on the app. So the one install
+    we most need to debug is the one that leaves no trace.
+
+    Appended, not truncated: a second run after a failed first is exactly the
+    history worth keeping. Never raises -- setup must not die over logging.
+    """
     print(msg, file=sys.stderr, flush=True)
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        with SETUP_LOG.open("a", encoding="utf-8") as fh:
+            for line in str(msg).splitlines() or [""]:
+                fh.write(f"{stamp}  {line}\n")
+    except OSError:
+        pass
 
 
 # --- 1. LaunchAgent ----------------------------------------------------------
@@ -640,10 +663,50 @@ def _run_with_window() -> "Optional[int]":
     return 0
 
 
+def is_translocated(path: "Optional[Path]" = None) -> bool:
+    """Is macOS running us from a randomized read-only mount?
+
+    Gatekeeper translocates a quarantined app launched from wherever it was
+    downloaded. The bundle then lives under .../AppTranslocation/<uuid>/d/,
+    which disappears on quit -- so a LaunchAgent written now points at a path
+    that will not exist later, and the install silently half-works. Dragging
+    the app to /Applications is what avoids it, which is why the README says
+    to, and why a report of "nothing happened" needs this in the log.
+    """
+    p = str(path or app_bundle_path())
+    return "/AppTranslocation/" in p
+
+
+def _log_environment() -> None:
+    """The facts a bug report needs and a user cannot be asked to gather."""
+    bundle = app_bundle_path()
+    _log(f"--- setup {BUNDLE_ID} v{__version__}")
+    _log(f"bundle: {bundle}")
+    if is_translocated(bundle):
+        _log(
+            "WARNING: running translocated (a randomized read-only copy). "
+            "Quit, drag the app to /Applications, and open it from there."
+        )
+    elif not str(bundle).startswith("/Applications/"):
+        _log(f"note: not running from /Applications (at {bundle.parent})")
+    try:
+        quarantine = subprocess.run(
+            ["xattr", "-p", "com.apple.quarantine", str(bundle)],
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+        _log(f"quarantine: {quarantine or 'none'}")
+    except (OSError, subprocess.SubprocessError):
+        pass
+    _log(f"wizard: {'yes' if setup_ui.window_path() else 'no (dialog fallback)'}")
+    _log(f"musickit helper: {'yes' if musickit.is_available() else 'no'}")
+
+
 def main() -> int:
     if sys.platform != "darwin":
         _log("macOS only.")
         return 1
+
+    _log_environment()
 
     code = _run_with_window()
     if code is not None:
