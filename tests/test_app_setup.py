@@ -590,3 +590,68 @@ def test_primer_survives_a_timeout(monkeypatch):
     monkeypatch.setattr(app_setup.subprocess, "run", boom)
     ok, _ = app_setup.prime_permission()
     assert not ok
+
+
+# ============================================================================
+# The wizard path must leave the same trail the dialog fallback does
+# ============================================================================
+
+
+def _wizard_log(monkeypatch, tmp_path, run_wizard_impl):
+    log_dir = tmp_path / "Logs"
+    monkeypatch.setattr(app_setup, "LOG_DIR", log_dir)
+    monkeypatch.setattr(app_setup, "SETUP_LOG", log_dir / "setup.log")
+    monkeypatch.setattr(app_setup, "_build_plan", lambda: {"pages": []})
+    monkeypatch.setattr(app_setup.setup_ui, "run_wizard", run_wizard_impl)
+    app_setup._run_with_window()
+    f = log_dir / "setup.log"
+    return f.read_text() if f.exists() else ""
+
+
+def test_wizard_logs_each_step_result(monkeypatch, tmp_path):
+    """A windowed run used to record the LaunchAgent write and nothing else."""
+    monkeypatch.setattr(
+        app_setup, "_run_step", lambda page, sel: (True, ["✓ Background helper installed"])
+    )
+
+    def fake(plan, handler):
+        handler("helper", [])
+        handler("permission", [])
+        return True
+
+    text = _wizard_log(monkeypatch, tmp_path, fake)
+    assert "step helper: running" in text
+    assert "step helper: ✓ Background helper installed" in text
+    assert "step helper: ok" in text
+    assert "step permission: running" in text
+    assert "wizard finished" in text
+
+
+def test_wizard_logs_a_failed_step_distinctly(monkeypatch, tmp_path):
+    monkeypatch.setattr(app_setup, "_run_step", lambda page, sel: (False, ["✗ nope"]))
+    text = _wizard_log(monkeypatch, tmp_path, lambda plan, h: (h("permission", []), True)[1])
+    assert "step permission: FAILED" in text
+    assert "step permission: ✗ nope" in text
+
+
+def test_wizard_logs_the_client_selection(monkeypatch, tmp_path):
+    """Which clients were chosen is the other half of 'why is nothing configured'."""
+    monkeypatch.setattr(app_setup, "_run_step", lambda page, sel: (True, []))
+    text = _wizard_log(
+        monkeypatch, tmp_path,
+        lambda plan, h: (h("clients", ["claude-desktop", "cursor"]), True)[1],
+    )
+    assert "selected: claude-desktop, cursor" in text
+
+
+def test_a_step_never_reached_leaves_no_line(monkeypatch, tmp_path):
+    """'Not reached' and 'declined' must not look the same in the log."""
+    monkeypatch.setattr(app_setup, "_run_step", lambda page, sel: (True, []))
+    text = _wizard_log(monkeypatch, tmp_path, lambda plan, h: (h("helper", []), True)[1])
+    assert "step helper:" in text
+    assert "step permission:" not in text
+
+
+def test_wizard_logs_cancellation_and_fallback(monkeypatch, tmp_path):
+    assert "cancelled by user" in _wizard_log(monkeypatch, tmp_path, lambda plan, h: False)
+    assert "falling back to dialogs" in _wizard_log(monkeypatch, tmp_path, lambda plan, h: None)

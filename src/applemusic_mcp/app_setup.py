@@ -672,13 +672,34 @@ def _run_step(page: str, selected: list) -> "tuple[bool, list[str]]":
 
 
 def _run_with_window() -> "Optional[int]":
-    """The wizard. Returns an exit code, or None to fall back to dialogs."""
-    outcome = setup_ui.run_wizard(_build_plan(), _run_step)
+    """The wizard. Returns an exit code, or None to fall back to dialogs.
+
+    The dialog fallback logs its outcome in one block at the end; the wizard
+    had no equivalent, so a windowed run recorded the LaunchAgent write and
+    nothing else -- a log showing no client step beside a config that was
+    plainly written, and no way to tell whether the permission step ran, was
+    declined, or was never reached. Every step is now recorded as it happens.
+
+    A page the wizard never asks us to run leaves no line at all, which is
+    itself the signal: "not reached" and "declined" look different here.
+    """
+
+    def logged(page: str, selected: list) -> "tuple[bool, list[str]]":
+        _log(f"step {page}: running" + (f" (selected: {', '.join(selected)})" if selected else ""))
+        ok, lines = _run_step(page, selected)
+        for line in lines:
+            _log(f"step {page}: {line}")
+        _log(f"step {page}: {'ok' if ok else 'FAILED'}")
+        return ok, lines
+
+    outcome = setup_ui.run_wizard(_build_plan(), logged)
     if outcome is None:
+        _log("no wizard window; falling back to dialogs")
         return None
     if not outcome:
         _log("cancelled by user")
         return 1
+    _log("wizard finished")
     return 0
 
 
