@@ -137,7 +137,12 @@ done
 
 # --- 3. the installed apps ---------------------------------------------------
 step "[3/6] Removing installed apps"
-for app in "/Applications/AppleMusicMCP.app" "${HOME}/Applications/AppleMusicMCP-Dev.app"; do
+# Both names: the bundle was AppleMusicMCP.app before it was renamed, and an
+# older install left in /Applications would otherwise survive a "clean" wipe and
+# keep answering as the same bundle id.
+for app in "/Applications/UnofficialAppleMusicMCP.app" \
+           "/Applications/AppleMusicMCP.app" \
+           "${HOME}/Applications/AppleMusicMCP-Dev.app"; do
   if [[ -d "$app" ]]; then say "    removing ${app}"; run rm -rf "$app"
   else say "    ${app}: absent"; fi
 done
@@ -223,7 +228,8 @@ if [[ $DRY -eq 0 ]]; then
   }
   check "agents running"      "launchctl list 2>/dev/null | grep -qi 'amcp\|applemusic'"
   check "LaunchAgent plists"  "ls ${HOME}/Library/LaunchAgents 2>/dev/null | grep -qi 'amcp\|applemusic'"
-  check "/Applications app"   "[[ -d /Applications/AppleMusicMCP.app ]]"
+  check "/Applications app"   "[[ -d /Applications/UnofficialAppleMusicMCP.app ]]"
+  check "/Applications (old)"  "[[ -d /Applications/AppleMusicMCP.app ]]"
   check "dev app"             "[[ -d ${HOME}/Applications/AppleMusicMCP-Dev.app ]]"
   check "cache dir"           "[[ -d ${CACHE_DIR} ]]"
   check "setup.log"           "[[ -f ${HOME}/Library/Logs/${BUNDLE_ID}/setup.log ]]"
@@ -236,7 +242,7 @@ if [[ $DRY -eq 0 ]]; then
   fi
   say "Clean. Build with:"
   say "    tools/build-app.sh --sign \"Developer ID Application: ...\""
-  say "then open dist/AppleMusicMCP.app and read:"
+  say "then open dist/UnofficialAppleMusicMCP.app and read:"
   say "    ~/Library/Logs/${BUNDLE_ID}/setup.log"
   say
   say "Credentials restore with:  ./scripts/reset-install.sh --restore"

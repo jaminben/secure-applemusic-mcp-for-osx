@@ -30,7 +30,7 @@ from typing import Optional
 
 from . import __version__, clients, ipc, musickit, setup_ui
 
-APP_NAME = "AppleMusicMCP"
+APP_NAME = "UnofficialAppleMusicMCP"
 # Tips-and-tricks video channel, shown on the last page of setup. Empty means
 # no link is shown at all -- a placeholder URL is worse than none.
 YOUTUBE_URL = ""
@@ -428,7 +428,7 @@ _STEP_CLIENTS = (
 _STEP_PERMISSION = (
     "Step 3 of 3 — permission to control Music\n\n"
     "macOS will now show its own dialog:\n"
-    '  "AppleMusicMCP wants to control Music"\n\n'
+    '  "Unofficial Apple Music MCP wants to control Music"\n\n'
     "Click OK there to allow it. Asking now — rather than in the middle of a "
     "conversation — is what makes the permission land on this app, so you can "
     "review or revoke it in System Settings → Privacy & Security → Automation.\n\n"

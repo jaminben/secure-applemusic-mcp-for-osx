@@ -7,7 +7,7 @@ PY ?= uv run python
 # Needed to name the release zip the way the README tells people to expect it.
 VERSION := $(shell sed -nE 's/^version = "(.*)"/\1/p' pyproject.toml | head -1)
 ARCH    := $(shell uname -m)
-RELEASE_ZIP := AppleMusicMCP-$(VERSION)-macos-$(ARCH).zip
+RELEASE_ZIP := UnofficialAppleMusicMCP-$(VERSION)-macos-$(ARCH).zip
 
 help:
 	@echo "make test         - fast suite (mocked logic); what GitHub CI runs"
@@ -19,7 +19,7 @@ help:
 	@echo "make dev          - run the server from source (hot-reload dev loop)"
 	@echo "make dev-stop     - stop the dev helper"
 	@echo "make invariants   - capability invariants only (the fork's reason to exist)"
-	@echo "make app          - build the standalone AppleMusicMCP.app"
+	@echo "make app          - build the standalone UnofficialAppleMusicMCP.app"
 	@echo "make notarize     - submit the built app to Apple, staple the ticket, re-zip"
 	@echo "make reset        - wipe this Mac back to a first-run machine (backs up creds)"
 	@echo "make release      - invariants + tests + wheel/sdist + signed, NOTARIZED .app + checksums"
@@ -88,7 +88,7 @@ release: clean-dist invariants test
 	./tools/build-app.sh --zip $(if $(SIGN_ID),--sign "$(SIGN_ID)",)
 	@if [ -n "$(SIGN_ID)" ]; then \
 	  ./tools/notarize.sh; \
-	  mv -f dist/AppleMusicMCP.zip dist/$(RELEASE_ZIP); \
+	  mv -f dist/UnofficialAppleMusicMCP.zip dist/$(RELEASE_ZIP); \
 	  ( cd dist && shasum -a 256 $(RELEASE_ZIP) > $(RELEASE_ZIP).sha256 ); \
 	  echo "==> notarized, stapled, and repackaged as $(RELEASE_ZIP)"; \
 	else \

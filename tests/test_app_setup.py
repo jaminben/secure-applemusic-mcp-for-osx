@@ -25,7 +25,7 @@ pytestmark = pytest.mark.skipif(sys.platform != "darwin", reason="macOS installe
 @pytest.fixture
 def cfg(tmp_path, monkeypatch):
     """A Claude Desktop config with a pre-existing server, as a real one has."""
-    monkeypatch.setenv("APPLEMUSIC_APP_BUNDLE", str(tmp_path / "AppleMusicMCP.app"))
+    monkeypatch.setenv("APPLEMUSIC_APP_BUNDLE", str(tmp_path / "UnofficialAppleMusicMCP.app"))
     d = tmp_path / "Library" / "Application Support" / "Claude"
     d.mkdir(parents=True)
     p = d / "claude_desktop_config.json"
@@ -131,7 +131,7 @@ def test_creates_config_when_directory_exists_but_file_does_not(tmp_path, monkey
 
 def test_launch_agent_plist_is_valid_and_runs_the_helper(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("APPLEMUSIC_APP_BUNDLE", str(tmp_path / "AppleMusicMCP.app"))
+    monkeypatch.setenv("APPLEMUSIC_APP_BUNDLE", str(tmp_path / "UnofficialAppleMusicMCP.app"))
     monkeypatch.setattr(app_setup, "LAUNCH_AGENT", tmp_path / "agent.plist")
     monkeypatch.setattr(app_setup, "LOG_DIR", tmp_path / "logs")
 
@@ -141,7 +141,7 @@ def test_launch_agent_plist_is_valid_and_runs_the_helper(tmp_path, monkeypatch):
     assert data["Label"] == app_setup.BUNDLE_ID
     # The agent must launch the HELPER (the half that holds the grant).
     assert data["ProgramArguments"][1] == "helper"
-    assert data["ProgramArguments"][0].endswith("Contents/MacOS/AppleMusicMCP")
+    assert data["ProgramArguments"][0].endswith("Contents/MacOS/UnofficialAppleMusicMCP")
     assert data["RunAtLoad"] is True
     assert stat.S_IMODE((tmp_path / "logs").stat().st_mode) == 0o700
 
@@ -149,7 +149,7 @@ def test_launch_agent_plist_is_valid_and_runs_the_helper(tmp_path, monkeypatch):
 def test_bundle_path_is_derived_from_the_app(tmp_path, monkeypatch):
     monkeypatch.setenv("APPLEMUSIC_APP_BUNDLE", str(tmp_path / "Foo.app"))
     assert app_setup.app_bundle_path() == tmp_path / "Foo.app"
-    assert app_setup.helper_executable().parts[-2:] == ("MacOS", "AppleMusicMCP")
+    assert app_setup.helper_executable().parts[-2:] == ("MacOS", "UnofficialAppleMusicMCP")
 
 
 def test_permission_prime_uses_a_read_only_script():
@@ -477,10 +477,10 @@ def test_is_translocated_detects_the_randomized_mount(tmp_path):
     from pathlib import Path
 
     assert app_setup.is_translocated(
-        Path("/private/var/folders/ab/AppTranslocation/DEAD-BEEF/d/AppleMusicMCP.app")
+        Path("/private/var/folders/ab/AppTranslocation/DEAD-BEEF/d/UnofficialAppleMusicMCP.app")
     )
-    assert not app_setup.is_translocated(Path("/Applications/AppleMusicMCP.app"))
-    assert not app_setup.is_translocated(tmp_path / "AppleMusicMCP.app")
+    assert not app_setup.is_translocated(Path("/Applications/UnofficialAppleMusicMCP.app"))
+    assert not app_setup.is_translocated(tmp_path / "UnofficialAppleMusicMCP.app")
 
 
 def test_log_environment_warns_when_translocated(tmp_path, monkeypatch):
@@ -492,7 +492,7 @@ def test_log_environment_warns_when_translocated(tmp_path, monkeypatch):
         app_setup,
         "app_bundle_path",
         lambda: __import__("pathlib").Path(
-            "/private/var/folders/ab/AppTranslocation/X/d/AppleMusicMCP.app"
+            "/private/var/folders/ab/AppTranslocation/X/d/UnofficialAppleMusicMCP.app"
         ),
     )
     app_setup._log_environment()
@@ -507,7 +507,7 @@ def test_log_environment_records_the_basics(tmp_path, monkeypatch):
     monkeypatch.setattr(app_setup, "SETUP_LOG", log_dir / "setup.log")
     monkeypatch.setattr(
         app_setup, "app_bundle_path",
-        lambda: __import__("pathlib").Path("/Applications/AppleMusicMCP.app"),
+        lambda: __import__("pathlib").Path("/Applications/UnofficialAppleMusicMCP.app"),
     )
     app_setup._log_environment()
     text = (log_dir / "setup.log").read_text()

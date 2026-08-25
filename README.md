@@ -92,10 +92,10 @@ and playing catalog tracks without owning them and without a developer token
 **Requires:** macOS 12+, the Music app signed into your Apple Music account.
 Nothing else — no Python, no Homebrew, no command line.
 
-1. Download `AppleMusicMCP-<version>-macos-<arch>.zip` from
+1. Download `UnofficialAppleMusicMCP-<version>-macos-<arch>.zip` from
    [Releases](https://github.com/jaminben/secure-applemusic-mcp-for-osx/releases)
    and check it against `SHA256SUMS.txt`.
-2. Unzip and drag **AppleMusicMCP.app** to `/Applications`.
+2. Unzip and drag **UnofficialAppleMusicMCP.app** to `/Applications`.
 3. Double-click it once.
 
 Setup asks before each step, and each one can be skipped:
@@ -153,7 +153,7 @@ skips the bundle and configures the simpler (unscoped) stdio server.
 
 Two things decide whether it "just works" on their Mac.
 
-**Architecture.** The zip is built for one architecture. `AppleMusicMCP-*-arm64`
+**Architecture.** The zip is built for one architecture. `UnofficialAppleMusicMCP-*-arm64`
 is Apple Silicon (M1 and later); build `--arch x86_64` for an Intel Mac. If in
 doubt, ask them for  → About This Mac.
 
@@ -172,9 +172,9 @@ For a genuinely frictionless hand-off — no scary dialog at all — sign with a
 
 ```sh
 SIGN_ID="Developer ID Application: Your Name (TEAMID)" make app
-xcrun notarytool submit dist/AppleMusicMCP-*.zip \
+xcrun notarytool submit dist/UnofficialAppleMusicMCP-*.zip \
     --apple-id you@example.com --team-id TEAMID --wait
-xcrun stapler staple dist/AppleMusicMCP.app
+xcrun stapler staple dist/UnofficialAppleMusicMCP.app
 ```
 
 That needs a paid Apple Developer account ($99/yr). Nothing else about the app

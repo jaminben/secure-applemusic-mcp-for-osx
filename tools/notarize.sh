@@ -30,12 +30,12 @@
 # Then:  tools/build-app.sh --sign "Developer ID Application: ..."
 #        tools/notarize.sh
 #
-# Usage: tools/notarize.sh [/path/to/AppleMusicMCP.app] [--profile NAME]
+# Usage: tools/notarize.sh [/path/to/UnofficialAppleMusicMCP.app] [--profile NAME]
 
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP="${REPO}/dist/AppleMusicMCP.app"
+APP="${REPO}/dist/UnofficialAppleMusicMCP.app"
 PROFILE="amcp-notary"
 
 while [[ $# -gt 0 ]]; do

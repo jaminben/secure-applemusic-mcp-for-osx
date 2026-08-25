@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a fully standalone AppleMusicMCP.app — vendored Python included.
+# Build a fully standalone UnofficialAppleMusicMCP.app — vendored Python included.
 #
 # The result needs nothing preinstalled: no Python, no pip, no Homebrew, no
 # Xcode tools. Someone downloads the zip, drags the app to /Applications,
@@ -11,9 +11,9 @@
 #   tools/build-app.sh [--sign "Identity"] [--arch arm64|x86_64] [--out DIR] [--zip]
 #
 # Layout produced:
-#   AppleMusicMCP.app/Contents/
+#   UnofficialAppleMusicMCP.app/Contents/
 #     Info.plist
-#     MacOS/AppleMusicMCP          launcher: no args -> setup, "helper" -> helper
+#     MacOS/UnofficialAppleMusicMCP  launcher: no args -> setup, "helper" -> helper
 #     Resources/python/            relocatable CPython (python-build-standalone)
 #     Resources/lib/               this package + its dependencies
 #
@@ -22,7 +22,7 @@
 
 set -euo pipefail
 
-APP_NAME="AppleMusicMCP"
+APP_NAME="UnofficialAppleMusicMCP"
 BUNDLE_ID="io.github.jaminben.secure-applemusic-mcp"   # keep in sync with ipc.py
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="${REPO}/dist"
