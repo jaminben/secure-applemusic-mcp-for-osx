@@ -9,10 +9,14 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/jaminben/secure-applemusic-mcp-for-osx/releases/latest">
-    <b>⬇ Download for macOS (Apple Silicon)</b>
+  <a href="https://github.com/jaminben/secure-applemusic-mcp-for-osx/releases/latest/download/UnofficialAppleMusicMCP-macos-arm64.zip">
+    <b>⬇ Download the MCP server for macOS (Apple Silicon)</b>
   </a>
-  &nbsp;·&nbsp; notarized by Apple &nbsp;·&nbsp; no terminal &nbsp;·&nbsp; no developer account
+  <br>
+  <sub>
+    notarized by Apple · no terminal · no developer account ·
+    <a href="https://github.com/jaminben/secure-applemusic-mcp-for-osx/releases/latest">all downloads &amp; checksums</a>
+  </sub>
 </p>
 
 ---

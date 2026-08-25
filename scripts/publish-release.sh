@@ -156,7 +156,15 @@ fi
 # --- 3. the release ----------------------------------------------------------
 step "[3/4] Locating the release"
 
-ASSETS=("$ZIP")
+# A second copy under a version-LESS name, so
+#   /releases/latest/download/UnofficialAppleMusicMCP-macos-<arch>.zip
+# is a permanent URL. The versioned asset is what people verify against
+# SHA256SUMS.txt; this one exists purely so the README's download button does
+# not 404 the moment the version changes. Same bytes, two names.
+STABLE="dist/UnofficialAppleMusicMCP-macos-${ARCH}.zip"
+cp -f "$ZIP" "$STABLE"
+
+ASSETS=("$ZIP" "$STABLE")
 [[ -f "${ZIP}.sha256"     ]] && ASSETS+=("${ZIP}.sha256")
 [[ -f dist/SHA256SUMS.txt ]] && ASSETS+=("dist/SHA256SUMS.txt")
 
