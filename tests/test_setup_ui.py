@@ -28,6 +28,25 @@ def find(page_id: str) -> dict:
     return next(p for p in app_setup._build_plan()["pages"] if p["id"] == page_id)
 
 
+@pytest.fixture(autouse=True)
+def _deterministic_plan(monkeypatch):
+    """Pin the optional Apple Music page ON for every test in this file.
+
+    The page appears only when the signed MusicKit helper is present, and that
+    helper is a BUILD ARTEFACT -- swift/amcp-musickit/AMCPMusicKit.app is not in
+    git. So the plan had four pages on a machine where someone had run the Swift
+    build and three everywhere else, and these tests quietly asserted whichever
+    the developer happened to have. They passed locally and failed on CI and in
+    any fresh clone.
+
+    Tests should not depend on whether a build script has been run, so the
+    optional page is forced present here and its absence is covered explicitly
+    by test_plan_is_coherent_without_the_musickit_helper.
+    """
+    monkeypatch.setattr(app_setup.musickit, "is_available", lambda: True)
+    monkeypatch.setattr(app_setup.musickit, "authorization_status", lambda: "notDetermined")
+
+
 # Captured at import, before the conftest guard neutralises them.
 _REAL_WINDOW_PATH = setup_ui.window_path
 _REAL_RUN_WIZARD = setup_ui.run_wizard
@@ -399,3 +418,21 @@ def test_only_https_links_are_offered(monkeypatch, hostile):
     sides -- here, and again in the window itself."""
     monkeypatch.setattr(app_setup, "YOUTUBE_URL", hostile)
     assert find("summary")["links"] == []
+
+
+def test_plan_is_coherent_without_the_musickit_helper(monkeypatch):
+    """A build with no MusicKit helper drops that page -- and must stay whole.
+
+    This is the state of every fresh clone and of CI, so it is the state most
+    likely to be shipped untested.
+    """
+    monkeypatch.setattr(app_setup.musickit, "is_available", lambda: False)
+    plan = app_setup._build_plan()
+    ids = [p["id"] for p in plan["pages"]]
+    assert "musickit" not in ids
+    assert ids[0] == "splash" and ids[-1] == "summary"
+    # The splash previews the steps, so it must not promise one that is absent.
+    steps = [p for p in plan["pages"][1:] if p["id"] != "summary"]
+    assert len(plan["pages"][0]["bullets"]) == len(steps), (
+        "the splash lists a step the plan does not contain"
+    )

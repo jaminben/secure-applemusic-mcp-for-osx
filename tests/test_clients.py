@@ -5,11 +5,20 @@ from __future__ import annotations
 import json
 import os
 import stat
+import shutil
 import subprocess
 
 import pytest
 
 from applemusic_mcp import app_setup, clients
+
+# These compile real AppleScript, so they need osacompile. Gate on the TOOL
+# rather than on sys.platform: the point is "can this machine compile it", and
+# that keeps them running on any Mac -- including yours -- while skipping on the
+# Linux matrix instead of failing there.
+needs_osacompile = pytest.mark.skipif(
+    shutil.which("osacompile") is None, reason="needs osacompile (macOS)"
+)
 
 ENTRY = {"command": "/x/App.app/Contents/MacOS/App", "args": ["shim"]}
 
@@ -188,6 +197,7 @@ def test_gui_clients_are_restartable(home):
     "text",
     ["✓ done", "A — B", "Settings → Privacy", 'a "quoted" word', "back\\slash"],
 )
+@needs_osacompile
 def test_dialog_scripts_actually_compile(text):
     """json.dumps' default ensure_ascii=True emits \\u2713, which AppleScript
     rejects as a syntax error -- so osascript exits non-zero, _dialog returns
@@ -206,6 +216,7 @@ def test_dialog_scripts_actually_compile(text):
     assert proc.returncode == 0, f"AppleScript rejected {text!r}: {proc.stderr}"
 
 
+@needs_osacompile
 def test_every_setup_prompt_compiles():
     """The actual strings, not samples of them."""
     prompts = [

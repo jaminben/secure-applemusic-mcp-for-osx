@@ -546,11 +546,21 @@ def _build_plan() -> dict:
                         "detail": "The one permission it needs.",
                         "iconPath": "/System/Applications/Music.app",
                     },
-                    {
-                        "label": "Play anything on Apple Music",
-                        "detail": "Optional. For Apple Music subscribers.",
-                        "symbol": "sparkles",
-                    },
+                    # Only when the page it previews actually exists. The
+                    # MusicKit helper is a build artefact, so a build without it
+                    # drops that page -- and a splash that still lists the step
+                    # promises something the wizard never delivers.
+                    *(
+                        [
+                            {
+                                "label": "Play anything on Apple Music",
+                                "detail": "Optional. For Apple Music subscribers.",
+                                "symbol": "sparkles",
+                            }
+                        ]
+                        if optional
+                        else []
+                    ),
                 ],
                 "next": "Continue",
             },

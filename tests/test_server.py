@@ -10,6 +10,11 @@ import responses
 
 from applemusic_mcp import server
 
+# The playlist-add path is macOS-only in the server ("add action requires
+# macOS"), so these assert on behaviour that cannot exist on Linux. Platform
+# gate, not tool gate -- and they still run on a Mac.
+macos_only = pytest.mark.skipif(sys.platform != "darwin", reason="add path is macOS-only")
+
 
 class TestGetTokenExpirationWarning:
     """Tests for get_token_expiration_warning function."""
@@ -236,6 +241,7 @@ class TestAddToPlaylist:
     """Tests for add_to_playlist function."""
 
     @responses.activate
+    @macos_only
     def test_adds_tracks_successfully(self, mock_config_dir, mock_developer_token, mock_user_token):
         """Should add tracks and return confirmation."""
         # Setup tokens
@@ -267,6 +273,7 @@ class TestAddToPlaylist:
         assert "Added" in result
         assert "3 track" in result
 
+    @macos_only
     def test_handles_empty_track(self, mock_config_dir, mock_developer_token, mock_user_token):
         """Should return error for empty track."""
         # Setup tokens
