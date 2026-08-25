@@ -124,6 +124,16 @@ if [[ -d "$HELPER_SRC" ]]; then
   mkdir -p "${APP}/Contents/Helpers"
   ditto "$HELPER_SRC" "${APP}/Contents/Helpers/AMCPMusicKit.app"
   echo "    bundled the MusicKit helper"
+elif [[ "$SIGN_ID" == *"Developer ID"* ]]; then
+  # A Developer ID build is one you intend to ship. Shipping it without this
+  # helper silently removes catalog playback -- the feature the README leads
+  # with -- and nothing downstream notices: it builds, notarizes and runs. A
+  # note on stderr is not enough for that.
+  echo "error: no MusicKit helper at ${HELPER_SRC}" >&2
+  echo "       Shipping without it drops catalog playback, silently." >&2
+  echo "       Build it first:  swift/amcp-musickit/build.sh --sign \"$SIGN_ID\"" >&2
+  echo "       (make app / make release now do this for you)" >&2
+  exit 1
 else
   echo "    note: no MusicKit helper (swift/amcp-musickit/build.sh) — catalog add will" >&2
   echo "          need a developer token instead" >&2
@@ -136,6 +146,11 @@ if [[ -d "$SETUP_SRC" ]]; then
   mkdir -p "${APP}/Contents/Helpers"
   ditto "$SETUP_SRC" "${APP}/Contents/Helpers/AMCPSetup.app"
   echo "    bundled the setup wizard"
+elif [[ "$SIGN_ID" == *"Developer ID"* ]]; then
+  echo "error: no setup wizard at ${SETUP_SRC}" >&2
+  echo "       Shipping without it downgrades first run to plain dialogs." >&2
+  echo "       Build it first:  swift/amcp-setup/build.sh --sign \"$SIGN_ID\"" >&2
+  exit 1
 else
   echo "    note: no setup wizard (swift/amcp-setup/build.sh) — first run will use" >&2
   echo "          plain dialogs instead" >&2

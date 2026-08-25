@@ -2,7 +2,7 @@
 # no venv activated. Override for a specific interpreter:  PY="python3.12" make test
 PY ?= uv run python
 
-.PHONY: help test test-all preflight preflight-ui invariants app notarize release publish-release clean-dist dev dev-stop reset
+.PHONY: help test test-all preflight preflight-ui invariants swift app notarize release publish-release clean-dist dev dev-stop reset
 
 # Needed to name the release zip the way the README tells people to expect it.
 VERSION := $(shell sed -nE 's/^version = "(.*)"/\1/p' pyproject.toml | head -1)
@@ -19,6 +19,7 @@ help:
 	@echo "make dev          - run the server from source (hot-reload dev loop)"
 	@echo "make dev-stop     - stop the dev helper"
 	@echo "make invariants   - capability invariants only (the fork's reason to exist)"
+	@echo "make swift        - build the two Swift helpers (MusicKit + setup wizard)"
 	@echo "make app          - build the standalone UnofficialAppleMusicMCP.app"
 	@echo "make notarize     - submit the built app to Apple, staple the ticket, re-zip"
 	@echo "make reset        - wipe this Mac back to a first-run machine (backs up creds)"
@@ -62,7 +63,17 @@ invariants:
 # Standalone app with a vendored Python. SIGN_ID is optional but recommended:
 # macOS keys the Automation grant on the signing identity, so an unsigned build
 # re-prompts whenever its contents change.
-app:
+# The two Swift helpers. They are NOT in git -- they are signed binaries, and a
+# committed copy would carry the original author's identity and be useless to a
+# fork -- so the .app build can only copy them if someone remembered to build
+# them first. Forgetting produced a shippable app with catalog playback silently
+# missing, which is why build-app.sh now refuses that for a Developer ID build
+# and why this runs as a prerequisite rather than living in a README step.
+swift:
+	./swift/amcp-musickit/build.sh $(if $(SIGN_ID),--sign "$(SIGN_ID)",)
+	./swift/amcp-setup/build.sh $(if $(SIGN_ID),--sign "$(SIGN_ID)",)
+
+app: swift
 	./tools/build-app.sh --zip $(if $(SIGN_ID),--sign "$(SIGN_ID)",)
 
 clean-dist:
@@ -93,7 +104,7 @@ publish-release:
 	./scripts/publish-release.sh
 
 # Everything a release needs, in the order that fails cheapest first.
-release: clean-dist invariants test
+release: clean-dist invariants test swift
 	$(PY) -m pytest -q --no-cov -m slow tests/test_ipc.py
 	uv build
 	./tools/build-app.sh --zip $(if $(SIGN_ID),--sign "$(SIGN_ID)",)
