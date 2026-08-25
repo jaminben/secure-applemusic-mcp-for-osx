@@ -6,6 +6,42 @@ fork point, see [CHANGELOG-upstream.md](CHANGELOG-upstream.md).
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-08-25
+
+### Fixed
+
+- **The setup wizard promised a step it might not have.** The splash listed one
+  bullet per following page but hardcoded four, while the "Play anything on
+  Apple Music" page only exists when the MusicKit helper is built. Any build
+  without it advertised a step the wizard never delivered.
+- **The Codex/TOML client config crashed on Python 3.10.** `clients.py` imported
+  `tomllib`, which is stdlib only from 3.11, while the package advertises
+  `>=3.10`. Added the `tomli` backport, scoped to `python_version < "3.11"`.
+- **The server advertised an empty version to clients.** The version was written
+  to the mcp 1.x attribute inside a bare `except`, so on the 2.x SDK the app
+  bundles it silently failed and `serverInfo.version` shipped as `""`.
+- **The permission primer never asked for permission.** It read the application's
+  `name`, which AppleScript answers from the app bundle without sending an Apple
+  Event -- so it exited 0 without consulting TCC, on every machine, and reported
+  success. It now reads `player state`, a real Apple Event.
+- **Recently-played came from the API, which cannot see local playback.** Reads
+  Music.app's own played dates instead, falling back to the API.
+
+### Changed
+
+- The MCP entry is now `unofficial-apple-music` in client configs, with a
+  migration that removes the superseded `apple-music` key when it points at our
+  own binary.
+- The app bundle is `UnofficialAppleMusicMCP.app`. The bundle identifier is
+  unchanged, so existing Automation grants survive.
+- The build no longer embeds the builder's home directory (pip's
+  `direct_url.json` and CPython's `_sysconfigdata_`), and fails if any trace
+  remains.
+- A Developer ID build now refuses to package without its Swift helpers, rather
+  than shipping with catalog playback silently missing.
+- Coverage is measured on macOS, where the whole suite runs, instead of on the
+  Linux matrix where 144 tests skip by construction.
+
 ## [0.1.0] - 2026-08-22
 
 ### Added — update checking, with a security-advisory escalation
