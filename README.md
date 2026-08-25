@@ -157,40 +157,48 @@ also unlocks richer catalog metadata, charts, and recommendations.
 
 ### What upstream has that this doesn't
 
-Windows/Linux support, the Chrome and Safari web players, the **Up Next queue**
-(it lives in the web player's MusicKit instance and cannot survive its removal),
-and the Up Next queue. Upstream also plays catalog tracks you don't own, but
-reaches that through UI automation and therefore the Accessibility permission;
-here the same thing runs on MusicKit instead.
+Windows/Linux support, the Chrome and Safari web players, and the **Up Next
+queue** (it lives in the web player's MusicKit instance and cannot survive its
+removal). Upstream also plays catalog tracks you don't own, but reaches that
+through UI automation and therefore the Accessibility permission; here the same
+thing runs on MusicKit instead.
 
 ## Install
 
 **Requires:** macOS 12+, the Music app signed into your Apple Music account.
 Nothing else — no Python, no Homebrew, no command line.
 
-1. Download `UnofficialAppleMusicMCP-<version>-macos-<arch>.zip` from
-   [Releases](https://github.com/jaminben/secure-applemusic-mcp-for-osx/releases)
-   and check it against `SHA256SUMS.txt`.
+1. [**Download the app**](https://github.com/jaminben/secure-applemusic-mcp-for-osx/releases/latest/download/UnofficialAppleMusicMCP-macos-arm64.zip).
+   (Every release is on the [Releases page](https://github.com/jaminben/secure-applemusic-mcp-for-osx/releases)
+   with a `SHA256SUMS.txt` if you want to verify it first.)
 2. Unzip and drag **UnofficialAppleMusicMCP.app** to `/Applications`.
 3. Double-click it once.
+
+Releases are signed with a Developer ID and **notarized by Apple**, so it opens
+normally — no "unidentified developer" warning, no right-click trick, and no
+trip to System Settings. Drag it to `/Applications` before opening it rather
+than running it from Downloads: macOS runs a quarantined app from a randomised
+read-only copy that disappears on quit, which leaves the background helper
+pointing at a path that no longer exists.
 
 Setup asks before each step, and each one can be skipped:
 
 | Step | What it does | Why |
 |---|---|---|
 | Background helper | Installs a LaunchAgent that starts the helper at login | Being started by launchd is what gives the app its **own** permission identity |
-| Claude Desktop | Adds one `unofficial-apple-music` entry to your config | So Claude can reach it. Your other servers are kept and the file is backed up first |
+| AI clients | Adds one `unofficial-apple-music` entry to each client you tick — Claude Desktop, Claude Code, Cursor, Codex, VS Code | So they can reach it. Your other servers are kept and every file is backed up first |
 | Permission | Triggers the macOS "control Music" prompt | Asking now means the grant lands on **this app**, not on whatever spawns your client |
 
-Then restart Claude Desktop. That's it.
+Then restart the clients you picked. That's it.
 
 The app is self-contained: it carries its own Python runtime, so there's nothing
 to install and nothing on your `PATH` to conflict with.
 
-> **Gatekeeper:** an unsigned download is quarantined — right-click → **Open**
-> once to get past it. Signed builds don't have this problem; if you build it
-> yourself, sign it (see below), because macOS ties the Music permission to the
-> signing identity and an unsigned app re-prompts whenever it changes.
+> **If you build it yourself**, sign it — see [From source](#from-source). The
+> released app is notarized and needs none of this, but a local build is not,
+> and macOS ties the Music permission to the signing identity: an unsigned app
+> presents a new identity whenever its contents change, so the permission is
+> re-prompted on every rebuild.
 
 ### Why the app, rather than just a command
 
@@ -227,31 +235,36 @@ skips the bundle and configures the simpler (unscoped) stdio server.
 
 ### Sharing it with someone else
 
-Two things decide whether it "just works" on their Mac.
+Send them the [release](https://github.com/jaminben/secure-applemusic-mcp-for-osx/releases/latest).
+It is notarized, so it opens on their Mac with no warning and nothing to
+click past — that is the whole point of paying for the certificate.
 
-**Architecture.** The zip is built for one architecture. `UnofficialAppleMusicMCP-*-arm64`
-is Apple Silicon (M1 and later); build `--arch x86_64` for an Intel Mac. If in
-doubt, ask them for  → About This Mac.
+The only thing to check is **architecture**. The zip is built for one:
+`UnofficialAppleMusicMCP-*-arm64` is Apple Silicon (M1 and later). For an Intel
+Mac, build `--arch x86_64`. If in doubt, ask them for  → About This Mac.
 
-**Gatekeeper.** A *self-signed* build is not a notarized one. On their machine
-macOS will refuse it on first open, and the right-click → Open trick no longer
-works on recent macOS. They need:
+**Handing round a build of your own is different.** A *self-signed* build is not
+a notarized one: macOS refuses it on first open, and the right-click → Open trick
+no longer works on recent versions. They need
 
 > System Settings → Privacy & Security → scroll down → **Open Anyway**
 
-That is one extra step, and it is the honest cost of not paying for notarization.
-Self-signing still earns its keep: it gives the app a stable identity, so the
-Music permission survives updates instead of re-prompting every time.
+which is the honest cost of not notarizing. Self-signing still earns its keep —
+it gives the app a stable identity, so the Music permission survives rebuilds
+instead of re-prompting every time.
 
-For a genuinely frictionless hand-off — no scary dialog at all — sign with a
-**Developer ID Application** certificate and notarize:
+To hand yours over as cleanly as the release, sign with a **Developer ID
+Application** certificate and notarize. `make release` does the whole sequence,
+including stapling the ticket into the bundle (a zip made *before* stapling
+still needs the network to validate, which is the usual reason a "notarized" app
+is refused on someone else's machine):
 
 ```sh
-SIGN_ID="Developer ID Application: Your Name (TEAMID)" make app
-xcrun notarytool submit dist/UnofficialAppleMusicMCP-*.zip \
-    --apple-id you@example.com --team-id TEAMID --wait
-xcrun stapler staple dist/UnofficialAppleMusicMCP.app
+SIGN_ID="Developer ID Application: Your Name (TEAMID)" make release
 ```
+
+One-time setup for the notary credentials is documented at the top of
+[`tools/notarize.sh`](tools/notarize.sh).
 
 That needs a paid Apple Developer account ($99/yr). Nothing else about the app
 changes.
