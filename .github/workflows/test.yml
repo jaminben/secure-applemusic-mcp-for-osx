@@ -73,11 +73,11 @@ jobs:
       - name: Install project
         run: uv sync --all-extras --dev
 
-      - name: Run tests + coverage
+      - name: Run tests
         # AppleScript-dependent tests auto-skip on non-darwin via pytestmark.
         # The runner is Linux, so the Apple Events path itself is exercised only
         # by the mocked tests here — see RELEASING.md for the macOS manual pass.
-        run: uv run pytest tests/ -q --tb=short --cov=applemusic_mcp --cov-report=term-missing
+        run: uv run pytest tests/ -q --tb=short --no-cov
 
   macos:
     # The whole point of this build is a macOS Apple-Events path, so at least
@@ -99,8 +99,11 @@ jobs:
       - name: Install project
         run: uv sync --all-extras --dev
 
-      - name: Run tests
-        run: uv run pytest tests/ -q --tb=short --no-cov
+      - name: Run tests + coverage gate
+        # The only job where the whole suite runs, so the only one whose
+        # coverage figure means anything. 144 tests skip on the Linux matrix
+        # by design, which is why the gate is not there. fail_under: pyproject.
+        run: uv run pytest tests/ -q --tb=short --cov=applemusic_mcp --cov-report=term-missing
 
   fresh-install:
     name: fresh pip install (unpinned resolution)
