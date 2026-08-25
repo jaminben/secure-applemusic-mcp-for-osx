@@ -93,7 +93,7 @@ def test_merge_keeps_other_servers_and_unrelated_keys(home):
     data = json.loads(client.config.read_text())
     assert data["mcpServers"]["other"] == {"command": "/bin/true"}
     assert data["misc"] == 1
-    assert data["mcpServers"]["apple-music"] == ENTRY
+    assert data["mcpServers"]["unofficial-apple-music"] == ENTRY
 
 
 def test_vscode_entry_lands_under_servers_not_mcpservers(home):
@@ -103,7 +103,7 @@ def test_vscode_entry_lands_under_servers_not_mcpservers(home):
     assert ok
     data = json.loads(client.config.read_text())
     assert "mcpServers" not in data
-    assert data["servers"]["apple-music"]["type"] == "stdio"
+    assert data["servers"]["unofficial-apple-music"]["type"] == "stdio"
 
 
 def test_a_new_config_is_private(home):
@@ -211,7 +211,7 @@ def test_every_setup_prompt_compiles():
     prompts = [
         app_setup._INTRO,
         app_setup._STEP_HELPER.format(bundle="x.y.z"),
-        app_setup._STEP_CLIENTS.format(key="apple-music"),
+        app_setup._STEP_CLIENTS.format(key="unofficial-apple-music"),
         app_setup._STEP_PERMISSION,
         "Setup finished.\n\n✓ one\n✗ two\n• three",
     ]
@@ -369,7 +369,7 @@ def test_toml_append_preserves_everything_else(home):
     assert "# a comment the user wrote" in text, "comments must survive"
     assert data["model"] == "gpt-5"
     assert data["mcp_servers"]["node_repl"] == {"command": "/x/node", "args": []}
-    assert data["mcp_servers"]["apple-music"] == {"command": "/a/b", "args": ["shim"]}
+    assert data["mcp_servers"]["unofficial-apple-music"] == {"command": "/a/b", "args": ["shim"]}
 
 
 def test_toml_update_replaces_rather_than_duplicating(home):
@@ -381,8 +381,8 @@ def test_toml_update_replaces_rather_than_duplicating(home):
     clients.configure(client, {"command": "/first", "args": ["shim"]})
     clients.configure(client, {"command": "/second", "args": ["shim"]})
     text = client.config.read_text()
-    assert text.count("[mcp_servers.apple-music]") == 1
-    assert tomllib.loads(text)["mcp_servers"]["apple-music"]["command"] == "/second"
+    assert text.count("[mcp_servers.unofficial-apple-music]") == 1
+    assert tomllib.loads(text)["mcp_servers"]["unofficial-apple-music"]["command"] == "/second"
 
 
 def test_toml_replacement_keeps_the_following_table(home):
@@ -391,14 +391,14 @@ def test_toml_replacement_keeps_the_following_table(home):
 
     client = _codex(home)
     client.config.write_text(
-        "[mcp_servers.apple-music]\ncommand = \"/old\"\nargs = []\n\n"
+        "[mcp_servers.unofficial-apple-music]\ncommand = \"/old\"\nargs = []\n\n"
         "[mcp_servers.keepme]\ncommand = \"/keep\"\nargs = []\n",
         encoding="utf-8",
     )
     clients.configure(client, {"command": "/new", "args": ["shim"]})
     data = tomllib.loads(client.config.read_text())
     assert data["mcp_servers"]["keepme"] == {"command": "/keep", "args": []}
-    assert data["mcp_servers"]["apple-music"]["command"] == "/new"
+    assert data["mcp_servers"]["unofficial-apple-music"]["command"] == "/new"
 
 
 def test_toml_second_run_is_a_no_op(home):
@@ -439,7 +439,7 @@ def test_toml_append_to_a_file_without_a_trailing_newline(home):
     assert ok
     data = tomllib.loads(client.config.read_text())
     assert data["model"] == "gpt-5"
-    assert data["mcp_servers"]["apple-music"]["command"] == "/a"
+    assert data["mcp_servers"]["unofficial-apple-music"]["command"] == "/a"
 
 
 @pytest.mark.parametrize(
@@ -452,7 +452,7 @@ def test_toml_strings_round_trip_hostile_paths(home, value):
     client = _codex(home)
     clients.configure(client, {"command": value, "args": ["shim"]})
     data = tomllib.loads(client.config.read_text())
-    assert data["mcp_servers"]["apple-music"]["command"] == value
+    assert data["mcp_servers"]["unofficial-apple-music"]["command"] == value
 
 
 def test_creating_a_config_from_nothing_writes_no_backup(home):
@@ -519,3 +519,64 @@ def test_labels_are_unique(home):
     would configure the wrong client."""
     labels = [c.label for c in clients.known_clients()]
     assert len(set(labels)) == len(labels)
+
+
+# ============================================================================
+# Migration off the old "apple-music" key
+# ============================================================================
+
+
+def test_json_rename_drops_the_superseded_entry(home):
+    """The old key pointed at the same binary, so leaving it is a duplicate."""
+    client = clients.find("claude-desktop")
+    client.config.parent.mkdir(parents=True, exist_ok=True)
+    client.config.write_text(
+        json.dumps({"mcpServers": {"apple-music": {"command": "/a/b", "args": ["shim"]}}})
+    )
+    ok, msg = clients.configure(client, {"command": "/a/b", "args": ["shim"]})
+    assert ok
+    data = json.loads(client.config.read_text())
+    assert "apple-music" not in data["mcpServers"]
+    assert data["mcpServers"]["unofficial-apple-music"]["command"] == "/a/b"
+    assert "superseded" in msg
+
+
+def test_json_rename_keeps_someone_elses_apple_music_server(home):
+    """Another project may legitimately use that name. Not ours to delete."""
+    client = clients.find("claude-desktop")
+    client.config.parent.mkdir(parents=True, exist_ok=True)
+    theirs = {"command": "/usr/local/bin/other-server", "args": []}
+    client.config.write_text(json.dumps({"mcpServers": {"apple-music": theirs}}))
+    ok, _ = clients.configure(client, {"command": "/a/b", "args": ["shim"]})
+    assert ok
+    data = json.loads(client.config.read_text())
+    assert data["mcpServers"]["apple-music"] == theirs
+    assert data["mcpServers"]["unofficial-apple-music"]["command"] == "/a/b"
+
+
+def test_json_migration_runs_even_when_new_entry_already_correct(home):
+    """A half-migrated config -- both keys present -- must still converge."""
+    client = clients.find("claude-desktop")
+    client.config.parent.mkdir(parents=True, exist_ok=True)
+    entry = {"command": "/a/b", "args": ["shim"]}
+    client.config.write_text(
+        json.dumps({"mcpServers": {"apple-music": dict(entry), "unofficial-apple-music": dict(entry)}})
+    )
+    ok, _ = clients.configure(client, entry)
+    assert ok
+    data = json.loads(client.config.read_text())
+    assert "apple-music" not in data["mcpServers"]
+    assert data["mcpServers"]["unofficial-apple-music"] == entry
+
+
+def test_toml_rename_drops_the_superseded_table(home):
+    import tomllib
+
+    client = _codex(home)
+    client.config.parent.mkdir(parents=True, exist_ok=True)
+    client.config.write_text('[mcp_servers.apple-music]\ncommand = "/a/b"\nargs = ["shim"]\n')
+    ok, msg = clients.configure(client, {"command": "/a/b", "args": ["shim"]})
+    assert ok
+    data = tomllib.loads(client.config.read_text())
+    assert "apple-music" not in data["mcp_servers"]
+    assert data["mcp_servers"]["unofficial-apple-music"]["command"] == "/a/b"

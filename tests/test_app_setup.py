@@ -48,7 +48,7 @@ def test_merges_without_touching_other_servers(cfg):
     data = json.loads(cfg.read_text())
     assert data["mcpServers"]["existing"] == {"command": "/usr/bin/true", "args": ["--keep"]}
     assert data["otherSetting"] == {"preserve": True}
-    assert data["mcpServers"]["apple-music"]["args"] == ["shim"]
+    assert data["mcpServers"]["unofficial-apple-music"]["args"] == ["shim"]
 
 
 def test_points_at_the_shim_never_the_helper(cfg):
@@ -56,7 +56,7 @@ def test_points_at_the_shim_never_the_helper(cfg):
     'helper', the client's TCC identity would own the Automation grant again
     and the whole split would be pointless."""
     app_setup.configure_claude_desktop(cfg)
-    entry = json.loads(cfg.read_text())["mcpServers"]["apple-music"]
+    entry = json.loads(cfg.read_text())["mcpServers"]["unofficial-apple-music"]
     assert entry["args"] == ["shim"]
     assert "helper" not in entry["args"]
 
@@ -72,7 +72,7 @@ def test_backs_up_before_the_first_write(cfg):
     backups = list(cfg.parent.glob("*.bak-*"))
     assert len(backups) == 1
     restored = json.loads(backups[0].read_text())
-    assert "apple-music" not in restored["mcpServers"]
+    assert "unofficial-apple-music" not in restored["mcpServers"]
 
 
 def test_second_run_changes_nothing_and_adds_no_backup(cfg):
@@ -123,7 +123,7 @@ def test_creates_config_when_directory_exists_but_file_does_not(tmp_path, monkey
     p = d / "claude_desktop_config.json"
     ok, _ = app_setup.configure_claude_desktop(p)
     assert ok
-    assert json.loads(p.read_text())["mcpServers"]["apple-music"]["args"] == ["shim"]
+    assert json.loads(p.read_text())["mcpServers"]["unofficial-apple-music"]["args"] == ["shim"]
 
 
 # --- LaunchAgent ---------------------------------------------------------------

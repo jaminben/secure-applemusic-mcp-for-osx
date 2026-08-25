@@ -41,7 +41,7 @@ CLAUDE_CONFIG = (
 )
 LAUNCH_AGENT = Path.home() / "Library" / "LaunchAgents" / f"{BUNDLE_ID}.plist"
 LOG_DIR = Path.home() / "Library" / "Logs" / BUNDLE_ID
-SERVER_KEY = "apple-music"
+SERVER_KEY = "unofficial-apple-music"
 
 
 # --- small native UI ---------------------------------------------------------

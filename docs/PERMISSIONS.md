@@ -74,7 +74,7 @@ pieces, if you'd rather do it by hand:
 Point your client at the **shim**, never the helper:
 
 ```json
-{ "mcpServers": { "apple-music": {
+{ "mcpServers": { "unofficial-apple-music": {
     "command": "/Users/you/.local/bin/secure-applemusic-mcp",
     "args": ["shim"] } } }
 ```

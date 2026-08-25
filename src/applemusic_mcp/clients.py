@@ -44,7 +44,28 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-SERVER_KEY = "apple-music"
+SERVER_KEY = "unofficial-apple-music"
+
+# The entry was called "apple-music" before the rename. A straight rename would
+# leave that key behind in every existing config, pointing at the same binary --
+# two entries, one of them a duplicate the user never asked for. So the writers
+# below drop a legacy key, but ONLY when its command is our own binary: another
+# project is perfectly entitled to call its server "apple-music", and clobbering
+# someone else's entry would be worse than leaving a stale one.
+LEGACY_SERVER_KEYS = ("apple-music",)
+
+
+def _drop_legacy(servers: dict, our_command: str) -> list:
+    """Remove superseded entries that point at our binary. Returns names dropped."""
+    dropped = []
+    for key in LEGACY_SERVER_KEYS:
+        if key == SERVER_KEY:
+            continue
+        old_entry = servers.get(key)
+        if isinstance(old_entry, dict) and old_entry.get("command") == our_command:
+            servers.pop(key)
+            dropped.append(key)
+    return dropped
 
 
 @dataclass(frozen=True)
@@ -393,7 +414,14 @@ def configure(
         )
 
     already = servers.get(SERVER_KEY)
-    if already == entry:
+    stale = [
+        k
+        for k in LEGACY_SERVER_KEYS
+        if k != SERVER_KEY
+        and isinstance(servers.get(k), dict)
+        and servers[k].get("command") == entry.get("command")
+    ]
+    if already == entry and not stale:
         # Return before the backup: setup may run many times, and a backup per
         # launch would quietly fill the directory with copies.
         return True, f"{client.name} was already configured."
@@ -409,6 +437,7 @@ def configure(
             out.write(path.read_bytes())
 
     servers[SERVER_KEY] = entry
+    dropped = _drop_legacy(servers, entry.get("command", ""))
 
     mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
     tmp = path.with_suffix(f"{path.suffix}.tmp")
@@ -422,7 +451,10 @@ def configure(
     os.replace(tmp, path)
 
     verb = "Updated" if already else "Added"
-    return True, f"{verb} the '{SERVER_KEY}' entry in {client.name}'s config."
+    msg = f"{verb} the '{SERVER_KEY}' entry in {client.name}'s config."
+    if dropped:
+        msg += f" Removed the superseded {', '.join(repr(d) for d in dropped)} entry."
+    return True, msg
 
 
 def _configure_toml(client: Client, entry: dict, path: Path) -> tuple[bool, str]:
@@ -444,13 +476,24 @@ def _configure_toml(client: Client, entry: dict, path: Path) -> tuple[bool, str]
                 f"{path.name} has a non-table '{client.servers_key}'. Left it untouched."
             )
         current = existing.get(SERVER_KEY)
-        if isinstance(current, dict) and current.get("command") == entry["command"] and list(
-            current.get("args", [])
-        ) == list(entry.get("args", [])):
+        stale = [
+            k
+            for k in LEGACY_SERVER_KEYS
+            if k != SERVER_KEY
+            and isinstance(existing.get(k), dict)
+            and existing[k].get("command") == entry["command"]
+        ]
+        if (
+            not stale
+            and isinstance(current, dict)
+            and current.get("command") == entry["command"]
+            and list(current.get("args", [])) == list(entry.get("args", []))
+        ):
             return True, f"{client.name} was already configured."
         had = SERVER_KEY in existing
     else:
         had = False
+        stale = []
 
     if path.exists():
         backup = path.with_suffix(f"{path.suffix}.bak-{time.strftime('%Y%m%d-%H%M%S')}")
@@ -461,6 +504,10 @@ def _configure_toml(client: Client, entry: dict, path: Path) -> tuple[bool, str]
 
     section = _toml_section(client.servers_key, SERVER_KEY, entry)
     updated = _replace_toml_section(raw, f"[{client.servers_key}.{SERVER_KEY}]", section)
+    # Same migration as the JSON branch: strip a superseded table that points at
+    # our own binary, so the rename does not leave a duplicate behind.
+    for key in stale:
+        updated = _replace_toml_section(updated, f"[{client.servers_key}.{key}]", "")
 
     mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
     tmp = path.with_suffix(f"{path.suffix}.tmp")
@@ -469,4 +516,7 @@ def _configure_toml(client: Client, entry: dict, path: Path) -> tuple[bool, str]
         f.write(updated)
     os.replace(tmp, path)
 
-    return True, f"{'Updated' if had else 'Added'} the '{SERVER_KEY}' entry in {client.name}'s config."
+    msg = f"{'Updated' if had else 'Added'} the '{SERVER_KEY}' entry in {client.name}'s config."
+    if stale:
+        msg += f" Removed the superseded {', '.join(repr(d) for d in stale)} entry."
+    return True, msg

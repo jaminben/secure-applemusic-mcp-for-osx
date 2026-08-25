@@ -169,7 +169,7 @@ Automation grant.
 
 {
   "mcpServers": {
-    "apple-music": {
+    "unofficial-apple-music": {
       "command": "${SERVER_BIN}",
       "args": ["shim"]
     }

@@ -103,7 +103,7 @@ Setup asks before each step, and each one can be skipped:
 | Step | What it does | Why |
 |---|---|---|
 | Background helper | Installs a LaunchAgent that starts the helper at login | Being started by launchd is what gives the app its **own** permission identity |
-| Claude Desktop | Adds one `apple-music` entry to your config | So Claude can reach it. Your other servers are kept and the file is backed up first |
+| Claude Desktop | Adds one `unofficial-apple-music` entry to your config | So Claude can reach it. Your other servers are kept and the file is backed up first |
 | Permission | Triggers the macOS "control Music" prompt | Asking now means the grant lands on **this app**, not on whatever spawns your client |
 
 Then restart Claude Desktop. That's it.
@@ -190,7 +190,7 @@ rm -f ~/Library/LaunchAgents/io.github.jaminben.secure-applemusic-mcp.plist
 tccutil reset AppleEvents io.github.jaminben.secure-applemusic-mcp
 ```
 
-Remove the `apple-music` entry from Claude Desktop's config (a backup sits next
+Remove the `unofficial-apple-music` entry from Claude Desktop's config (a backup sits next
 to it), and delete `~/.config/applemusic-mcp` and `~/.cache/applemusic-mcp` if
 you want the credentials and audit log gone too. From a source install:
 `./install.sh --uninstall`.
