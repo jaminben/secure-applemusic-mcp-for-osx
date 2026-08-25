@@ -1,5 +1,7 @@
 # secure-applemusic-mcp-for-osx
 
+<!-- mcp-name: io.github.jaminben/secure-applemusic-mcp-for-osx -->
+
 An MCP server for Apple Music on macOS that controls **Music.app and nothing
 else**.
 

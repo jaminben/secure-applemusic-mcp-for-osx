@@ -8,9 +8,11 @@ bump method:
     itself runs, which can happen after you commit — upstream shipped 0.18.0 with
     the lockfile still naming 0.17.0.
 
-(``server.json``, the MCP registry manifest, was dropped in this fork along with
-the publish workflow — this build is installed from source, not advertised to
-the registry.)
+  * ``server.json``, the MCP registry manifest, carries the version TWICE — once
+    at the top level and once inside the pypi package entry. The registry
+    validates the package version against PyPI and rejects a mismatch, so a
+    half-bumped manifest fails the publish AFTER the tag and the upload have
+    already happened.
 
 Both are cosmetic right up until they aren't, and neither is visible in a diff you
 weren't already looking at. So: check them mechanically, in the pre-release gate
@@ -60,6 +62,15 @@ def _surfaces(expected: str) -> list[tuple[str, str | None]]:
     # back to auto-generated notes.
     has_section = re.search(rf"^## \[{re.escape(expected)}\]", _read("CHANGELOG.md"), re.M)
     out.append(("CHANGELOG.md section heading", expected if has_section else None))
+
+    # Both version fields in the registry manifest. They are separate keys and
+    # nothing but this check couples them.
+    import json
+
+    manifest = json.loads(_read("server.json"))
+    out.append(("server.json version", manifest.get("version")))
+    for i, pkg in enumerate(manifest.get("packages", [])):
+        out.append((f"server.json packages[{i}].version", pkg.get("version")))
 
     return out
 

@@ -21,7 +21,14 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
-BUNDLE_ID="io.github.jaminben.secure-applemusic-mcp"
+# Single source of truth: src/applemusic_mcp/ipc.py. A fork changes it in ONE
+# place and every build artefact follows. Hardcoding it here was how the same
+# string ended up in five files: the launchd label, the socket path and the TCC
+# row all key on it, so a fork that misses one collides with the original.
+_ipc_bundle_id() {
+  sed -nE 's/^BUNDLE_ID = "(.*)"/\1/p' "$1/src/applemusic_mcp/ipc.py" | head -1
+}
+BUNDLE_ID="${BUNDLE_ID:-$(_ipc_bundle_id "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)")}"
 APP="AMCPMusicKit.app"
 SIGN=""
 while [[ $# -gt 0 ]]; do

@@ -38,7 +38,11 @@ import socket
 import stat
 from pathlib import Path
 
-# Keep in sync with tools/make-app-bundle.sh and docs/PERMISSIONS.md.
+# THE bundle identifier. Every build script derives its copy from this line by
+# sed, so this is the only place it is written down -- change it here and the
+# app, both Swift helpers, the launchd label, the socket path and the TCC row
+# all follow. Forking? Change this, and nothing else.
+# (docs/PERMISSIONS.md quotes it for humans; a test keeps that honest.)
 BUNDLE_ID = "io.github.jaminben.secure-applemusic-mcp"
 
 _ENV_SOCKET = "APPLEMUSIC_MCP_SOCKET"
