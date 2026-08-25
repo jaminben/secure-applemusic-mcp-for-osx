@@ -512,7 +512,12 @@ final class WizardController: NSObject, NSWindowDelegate {
         var help: [String] = []
         for (value, colour) in [
             (option.detail, NSColor.secondaryLabelColor),
-            (option.note, NSColor.systemOrange),
+            // systemBlue, not systemOrange: orange on the light window background
+            // is one of the worst contrast pairs AppKit offers, and this line
+            // carries the thing the user has to act on ("will be restarted").
+            // Both are dynamic colours that follow appearance and the Increase
+            // Contrast setting, so this is a straight swap, not a hardcoded hue.
+            (option.note, NSColor.systemBlue),
         ] {
             guard let value, !value.isEmpty else { continue }
             help.append(value)
