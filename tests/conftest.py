@@ -313,3 +313,23 @@ def mock_api_headers(mock_developer_token, mock_user_token):
         "Music-User-Token": mock_user_token,
         "Content-Type": "application/json",
     }
+
+
+@pytest.fixture(autouse=True)
+def _isolate_setup_log(tmp_path, monkeypatch):
+    """Keep the setup log inside the test's tmp dir.
+
+    app_setup._log appends to ~/Library/Logs/<bundle>/setup.log so a
+    double-clicked install leaves evidence behind. That is right in production
+    and wrong in a test run: without this, every test that touches app_setup
+    writes into the real user's real log, interleaving fixture noise with the
+    install we are actually trying to debug. Redirect it for every test, not
+    just the ones that assert on it.
+    """
+    try:
+        from applemusic_mcp import app_setup
+    except Exception:  # pragma: no cover - app_setup unavailable off-macOS
+        return
+    log_dir = tmp_path / "Logs"
+    monkeypatch.setattr(app_setup, "LOG_DIR", log_dir, raising=False)
+    monkeypatch.setattr(app_setup, "SETUP_LOG", log_dir / "setup.log", raising=False)
