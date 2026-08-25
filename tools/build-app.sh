@@ -148,6 +148,40 @@ if [[ -f "$ICON_SRC" ]]; then
   echo "    bundled the app icon"
 fi
 
+# --- 2c. scrub build-machine paths -------------------------------------------
+# The header above claims this bundle embeds no absolute paths. That was true of
+# everything WE write and false of two files we copy in, both of which name the
+# builder's home directory and ship it to every person who downloads the app:
+#
+#   direct_url.json          pip's record of where it installed from, i.e. the
+#                            checkout path. Pure provenance metadata; nothing
+#                            reads it at runtime.
+#   _sysconfigdata_*.py      CPython's build-time config, carrying the path the
+#                            interpreter was built/cached at. Only meaningful
+#                            for compiling extensions, which a vendored runtime
+#                            never does here.
+#
+# Not a credential leak, but it is the developer's username and directory layout
+# published to strangers, and it is gratuitous.
+echo "==> Scrubbing build-machine paths"
+rm -f "${RES}"/lib/*.dist-info/direct_url.json
+
+SYSCONF="$(ls "${RES}"/python/lib/python*/_sysconfigdata__darwin_darwin.py 2>/dev/null | head -1 || true)"
+if [[ -n "$SYSCONF" ]]; then
+  # Replace the absolute prefix with a fixed placeholder of the same shape: the
+  # file is a dict of strings, so this stays syntactically valid Python.
+  /usr/bin/sed -i '' "s|${HOME}/.local/share/uv/python|/opt/python-build|g" "$SYSCONF"
+  /usr/bin/sed -i '' "s|${HOME}|/opt/build|g" "$SYSCONF"
+fi
+
+remaining="$(grep -rlI "${HOME}" "$APP" 2>/dev/null || true)"
+if [[ -n "$remaining" ]]; then
+  echo "error: build-machine paths still present after scrubbing:" >&2
+  echo "$remaining" | sed 's/^/       /' >&2
+  exit 1
+fi
+echo "    no build-machine paths remain"
+
 # --- 3. launcher + Info.plist ------------------------------------------------
 cat > "${APP}/Contents/MacOS/${APP_NAME}" <<'LAUNCHER'
 #!/bin/sh

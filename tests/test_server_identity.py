@@ -6,6 +6,8 @@ each one gets checked against what a client would actually receive rather
 than against the attribute we set.
 """
 
+import pytest
+
 from applemusic_mcp import __version__
 from applemusic_mcp import server as S
 
@@ -81,3 +83,69 @@ def test_set_version_never_raises(monkeypatch):
             raise RuntimeError("nope")
 
     S._set_version(Hostile())  # must not raise
+
+
+# ============================================================================
+# Both SDK shapes -- the blind spot that shipped an empty version
+# ============================================================================
+#
+# The dev venv has mcp 1.x; the app bundles 2.x. The first fix for the version
+# bug wrote to `_mcp_server.version` inside a bare `except Exception`, which is
+# right for 1.x and an AttributeError on 2.x. Swallowed, so every test passed
+# while the SHIPPED app advertised version "". Only running the real bundle
+# caught it. These fakes stand in for both shapes so the suite can.
+
+
+class _FakeOptions:
+    def __init__(self, version):
+        self.server_version = version
+        self.server_name = "probe"
+
+
+class _FakeLowLevel:
+    def __init__(self):
+        self.version = None
+
+    def create_initialization_options(self):
+        return _FakeOptions(self.version)
+
+
+class _Sdk1Server:
+    """1.x: low-level server on `_mcp_server`, no `version` keyword."""
+
+    def __init__(self, name, **kwargs):
+        if "version" in kwargs:
+            raise TypeError("unexpected keyword argument 'version'")
+        self.name = name
+        self._mcp_server = _FakeLowLevel()
+
+
+class _Sdk2Server:
+    """2.x: `_lowlevel_server`, and the constructor takes `version`."""
+
+    def __init__(self, name, version=None, **kwargs):
+        self.name = name
+        self.version = version or ""
+        self._lowlevel_server = _FakeLowLevel()
+        self._lowlevel_server.version = self.version
+
+
+@pytest.mark.parametrize("fake", [_Sdk1Server, _Sdk2Server], ids=["sdk1x", "sdk2x"])
+def test_version_is_advertised_on_either_sdk_shape(monkeypatch, fake):
+    monkeypatch.setattr(S, "FastMCP", fake)
+    mcp = S._build_server()
+    assert S._advertised_version(mcp) == __version__
+
+
+@pytest.mark.parametrize("fake", [_Sdk1Server, _Sdk2Server], ids=["sdk1x", "sdk2x"])
+def test_version_is_never_left_empty(monkeypatch, fake):
+    """The exact shipped symptom: an empty string, not a wrong number."""
+    monkeypatch.setattr(S, "FastMCP", fake)
+    assert S._advertised_version(S._build_server()) not in ("", None)
+
+
+def test_advertised_version_survives_an_object_with_neither_attribute():
+    class Bare:
+        version = "0.0.0"
+
+    assert S._advertised_version(Bare()) == "0.0.0"

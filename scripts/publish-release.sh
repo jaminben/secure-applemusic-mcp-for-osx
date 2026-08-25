@@ -88,6 +88,31 @@ grep -q "source=Notarized Developer ID" <<<"$assess" \
 ${assess}"
 ok "Gatekeeper: accepted, Notarized Developer ID"
 
+# The bundle is built on a developer's machine, from a checkout in their home
+# directory, using a vendored interpreter out of their cache. Several of those
+# steps leave the path behind. Not a credential -- but it is a username and a
+# directory layout published to strangers, and it is gratuitous.
+step "[1b/4] Auditing the bundle for build-machine paths and secrets"
+
+leaks="$(grep -rlI "$HOME" "$APP" 2>/dev/null || true)"
+[[ -z "$leaks" ]] || die "the bundle contains your home directory:
+$(echo "$leaks" | sed 's|^|       |')
+       tools/build-app.sh scrubs these; rebuild rather than shipping it."
+ok "no build-machine paths"
+
+creds="$(find "$APP" \( -name '*.p8' -o -name '*.p12' -o -name '*.key' \
+  -o -name '*.provisionprofile' -o -name '.env' -o -name 'developer_token.json' \
+  -o -name 'music_user_token.json' -o -name 'audit_log.jsonl' \) 2>/dev/null || true)"
+[[ -z "$creds" ]] || die "credential material inside the bundle:
+$(echo "$creds" | sed 's|^|       |')"
+ok "no credential files"
+
+# certifi ships CA roots (public); a PRIVATE key is what must never appear.
+privkeys="$(grep -rlI "BEGIN RSA PRIVATE KEY\|BEGIN EC PRIVATE KEY" "$APP" 2>/dev/null || true)"
+[[ -z "$privkeys" ]] || die "private-key material inside the bundle:
+$(echo "$privkeys" | sed 's|^|       |')"
+ok "no private-key material"
+
 # --- 2. does the artifact match the repo? ------------------------------------
 step "[2/4] Verifying it matches this checkout"
 

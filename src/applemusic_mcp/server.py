@@ -935,30 +935,76 @@ def _identity() -> dict:
     return extra
 
 
+# Where a version can live, across the SDKs we support. 1.x hangs the low-level
+# server off ``_mcp_server`` and rejects a ``version`` keyword; 2.x renamed it to
+# ``_lowlevel_server``, exposes ``version`` on the object, and DOES accept the
+# keyword. Writing to whichever exists is the only way to cover both.
+_VERSION_ATTRS = ("_lowlevel_server", "_mcp_server")
+
+
+def _safe_getattr(obj, name):
+    """getattr with a default still propagates whatever a property raises."""
+    try:
+        return getattr(obj, name, None)
+    except Exception:  # noqa: BLE001 - probing an unknown SDK object
+        return None
+
+
+def _advertised_version(mcp) -> "Optional[str]":
+    """What this server would actually send in serverInfo, or None if unknown."""
+    for attr in _VERSION_ATTRS:
+        low = _safe_getattr(mcp, attr)
+        if low is None:
+            continue
+        try:
+            return low.create_initialization_options().server_version
+        except Exception:  # noqa: BLE001 - probing, not asserting
+            return _safe_getattr(low, "version")
+    return _safe_getattr(mcp, "version")
+
+
 def _set_version(mcp) -> None:
     """Advertise OUR version, not the SDK's.
 
-    FastMCP takes no ``version`` keyword in any SDK we support -- passing one
-    is a TypeError. The handshake reads the version off the low-level server,
-    and when that is None the SDK substitutes its own. So a server that never
-    sets it reports the MCP SDK's version as its own: a dependency's number,
-    wrong today and drifting on every SDK bump. Set it where it is read.
+    When the version is unset the SDK substitutes its own, so a server that
+    never sets it tells every client it is version 1.25.0 -- a dependency's
+    number, wrong today and drifting on every SDK bump.
+
+    This is deliberately written against no single SDK shape. The first attempt
+    at this bug set ``_mcp_server.version`` inside a bare ``except Exception``,
+    which is correct for 1.x and an AttributeError on 2.x -- swallowed, so the
+    SHIPPED app advertised an empty version while the dev venv looked fine. The
+    lesson is not "add 2.x" but "verify, do not assume": every attribute we can
+    find gets set, and the caller checks the result.
     """
+    for attr in _VERSION_ATTRS:
+        low = _safe_getattr(mcp, attr)
+        if low is not None:
+            try:
+                low.version = _pkg_version
+            except Exception:  # noqa: BLE001 - metadata is never worth a crash
+                pass
     try:
-        mcp._mcp_server.version = _pkg_version
-    except Exception:  # noqa: BLE001 - a version is metadata, never a failure
+        mcp.version = _pkg_version
+    except Exception:  # noqa: BLE001
         pass
 
 
 def _build_server():
     """Construct the server, degrading through what this SDK supports.
 
-    Older SDKs accept none of the identity fields, and passing an unknown
-    keyword is a TypeError rather than something ignorable. Version is not in
-    the ladder because no SDK accepts it as a keyword -- see _set_version.
+    An unknown keyword is a TypeError rather than something ignorable, so the
+    ladder walks from richest to barest. ``version`` is back in it because 2.x
+    accepts it in the constructor and propagates it correctly; 1.x rejects it
+    and gets it from _set_version instead.
     """
     mcp = None
-    for attempt in ({**_identity()}, {}):
+    for attempt in (
+        {"version": _pkg_version, **_identity()},
+        {**_identity()},
+        {"version": _pkg_version},
+        {},
+    ):
         try:
             mcp = FastMCP(SERVER_NAME, **attempt)
             break
@@ -966,7 +1012,8 @@ def _build_server():
             continue
     if mcp is None:
         mcp = FastMCP(SERVER_NAME)
-    _set_version(mcp)
+    if _advertised_version(mcp) != _pkg_version:
+        _set_version(mcp)
     return mcp
 
 
