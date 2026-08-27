@@ -145,6 +145,27 @@ from applemusic_mcp import audit_log
 
 # Mock audit log for all tests to avoid polluting real audit log
 @pytest.fixture(autouse=True)
+def _musickit_helper_is_absent_by_default(monkeypatch):
+    """Pretend this machine has no MusicKit helper unless a test says otherwise.
+
+    Without this, `musickit.is_available()` reports whether the DEVELOPER's
+    checkout happens to contain a built, signed, authorized AMCPMusicKit.app —
+    so the suite behaves differently on different machines, and on a machine
+    that has one it makes REAL, SIGNED calls against the owner's real Apple
+    Music account. That is not hypothetical: a rate test whose REST rail was
+    stubbed to fail fell through to the live helper and Apple accepted the PUT.
+
+    Tests that exercise the MusicKit rail opt in by stubbing `is_available`
+    (and usually `authorization_status`) themselves — the same monkeypatch they
+    already needed to make the rail deterministic.
+    """
+    from applemusic_mcp import musickit
+
+    monkeypatch.setattr(musickit, "helper_path", lambda: None, raising=False)
+    monkeypatch.setattr(musickit, "is_available", lambda: False, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def mock_audit_log_for_all_tests(tmp_path):
     """Ensure all tests use a temp audit log, not the real one."""
     audit_dir = tmp_path / ".cache" / "applemusic-mcp"
