@@ -20,7 +20,26 @@
 #
 set -euo pipefail
 cd "$(dirname "$0")/.."
-PY="${PYTHON:-python3}"
+# Interpreter resolution. `make preflight` sets the Makefile's own PY (which is
+# `uv run python`, two words, so it cannot be dropped into "$PY" here) and this
+# script read $PYTHON — so neither reached the other and a bare `python3` won.
+# On any machine whose `python3` is not the project environment that means "No
+# module named pytest", i.e. the mandatory gate stopping at step 2. Resolve it
+# here instead: an explicit $PYTHON wins, then the project venv, then whatever
+# `python3` is, and say which one was chosen rather than leaving it to guesswork.
+if [[ -n "${PYTHON:-}" ]]; then
+  PY="$PYTHON"
+elif [[ -x ".venv/bin/python" ]]; then
+  PY="$(pwd)/.venv/bin/python"
+else
+  PY="python3"
+fi
+if ! "$PY" -c "import pytest" 2>/dev/null; then
+  echo "error: $PY has no pytest — point PYTHON at the project environment." >&2
+  echo "       e.g. PYTHON=.venv/bin/python make preflight" >&2
+  exit 1
+fi
+echo "Using interpreter: $PY"
 
 echo "──────────────────────────────────────────────────────────"
 echo " applemusic-mcp · native UI-automation gate"
