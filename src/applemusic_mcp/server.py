@@ -1077,7 +1077,10 @@ def get_token_expiration_warning() -> str | None:
 
     # Only reaches here for a keyless generated token (no .p8 to auto-renew), so
     # give plenty of runway given sparse use: notice ≤30 days, urgent ≤7.
-    renew = "renew with `applemusic-mcp login --dev`"
+    renew = (
+        "renew with `secure-applemusic-mcp login --dev`, or drop the token "
+        "entirely and use config(action='signin')"
+    )
     days = round(days_left)
     if days_left < 0:
         return f"⚠️ Apple Developer token EXPIRED — {renew} (issues a fresh 180-day token)."
@@ -1281,8 +1284,9 @@ def _label_write(result: str, rail: str) -> str:
 
 
 _SESSION_EXPIRED_MSG = (
-    "Error: your Apple Music session has expired — re-run `applemusic-mcp login` "
-    "`applemusic-mcp login --dev` (Apple Developer token)."
+    "Error: your Apple Music session has expired. Reconnect with "
+    "config(action='signin') — no credential is stored — or renew a developer "
+    "token with `secure-applemusic-mcp login --dev`."
 )
 # Apple's throttle is a ROLLING ~60-minute window with no Retry-After header, so
 # "wait a moment" was wrong advice: a short cooldown still 429s, and each retry
@@ -1290,7 +1294,7 @@ _SESSION_EXPIRED_MSG = (
 _THROTTLED_REASON = (
     "Apple Music is rate-limiting requests (HTTP 429). Apple's window is rolling and "
     "up to ~60 minutes long — a short wait won't clear it, and retrying extends it. "
-    "For bulk work (playlist imports, library migrations), `applemusic-mcp login --dev` "
+    "For bulk work (playlist imports, library migrations), `secure-applemusic-mcp login --dev` "
     "uses your own Apple Developer token, which gets its own much larger quota instead "
     "of sharing Apple's public web-player one."
 )
@@ -2340,7 +2344,8 @@ def _add_to_library_api(catalog_ids: list[str], content_type: str = "songs") -> 
         if response.status_code in (401, 403):
             return False, (
                 f"Not authorized (status {response.status_code}) — your session may have "
-                "expired. Re-run `applemusic-mcp login` or `applemusic-mcp login --dev`."
+                "expired. Reconnect with config(action='signin'), or renew a "
+                "developer token with `secure-applemusic-mcp login --dev`."
             )
         return False, f"API returned status {response.status_code}"
     except Exception as e:
@@ -2376,7 +2381,11 @@ def _add_songs_to_library(
             "config(action='set-pref', preference='catalog_play', string_value='add')."
         )
 
-    if musickit.is_available():
+    # `_can_use_musickit_rail`, not a bare `is_available()`: this is a WRITE,
+    # and APPLEMUSIC_FORCE_TOKENLESS is documented as disabling every API
+    # write. Gating on "is the binary on disk" honoured neither that kill
+    # switch nor the user's Apple Music consent.
+    if _can_use_musickit_rail():
         failures = []
         for cid in catalog_ids:
             ok, msg = musickit.add_to_library(cid)
@@ -2456,7 +2465,24 @@ def file_under_auto_playlist(name: str, artist: "Optional[str]" = None) -> bool:
 
 
 def _add_album_to_library(album_id: str) -> tuple[bool, str]:
-    """Add album to library by catalog ID."""
+    """Add an album to the library by catalog ID, preferring the MusicKit rail.
+
+    Same two-rail shape as ``_add_songs_to_library``. Albums lagged behind songs
+    only because the helper hardcoded ``ids[songs]``, so a machine that could
+    add a track was told to go get a developer token to add the album it came
+    from.
+    """
+    # `_can_use_musickit_rail`, not a bare `is_available()`: this is a WRITE,
+    # and APPLEMUSIC_FORCE_TOKENLESS is documented as disabling every API
+    # write. Gating on "is the binary on disk" honoured neither that kill
+    # switch nor the user's Apple Music consent.
+    if _can_use_musickit_rail():
+        ok, msg = musickit.add_album_to_library(album_id)
+        if ok:
+            return True, msg
+        # A helper that is present but refused (consent not granted yet) should
+        # not block a working credential.
+        logger.info("MusicKit album add failed, trying the developer-token rail: %s", msg)
     return _add_to_library_api([album_id], "albums")
 
 
@@ -2656,9 +2682,12 @@ def _unified_auto_search_to_playlist(
 ) -> tuple[bool, str, list[str]]:
     """Find-and-add an out-of-library track to a playlist.
 
-    API path is preferred when a developer token exists (fast, accurate catalog
-    search). Otherwise falls back to UI automation, which uses Music.app's
-    search field + hover-click add buttons — no API credentials needed.
+    The developer-token API path is preferred when a token exists (one round
+    trip, and it can write API-origin playlists). Otherwise this falls back to
+    the credential-free rail: public catalog search + a MusicKit library add +
+    an AppleScript attach. There is NO UI-automation fallback — the hover-click
+    path was removed in #37 and this docstring outlived it by long enough to
+    make a real bug report look impossible.
 
     Preprocesses open-ended "Song - Artist" input by splitting on ' - ' so both
     search paths get a clean query. Post-validates each path via
@@ -2682,20 +2711,24 @@ def _unified_auto_search_to_playlist(
             search_name, search_artist = candidates[0]
             steps.append(f"Split '{track_name}' → name='{search_name}' artist='{search_artist}'")
 
-    # Catalog add-to-playlist runs over the unified API (dev token generated OR
-    # harvested, plus a captured media-user-token). The fragile UI automation
-    # that broke across macOS/Music.app versions (#37) has been removed — there is
-    # no UI fallback. If the API path isn't available, tell the user how to enable
-    # it rather than degrading to something unreliable.
+    # Two write rails, and the token one is NOT required. When a developer token
+    # is configured we keep using it (it also handles API-origin playlists, which
+    # AppleScript cannot touch). Without one, the signed MusicKit helper does the
+    # library add with no credential at all — that path used to be unreachable
+    # because this gate asked only about tokens, so a fully-capable app bundle
+    # answered "Catalog add needs the Apple Music API" and sent people to a shell
+    # command that does not exist. The fragile UI automation that broke across
+    # macOS/Music.app versions (#37) is still gone; this is not that.
     if not _can_use_library_api():
         if _forced_tokenless():
             return (False, f"Catalog add disabled: {_FORCED_TOKENLESS_MSG}", steps)
-        return (
-            False,
-            "Catalog add needs the Apple Music API. Run `applemusic-mcp login --dev` ("
-            "no Apple Developer account) or `applemusic-mcp login --dev`.",
-            steps,
-        )
+        if _can_use_musickit_rail():
+            ok, result, mk_steps = _tokenless_search_and_add_to_playlist(
+                search_name, search_artist, playlist_name
+            )
+            steps.extend(mk_steps)
+            return ok, result, steps
+        return (False, f"Catalog add isn't set up yet. {_musickit_setup_hint()}", steps)
 
     ok, result, api_steps = _auto_search_and_add_to_playlist(
         search_name, search_artist, playlist_name
@@ -2710,6 +2743,185 @@ def _unified_auto_search_to_playlist(
         steps.append("API add succeeded; playlist read not yet reflecting it (propagation lag)")
         return True, result, steps
     return False, result, steps
+
+
+def _can_use_musickit_rail() -> bool:
+    """True if the signed MusicKit helper can perform a library add right now.
+
+    Unlike ``_can_use_library_api`` this needs no stored credential — the helper
+    signs its own request from the app's identity. It does still need the
+    one-time Apple Music consent, so a present-but-unauthorized helper is not a
+    usable rail and must not be reported as one.
+    """
+    if _forced_tokenless():
+        return False
+    if not musickit.is_available():
+        return False
+    return musickit.authorization_status() == "authorized"
+
+
+def _musickit_setup_hint() -> str:
+    """The one actionable sentence for a host with no usable write rail.
+
+    Every branch is in-app or in System Settings; none sends anyone to a shell.
+    The text this replaced pointed at ``applemusic-mcp login --dev``, which names
+    a binary this build does not install (the console script is
+    ``secure-applemusic-mcp``) and a rail the MusicKit helper made unnecessary.
+    """
+    status = musickit.authorization_status() if musickit.is_available() else "unavailable"
+    return {
+        "notDetermined": (
+            "Run config(action='signin') — it shows the Apple Music permission "
+            "prompt once, stores nothing, and needs no developer account."
+        ),
+        "denied": (
+            "Apple Music access is denied for this app. Turn it back on under "
+            "System Settings → Privacy & Security → Media & Apple Music, then ask again."
+        ),
+        "restricted": (
+            "Apple Music access is restricted on this Mac (Screen Time or an MDM "
+            "profile), so catalog adds can't be authorized here."
+        ),
+    }.get(
+        status,
+        "This build ships no MusicKit helper, so catalog adds need the signed app "
+        "bundle — install it from the notarized download.",
+    )
+
+
+def _sync_then_attach_native(
+    found_name: str,
+    found_artist: str,
+    playlist_name: str,
+    steps: list[str],
+    rail: str,
+) -> tuple[bool, str, list[str]]:
+    """Wait for a just-added catalog track to sync locally, then attach it.
+
+    Extracted from ``_auto_search_and_add_to_playlist`` so the credential-free
+    MusicKit rail can reuse it instead of growing a second copy: the poll budget,
+    the nudge-as-last-resort decision and the add-at-most-once retry are all
+    hard-won (they are what stopped the old loop stacking duplicate copies), and
+    two copies would drift. ``rail`` only labels which path did the library add.
+    """
+    # kind == "user": macOS-only (off-mac never reaches here). The catalog track
+    # was just library-added in the cloud; wait for it to sync down to the LOCAL
+    # Music.app, then attach via AppleScript.
+    if not APPLESCRIPT_AVAILABLE:  # pragma: no cover  # macOS-only build
+        return (
+            False,
+            f"'{playlist_name}' was created in Music.app; the web API can't modify "
+            "it. Adding to it currently requires macOS.",
+            steps,
+        )
+    # Don't nudge "Update Cloud Library" UP FRONT: measured A/B, nudging at t=0
+    # didn't speed the cloud→local sync — a sample synced ~11s WITHOUT it vs ~90s
+    # WITH (activating Music likely interrupts the in-flight sync), and it steals
+    # focus + needs a menu item that's absent when Sync Library is off. So let the
+    # natural (usually fast) sync run, polling the LOCAL library; only as a LAST
+    # RESORT — if it still hasn't landed after _SYNC_NUDGE_AFTER_S — nudge once to
+    # kick a stuck sync. Capped so we never hold the caller past ~30s.
+    synced = False
+    nudged = False
+    start = time.monotonic()
+    while time.monotonic() - start < _SYNC_POLL_BUDGET_S:
+        if asc.find_library_track(found_name, found_artist or "")[0]:
+            synced = True
+            break
+        # Upstream nudged iCloud here by clicking File > Library > Update Cloud
+        # Library, which needs Accessibility. Removed: we just keep polling and
+        # report honestly if the sync doesn't land inside the budget.
+        time.sleep(_SYNC_POLL_INTERVAL_S)
+    if synced:
+        # Synced locally — attach via AppleScript, then verify. CRITICAL: the
+        # `duplicate` add must happen AT MOST ONCE. A successful add whose verify
+        # lags (iCloud propagation) must NOT trigger a re-add — that's how the old
+        # loop stacked up to 4 duplicate copies. So: retry the ADD only while it
+        # keeps failing with "Track not found" (nothing landed yet); once an add
+        # succeeds, stop adding and only re-poll the verify.
+        added = False
+        for _ in range(4):
+            if not added:
+                ok2, res2, _split = _smart_as_add_track_to_playlist(
+                    playlist_name, found_name, found_artist or None, None
+                )
+                if ok2:
+                    added = True
+                elif "Track not found" not in res2:
+                    return False, _attach_error(found_name, res2), steps
+                # else: not findable yet — safe to retry the add next loop
+            if added and _verify_track_in_playlist(playlist_name, found_name, found_artist or ""):
+                steps.append("Attached via Music.app (native)")
+                return (
+                    True,
+                    f"{found_name} - {found_artist} "
+                    f"(added to library via {rail}; "
+                    "attached to playlist via Music.app)",
+                    steps,
+                )
+            time.sleep(_VERIFY_DELAY_S)
+        if added:
+            # The `duplicate` ran but native verify never confirmed it — treat as
+            # NOT landed (no optimistic "likely landed"; that's exactly what misled
+            # us when Music.app silently reverted the edit). This is the server-side
+            # rollback state — the real fix is to relaunch Music.app.
+            steps.append("Attach did not persist on native verify (likely a Music.app revert)")
+            return (
+                False,
+                f"Added '{found_name}' to your library, but attaching it to "
+                f"'{playlist_name}' did not persist — Music.app silently reverted the "
+                "edit (an Apple bug; even a manual add fails in this state). Quit and "
+                "reopen Music.app, then re-run this add. (Re-adding without relaunching "
+                "won't stick.)",
+                steps,
+            )
+    # Not synced within the budget (Apple's iCloud sync is variable — usually
+    # seconds, occasionally a minute+). The library-add succeeded; tell the model
+    # exactly that and the one-step fix so the experience stays smooth.
+    return (
+        False,
+        f"Added '{found_name}' to your library — but it hasn't finished syncing to "
+        f"this Mac yet, so it's not in '{playlist_name}' yet. This is Apple's iCloud "
+        f"sync (usually seconds, sometimes up to a minute). The track is safely in "
+        f"your library; re-run this exact add in a moment and it'll attach instantly.",
+        steps,
+    )
+
+
+def _tokenless_search_and_add_to_playlist(
+    track_name: str,
+    artist: str,
+    playlist_name: str,
+) -> tuple[bool, str, list[str]]:
+    """Find-and-add an out-of-library track using no credential at all.
+
+    Every leg already had a tokenless rail; they were simply never wired
+    together, so a machine that could do this was told to go get a developer
+    token instead:
+
+      catalog id  -> ``_catalog_search_itunes`` (Apple's public Search API)
+      library add -> the signed MusicKit helper, via ``_add_songs_to_library``
+      attach      -> AppleScript, once iCloud syncs the track down
+
+    Same return signature as ``_auto_search_and_add_to_playlist``.
+    """
+    steps: list[str] = []
+    label = f"{track_name} - {artist}" if artist else track_name
+
+    hit = _find_catalog_hit_for(track_name, artist)
+    if not hit or not hit.get("id"):
+        return False, f"Not found in your library or the Apple Music catalog: {label}", steps
+
+    found_name = hit.get("name") or track_name
+    found_artist = hit.get("artist") or artist
+    steps.append(f"Found in catalog (public search, no credential): {found_name} - {found_artist}")
+
+    ok, msg = _add_songs_to_library([hit["id"]], known=[(found_name, found_artist)])
+    if not ok:
+        return False, f"Couldn't add '{found_name}' to your library: {msg}", steps
+    steps.append("Added to library via MusicKit (nothing stored)")
+
+    return _sync_then_attach_native(found_name, found_artist, playlist_name, steps, "MusicKit")
 
 
 def _auto_search_and_add_to_playlist(
@@ -2819,89 +3031,10 @@ def _auto_search_and_add_to_playlist(
                 steps,
             )
 
-        # kind == "user": macOS-only (off-mac never reaches here). The catalog track
-        # was just library-added in the cloud; wait for it to sync down to the LOCAL
-        # Music.app, then attach via AppleScript.
-        if not APPLESCRIPT_AVAILABLE:  # pragma: no cover  # macOS-only build
-            return (
-                False,
-                f"'{playlist_name}' was created in Music.app; the web API can't modify "
-                "it. Adding to it currently requires macOS.",
-                steps,
-            )
-        # Don't nudge "Update Cloud Library" UP FRONT: measured A/B, nudging at t=0
-        # didn't speed the cloud→local sync — a sample synced ~11s WITHOUT it vs ~90s
-        # WITH (activating Music likely interrupts the in-flight sync), and it steals
-        # focus + needs a menu item that's absent when Sync Library is off. So let the
-        # natural (usually fast) sync run, polling the LOCAL library; only as a LAST
-        # RESORT — if it still hasn't landed after _SYNC_NUDGE_AFTER_S — nudge once to
-        # kick a stuck sync. Capped so we never hold the caller past ~30s.
-        synced = False
-        nudged = False
-        start = time.monotonic()
-        while time.monotonic() - start < _SYNC_POLL_BUDGET_S:
-            if asc.find_library_track(found_name, found_artist or "")[0]:
-                synced = True
-                break
-            # Upstream nudged iCloud here by clicking File > Library > Update Cloud
-            # Library, which needs Accessibility. Removed: we just keep polling and
-            # report honestly if the sync doesn't land inside the budget.
-            time.sleep(_SYNC_POLL_INTERVAL_S)
-        if synced:
-            # Synced locally — attach via AppleScript, then verify. CRITICAL: the
-            # `duplicate` add must happen AT MOST ONCE. A successful add whose verify
-            # lags (iCloud propagation) must NOT trigger a re-add — that's how the old
-            # loop stacked up to 4 duplicate copies. So: retry the ADD only while it
-            # keeps failing with "Track not found" (nothing landed yet); once an add
-            # succeeds, stop adding and only re-poll the verify.
-            added = False
-            for _ in range(4):
-                if not added:
-                    ok2, res2, _split = _smart_as_add_track_to_playlist(
-                        playlist_name, found_name, found_artist or None, None
-                    )
-                    if ok2:
-                        added = True
-                    elif "Track not found" not in res2:
-                        return False, _attach_error(found_name, res2), steps
-                    # else: not findable yet — safe to retry the add next loop
-                if added and _verify_track_in_playlist(
-                    playlist_name, found_name, found_artist or ""
-                ):
-                    steps.append("Attached via Music.app (native)")
-                    return (
-                        True,
-                        f"{found_name} - {found_artist} "
-                        "(added to library via the Apple Music API; "
-                        "attached to playlist via Music.app)",
-                        steps,
-                    )
-                time.sleep(_VERIFY_DELAY_S)
-            if added:
-                # The `duplicate` ran but native verify never confirmed it — treat as
-                # NOT landed (no optimistic "likely landed"; that's exactly what misled
-                # us when Music.app silently reverted the edit). This is the server-side
-                # rollback state — the real fix is to relaunch Music.app.
-                steps.append("Attach did not persist on native verify (likely a Music.app revert)")
-                return (
-                    False,
-                    f"Added '{found_name}' to your library, but attaching it to "
-                    f"'{playlist_name}' did not persist — Music.app silently reverted the "
-                    "edit (an Apple bug; even a manual add fails in this state). Quit and "
-                    "reopen Music.app, then re-run this add. (Re-adding without relaunching "
-                    "won't stick.)",
-                    steps,
-                )
-        # Not synced within the budget (Apple's iCloud sync is variable — usually
-        # seconds, occasionally a minute+). The library-add succeeded; tell the model
-        # exactly that and the one-step fix so the experience stays smooth.
-        return (
-            False,
-            f"Added '{found_name}' to your library — but it hasn't finished syncing to "
-            f"this Mac yet, so it's not in '{playlist_name}' yet. This is Apple's iCloud "
-            f"sync (usually seconds, sometimes up to a minute). The track is safely in "
-            f"your library; re-run this exact add in a moment and it'll attach instantly.",
-            steps,
+        # kind == "user": the user's own Music.app playlist. The catalog track was
+        # just library-added in the cloud; wait for it to sync down, then attach.
+        return _sync_then_attach_native(
+            found_name, found_artist or "", playlist_name, steps, "the Apple Music API"
         )
 
     except Exception as e:
@@ -2922,6 +3055,19 @@ def _rate_song_api(song_id: str, rating: str) -> tuple[bool, str]:
     if rating_value is None:
         return False, "rating must be 'love' or 'dislike'"
 
+    # Tracks already in the library are rated through Music.app over Apple
+    # Events; this function only ever sees CATALOG ids, which have no library
+    # object to set a rating on. That is what made this token-only.
+    # `_can_use_musickit_rail`, not a bare `is_available()`: this is a WRITE,
+    # and APPLEMUSIC_FORCE_TOKENLESS is documented as disabling every API
+    # write. Gating on "is the binary on disk" honoured neither that kill
+    # switch nor the user's Apple Music consent.
+    if _can_use_musickit_rail():
+        ok, msg = musickit.rate_song(song_id, rating.lower())
+        if ok:
+            return True, f"Marked as {rating}"
+        logger.info("MusicKit rate failed, trying the developer-token rail: %s", msg)
+
     try:
         headers = get_headers()
         body = {"type": "rating", "attributes": {"value": rating_value}}
@@ -2936,7 +3082,8 @@ def _rate_song_api(song_id: str, rating: str) -> tuple[bool, str]:
         if response.status_code in (401, 403):
             return False, (
                 f"Not authorized (status {response.status_code}) — your session may have "
-                "expired. Re-run `applemusic-mcp login` or `applemusic-mcp login --dev`."
+                "expired. Reconnect with config(action='signin'), or renew a "
+                "developer token with `secure-applemusic-mcp login --dev`."
             )
         return False, f"API returned status {response.status_code}"
     except Exception as e:
@@ -4014,18 +4161,23 @@ def _playlist_add(
     # Resolve album input - get all tracks from album(s)
     # When track is also provided, album acts as disambiguation filter (not "add whole album")
     if album and not track:
-        # Album resolution requires the catalog API — there's no AppleScript
-        # equivalent for fetching an album's tracklist by name. Without a
-        # token we'd leak "Developer token not found" (same class as the
-        # ID-guard below). Tell the user clearly what's needed.
+        # An album's tracklist has no AppleScript equivalent, so this needs the
+        # catalog — but NOT a credential. Apple serves album tracklists to
+        # anyone over the public iTunes endpoints; only the developer-token
+        # route had been wired up, so "requires an API token" was a statement
+        # about this function, not about Apple.
         if not _has_developer_token():
-            return (
-                "Error: Adding by album requires an API token (the album's "
-                "tracklist is fetched from the catalog). To add tracks "
-                "without a token, pass them by name. To configure an API "
-                "token, run: applemusic-mcp login --dev"
-            )
-        resolved_albums = _resolve_album(album, artist)
+            rows, album_name = _itunes_album_tracks(album, artist)
+            if not rows:
+                return (
+                    f"Error: couldn't find the album '{album}' in the Apple Music "
+                    "catalog. Check the spelling, or pass the tracks by name."
+                )
+            ids_list.extend(r["id"] for r in rows)
+            steps.append(f"Album '{album_name}': found {len(rows)} tracks (public catalog)")
+            resolved_albums = []
+        else:
+            resolved_albums = _resolve_album(album, artist)
         for r in resolved_albums:
             if r.error:
                 steps.append(f"Album error: {r.error}")
@@ -4206,30 +4358,61 @@ def _playlist_add(
             else:
                 errors.append(_attach_error(name, result))
 
-        # Process IDs (catalog or library IDs)
-        # NOTE: track IDs require the API to resolve catalog/library metadata
-        # before handing off to AppleScript. If the user has no developer
-        # token, fail with a specific message rather than letting the
-        # FileNotFoundError leak — same defensive class as _playlist_create
-        # et al, just with a different fix shape (we can't avoid the API
-        # entirely here, but we can tell the user exactly why their input
-        # type isn't workable on this configuration).
-        if ids_list:
-            if not _has_developer_token():
+        # Process IDs (catalog or library IDs).
+        #
+        # These are two different questions wearing one name. A CATALOG id names
+        # something in Apple's public catalog: it looks up tokenlessly, and the
+        # add it implies is what the MusicKit rail is for. A LIBRARY id (i.XXXX)
+        # names a row in YOUR library, which no public endpoint can read — that
+        # one really does need the account API. The old guard rejected both on
+        # the strength of the second, and pointed at a shell command besides.
+        tokenless_ids = ids_list and not _has_developer_token()
+        if tokenless_ids:
+            catalog_ids = [t for t in ids_list if _is_catalog_id(t)]
+            # Everything that is NOT a catalog id resolves against the user's own
+            # library below (library, persistent, and unrecognised ids all take
+            # that branch), and no public endpoint can read that. Don't call them
+            # all "library IDs" — a mistyped id is not a library id, and saying so
+            # sends the user looking for a problem they don't have.
+            other_ids = [t for t in ids_list if not _is_catalog_id(t)]
+            if other_ids:
                 errors.append(
-                    "Track IDs require an API token on macOS (resolving the ID's "
-                    "catalog metadata uses the REST API). To add by ID without a "
-                    "token, pass the track by name instead. To configure an API "
-                    "token, run: applemusic-mcp login --dev"
+                    f"These IDs ({', '.join(other_ids[:3])}) aren't catalog IDs, so "
+                    "resolving them means reading your own library — which only the "
+                    "Apple Music API can do. Pass those tracks by name instead."
                 )
-                ids_list = []  # Skip the ID loop below
+            if catalog_ids and not _can_use_musickit_rail():
+                errors.append(
+                    f"Adding by catalog ID needs a way to write to your library. "
+                    f"{_musickit_setup_hint()}"
+                )
+                catalog_ids = []
+            ids_list = catalog_ids
 
         if ids_list:
-            headers = get_headers()
+            # Resolved lazily: on the tokenless rail there is no token to build
+            # headers from, and asking for them eagerly is what leaked
+            # "Developer token not found" out of paths that never needed one.
+            headers = None if tokenless_ids else get_headers()
 
             for track_id in ids_list:
                 # Get track info from catalog or library
-                if _is_catalog_id(track_id):
+                if _is_catalog_id(track_id) and tokenless_ids:
+                    # Same two steps as below, over the credential-free rails:
+                    # MusicKit signs the library add, the public lookup answers
+                    # "what is this id?".
+                    steps.append(f"Adding catalog ID {track_id} to library (MusicKit)...")
+                    row = _itunes_track_by_id(track_id)
+                    if not row:
+                        errors.append(f"Could not get info for {track_id}")
+                        continue
+                    name = row["name"]
+                    artist_name = row["artist"]
+                    ok_add, add_msg = _add_songs_to_library([track_id], known=[(name, artist_name)])
+                    if not ok_add:
+                        errors.append(f"Could not add {track_id}: {add_msg}")
+                        continue
+                elif _is_catalog_id(track_id):
                     # Add to library first
                     steps.append(f"Adding catalog ID {track_id} to library...")
                     params = {"ids[songs]": track_id}
@@ -5202,30 +5385,150 @@ def _catalog_search_itunes(query: str, limit: int = 25) -> list[dict]:
         results = resp.json().get("results", [])
     except (requests.exceptions.RequestException, ValueError):
         return []
-    out: list[dict] = []
-    for r in results:
-        released = str(r.get("releaseDate") or "")
-        # The iTunes payload exposes an explicit flag directly, so a clean_only
-        # filter over these rows is verified rather than "not known to be explicit".
-        advisory = (r.get("trackExplicitness") or "").lower()
-        out.append(
-            {
-                "name": r.get("trackName", ""),
-                "duration": format_duration(r.get("trackTimeMillis", 0)),
-                "artist": r.get("artistName", ""),
-                "album": r.get("collectionName", ""),
-                "year": released[:4],
-                "genre": r.get("primaryGenreName", ""),
-                "explicit": "Yes" if advisory == "explicit" else "No",
-                "id": str(r.get("trackId", "")),
-                "catalog_id": str(r.get("trackId", "")),
-                # music.apple.com deep link. Carried so the play path can try
-                # Music's own `open location` before giving up; validated again
-                # at the AppleScript layer before it is ever used.
-                "url": r.get("trackViewUrl", "") or "",
-            }
+    return [_itunes_song_row(r) for r in results]
+
+
+def _itunes_song_row(r: dict) -> dict:
+    """Shape one raw iTunes song into an ``extract_track_data``-style row.
+
+    Shared by the search and lookup rails so both produce rows that flow
+    through ``format_output`` unchanged and carry the same ``id``.
+    """
+    released = str(r.get("releaseDate") or "")
+    # The iTunes payload exposes an explicit flag directly, so a clean_only
+    # filter over these rows is verified rather than "not known to be explicit".
+    advisory = (r.get("trackExplicitness") or "").lower()
+    return {
+        "name": r.get("trackName", ""),
+        "duration": format_duration(r.get("trackTimeMillis", 0)),
+        "artist": r.get("artistName", ""),
+        "album": r.get("collectionName", ""),
+        "year": released[:4],
+        "genre": r.get("primaryGenreName", ""),
+        "explicit": "Yes" if advisory == "explicit" else "No",
+        "id": str(r.get("trackId", "")),
+        "catalog_id": str(r.get("trackId", "")),
+        # music.apple.com deep link. Carried so the play path can try
+        # Music's own `open location` before giving up; validated again
+        # at the AppleScript layer before it is ever used.
+        "url": r.get("trackViewUrl", "") or "",
+    }
+
+
+def _itunes_lookup(item_id: str, entity: str = "", limit: int = 200) -> list[dict]:
+    """Look one id up on Apple's PUBLIC iTunes Lookup API — no credential.
+
+    The sibling of ``_catalog_search_itunes``, and the piece that was missing:
+    ``search`` answers "what is called this?", ``lookup`` answers "what IS this
+    id?". Several paths needed the second question answered and, finding only
+    the first available tokenlessly, declared a developer token mandatory —
+    for catalog metadata that Apple serves to anyone.
+
+    With ``entity="song"`` on an ALBUM id it returns the collection followed by
+    its tracks, so this covers tracklists too.
+
+    Returns raw iTunes rows; callers shape songs with ``_itunes_song_row``.
+    """
+    raw = str(item_id or "").strip()
+    # This value goes into a URL. iTunes ids are ASCII digits — and str.isdigit()
+    # is True for Unicode digits such as "٣٤٥", the same trap the MusicKit helper
+    # guards against, so check isascii() too.
+    if not (raw.isascii() and raw.isdigit()):
+        return []
+    params = {
+        "id": raw,
+        "country": get_storefront(),
+        "limit": max(1, min(int(limit or 200), 200)),
+    }
+    if entity:
+        params["entity"] = entity
+    try:
+        resp = requests.get(
+            "https://itunes.apple.com/lookup", params=params, timeout=REQUEST_TIMEOUT
         )
-    return out
+        if resp.status_code != 200:
+            return []
+        return resp.json().get("results", []) or []
+    except (requests.exceptions.RequestException, ValueError):
+        return []
+
+
+def _itunes_songs_from(rows: list[dict]) -> list[dict]:
+    """Keep only the song rows of a lookup result, shaped and with a usable id.
+
+    A lookup echoes the thing you asked about first (an album comes back as a
+    ``collection`` row), so filtering on wrapperType is not optional — without
+    it the album itself is mistaken for its own first track.
+    """
+    out = [
+        _itunes_song_row(r)
+        for r in rows
+        if r.get("wrapperType") == "track" and r.get("kind") == "song"
+    ]
+    return [r for r in out if r.get("id")]
+
+
+def _itunes_track_by_id(track_id: str) -> Optional[dict]:
+    """Catalog metadata for one song id, tokenlessly. None if unknown."""
+    songs = _itunes_songs_from(_itunes_lookup(track_id, limit=1))
+    return songs[0] if songs else None
+
+
+def _itunes_find_album(name: str, artist: str = "") -> dict:
+    """Best album match by name (+ optional artist) over the public search API.
+
+    Returns ``{"id", "name", "artist"}`` or ``{}``. Mirrors the matching the
+    token path does over ``/catalog/{sf}/search?types=albums``: prefer a hit
+    whose name AND artist both match, else fall back to the first result.
+    """
+    query = f"{name} {artist}".strip()
+    if not query:
+        return {}
+    try:
+        resp = requests.get(
+            "https://itunes.apple.com/search",
+            params={
+                "term": query,
+                "entity": "album",
+                "limit": 5,
+                "country": get_storefront(),
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
+        if resp.status_code != 200:
+            return {}
+        results = resp.json().get("results", []) or []
+    except (requests.exceptions.RequestException, ValueError):
+        return {}
+
+    fallback: dict = {}
+    for r in results:
+        hit = {
+            "id": str(r.get("collectionId", "")),
+            "name": r.get("collectionName", ""),
+            "artist": r.get("artistName", ""),
+        }
+        if not hit["id"]:
+            continue
+        fallback = fallback or hit
+        if _loose_contains(name, hit["name"]) and (
+            not artist or _loose_contains(artist, hit["artist"])
+        ):
+            return hit
+    return fallback
+
+
+def _itunes_album_tracks(album: str, artist: str = "") -> tuple[list[dict], str]:
+    """Every song on an album, by name, with no credential.
+
+    Returns ``(rows, album_name)``. This is the whole reason "adding by album
+    requires an API token" was never actually true: search the album, then look
+    its tracklist up — both public endpoints.
+    """
+    found = _itunes_find_album(album, artist)
+    if not found:
+        return [], ""
+    return _itunes_songs_from(_itunes_lookup(found["id"], entity="song")), found["name"]
 
 
 def _resolve_catalog_track_itunes(name: str, artist: str = "") -> Optional[dict]:
@@ -5337,11 +5640,7 @@ def _library_add(
     if not _can_use_library_api():
         if _forced_tokenless():
             return f"Error: Adding to your library is disabled: {_FORCED_TOKENLESS_MSG}"
-        return (
-            "Error: Adding to your library needs the API. Run "
-            "`applemusic-mcp login --dev` (Apple Developer token) "
-            "or `applemusic-mcp login --dev`."
-        )
+        return f"Error: Adding to your library isn't set up yet. {_musickit_setup_hint()}"
 
     # Helper to add a song by catalog search
     def _add_track_by_search(name: str, search_artist: str) -> None:
@@ -5754,29 +6053,45 @@ def _catalog_resolve_isrc(isrcs: str, format: str = "text", full: bool = False) 
     requests_made = 0
     throttled = False
 
+    # The ONE catalog query with no public equivalent: itunes.apple.com/search,
+    # which covers this server's other catalog needs with no credential, has no
+    # ISRC filter. So this is where the signed MusicKit helper earns its keep —
+    # and the batching that already existed for Apple's sake is what makes a
+    # process-per-call rail affordable here.
+    use_musickit = not _has_developer_token() and _can_use_musickit_rail()
+
     try:
-        headers = get_headers()
+        headers = None if use_musickit else get_headers()
         storefront = get_storefront()
         for start in range(0, len(wanted), _ISRC_BATCH_SIZE):
             batch = wanted[start : start + _ISRC_BATCH_SIZE]
-            response = requests.get(
-                f"{BASE_URL}/catalog/{storefront}/songs",
-                headers=headers,
-                params={"filter[isrc]": ",".join(batch)},
-                timeout=REQUEST_TIMEOUT,
-            )
-            requests_made += 1
-            rate_limit.note_status(response.status_code, rate_limit.API)
-            if response.status_code == 429:
-                # Stop immediately: further batches can only extend the window.
-                # Whatever resolved before this point is still good, so report it
-                # rather than throwing the partial work away.
-                throttled = True
-                break
-            response.raise_for_status()
-            asked.extend(batch)
+            if use_musickit:
+                requests_made += 1
+                ok, payload = musickit.resolve_isrcs(batch)
+                if not ok:
+                    return f"Error resolving ISRCs over MusicKit: {payload}"
+                asked.extend(batch)
+                songs = payload if isinstance(payload, list) else []
+            else:
+                response = requests.get(
+                    f"{BASE_URL}/catalog/{storefront}/songs",
+                    headers=headers,
+                    params={"filter[isrc]": ",".join(batch)},
+                    timeout=REQUEST_TIMEOUT,
+                )
+                requests_made += 1
+                rate_limit.note_status(response.status_code, rate_limit.API)
+                if response.status_code == 429:
+                    # Stop immediately: further batches can only extend the window.
+                    # Whatever resolved before this point is still good, so report it
+                    # rather than throwing the partial work away.
+                    throttled = True
+                    break
+                response.raise_for_status()
+                asked.extend(batch)
+                songs = response.json().get("data", [])
 
-            for song in response.json().get("data", []):
+            for song in songs:
                 # extract_track_data also populates the track cache (name/artist/ISRC
                 # → catalog id), so a later lookup for the same track is free.
                 data = extract_track_data(song, full)
@@ -7529,7 +7844,8 @@ def catalog(
             if not hits:
                 return (
                     f"No catalog results for '{query}' (public iTunes Search API). "
-                    "For the full Apple Music catalog API, run `applemusic-mcp login --dev`."
+                    "This is Apple's public catalog index; a configured "
+                    "developer token can differ at the margins."
                 )
             return format_output(hits, format, export, full, "catalog_search")
     elif action in ("resolve", "resolve_isrc", "match", "match_tracks", "resolve_tracks"):
@@ -7921,17 +8237,25 @@ def _config_auth_status(mutation_status: "Optional[str]" = None) -> str:
         try:
             days_left = (dev_info.get("expires", 0) - time.time()) / 86400
             days = round(days_left)
+            # An expiring token is no longer an emergency: the MusicKit rail
+            # covers catalog adds with no credential, so say what the token is
+            # actually still buying (a larger quota) rather than implying the
+            # tool stops working without it.
             if days_left < 0:
-                status.append("Developer Token: EXPIRED — run `applemusic-mcp login --dev`")
+                status.append(
+                    "Developer Token: EXPIRED — renew with "
+                    "`secure-applemusic-mcp login --dev`, or drop it and use "
+                    "config(action='signin')"
+                )
             elif days_left <= 7:
                 status.append(
                     f"Developer Token: ⚠️ EXPIRES IN {days} DAY(S) — "
-                    "run `applemusic-mcp login --dev` now"
+                    "renew with `secure-applemusic-mcp login --dev` now"
                 )
             elif days_left <= 30:
                 status.append(
                     f"Developer Token: expires in {days} days — "
-                    "run `applemusic-mcp login --dev` soon"
+                    "renew with `secure-applemusic-mcp login --dev` soon"
                 )
             else:
                 status.append(f"Developer Token: OK ({days} days remaining, generated)")
@@ -7942,20 +8266,18 @@ def _config_auth_status(mutation_status: "Optional[str]" = None) -> str:
         status.append("Developer Token: OK (web player — auto-refreshes, no action needed)")
     else:
         status.append(
-            "Developer Token: MISSING — run `applemusic-mcp login --dev` "
-            "or `applemusic-mcp login --dev` (Apple Developer)"
+            "Developer Token: not configured (optional — the MusicKit rail below "
+            "covers catalog adds with no credential; a token only adds a larger "
+            "rate-limit quota for bulk work)"
         )
 
     # Music User Token. Persists; re-auth via `login --dev`, which mints the
     # developer token and then runs the local MusicKit authorization page.
     if user_present:
-        status.append(
-            "Music User Token: OK (persists; re-auth with `applemusic-mcp login` if it fails)"
-        )
+        status.append("Music User Token: OK (persists)")
     else:
         status.append(
-            "Music User Token: MISSING — run `applemusic-mcp login --dev` "
-            "or `applemusic-mcp login --dev` (dev token)"
+            "Music User Token: not configured (optional — only the developer-token " "rail uses it)"
         )
 
     # Test API connection
@@ -7972,8 +8294,9 @@ def _config_auth_status(mutation_status: "Optional[str]" = None) -> str:
                 status.append("API Connection: OK")
             elif response.status_code in (401, 403):
                 status.append(
-                    "API Connection: UNAUTHORIZED — your session expired. Re-run "
-                    "`applemusic-mcp login --dev` (Apple Developer token)."
+                    "API Connection: UNAUTHORIZED — your developer-token session "
+                    "expired. Renew with `secure-applemusic-mcp login --dev`, or drop the token "
+                    "entirely and use config(action='signin')."
                 )
             elif response.status_code == 429:
                 rate_limit.note_status(429, rate_limit.API)
@@ -8006,7 +8329,8 @@ def _config_auth_status(mutation_status: "Optional[str]" = None) -> str:
                 "ok": "Catalog add: OK (Apple Music API, developer token)",
                 "expired": (
                     "Catalog add: UNAUTHORIZED — the developer-token session "
-                    "expired. Re-run `applemusic-mcp login --dev`."
+                    "expired. Renew with `secure-applemusic-mcp login --dev`, or use "
+                    "config(action='signin') and drop the token."
                 ),
                 "throttled": f"Catalog add: RATE-LIMITED (429) — {_THROTTLED_REASON}",
                 "error": "Catalog add: ERROR reaching the Apple Music API.",
@@ -8419,8 +8743,9 @@ def _auth_action(action: str = "status", confirm: bool = False) -> str:
             "Music.app over Apple Events — no token, no cookie, nothing stored. "
             "Catalog search uses Apple's public iTunes Search API.\n\n"
             "Adding a catalog track you don't own yet needs either the packaged "
-            "app (which ships a MusicKit helper and asks for permission natively) "
-            "or an Apple Developer token: `applemusic-mcp login --dev`."
+            "app (which ships a MusicKit helper and asks for permission natively, "
+            "via config(action='signin')) or an optional Apple Developer token: "
+            "`secure-applemusic-mcp login --dev`."
         )
 
     if action == "logout":
@@ -8465,7 +8790,7 @@ def _auth_action(action: str = "status", confirm: bool = False) -> str:
             )
         return (
             "✓ Reset complete. Nothing is stored now. Local Music.app features work "
-            "with no credential; for catalog library-adds, run `applemusic-mcp login --dev`."
+            "with no credential; for catalog library-adds, run config(action='signin')."
         )
 
     return f"Unknown action: {action}. Use: status, signin, logout, reset"
@@ -8649,8 +8974,9 @@ def _catalog_miss_play(name: str, artist: str, url: str, reveal: bool) -> str:
     ``open`` call took a weakly-validated URL, and the clicking needed
     Accessibility. The supported substitute is add-then-play — put the track in
     the library over the official API, then play it by name through Apple Events.
-    That needs a developer token; without one we say so plainly instead of
-    silently doing nothing.
+    That needs a way to WRITE to the library — either the signed MusicKit helper
+    (no credential at all) or a developer token. With neither we say so plainly
+    instead of silently doing nothing.
     """
     label = f"{name} by {artist}" if artist else name
 
@@ -8666,11 +8992,19 @@ def _catalog_miss_play(name: str, artist: str, url: str, reveal: bool) -> str:
             f"there's nothing to reveal — search for it in Music.app, or add it to "
             f"your library first."
         )
-    if not _can_use_library_api():
+    # Two rails can put this track in the library and only one involves a
+    # credential. Everything below this line is ALREADY tokenless — the catalog
+    # id comes from the public iTunes endpoint, the add prefers the signed
+    # MusicKit helper, and the play is Apple Events — so gating the whole thing
+    # on a developer token refused work the machine was perfectly able to do.
+    if not _can_use_library_api() and not _can_use_musickit_rail():
+        if _forced_tokenless():
+            # Blame the flag by name. Reporting this as missing auth is exactly
+            # how someone ends up re-authenticating something already fine.
+            return f"[Catalog] Found {label}, but catalog adds are off: {_FORCED_TOKENLESS_MSG}"
         return (
             f"[Catalog] Found {label}, but it isn't in your library and Music.app can "
-            "only play what you own. Adding a catalog track needs the official Apple "
-            "Music API — run `applemusic-mcp login --dev` — or add it in Music.app "
+            f"only play what you own. {_musickit_setup_hint()} Or add it in Music.app "
             "yourself and ask again."
         )
     catalog_id = _find_catalog_id_for(name, artist)
@@ -8700,14 +9034,25 @@ def _catalog_miss_play(name: str, artist: str, url: str, reveal: bool) -> str:
     return _play_after_add(label, last_err)
 
 
-def _find_catalog_id_for(name: str, artist: str = "") -> str:
-    """Resolve a catalog song id by name/artist, tokenlessly where possible."""
+def _find_catalog_hit_for(name: str, artist: str = "") -> dict:
+    """Resolve a catalog song by name/artist over the public (tokenless) rail.
+
+    Returns the whole hit rather than just the id: callers that go on to attach
+    the track need Apple's canonical name/artist to poll the local library for
+    it, and re-deriving those from the caller's free-form input is what made
+    the attach step miss tracks whose titles differ by punctuation.
+    """
     for hit in _catalog_search_itunes(f"{name} {artist}".strip(), 5):
         if _loose_equals(hit.get("name", ""), name) and (
             not artist or _loose_contains(artist, hit.get("artist", ""))
         ):
-            return hit.get("id", "")
-    return ""
+            return hit
+    return {}
+
+
+def _find_catalog_id_for(name: str, artist: str = "") -> str:
+    """Resolve a catalog song id by name/artist, tokenlessly where possible."""
+    return _find_catalog_hit_for(name, artist).get("id", "")
 
 
 def _parse_apple_music_url(url: str) -> tuple[bool, str]:
@@ -8773,12 +9118,15 @@ def _playback_play(
         song_id = ident
         name = _catalog_song_name(song_id) if _has_developer_token() else ""
         if not name:
-            hits = [h for h in _catalog_search_itunes(song_id, 1)] if song_id.isdigit() else []
-            name = hits[0]["name"] if hits else ""
+            # Look the id UP rather than full-text-searching for its digits:
+            # a search for "1440783617" matches whatever happens to contain that
+            # string, which is not the same question and occasionally answers it.
+            row = _itunes_track_by_id(song_id)
+            name = row["name"] if row else ""
         if not name:
             return (
                 f"Error: couldn't resolve catalog id {song_id} to a track. "
-                "Play by name instead, or run `applemusic-mcp login --dev` for catalog lookups."
+                "Play by name instead — that id isn't in Apple's catalog index."
             )
         audit_log.log_action("play_url", {"catalog_id": song_id, "resolved": name})
         found, _ = asc.find_library_track(name, "")

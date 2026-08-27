@@ -221,7 +221,7 @@ def generate_developer_token(expiry_days: int = 180) -> str:
     """Generate a developer token (JWT) valid for up to 180 days."""
     config = load_config()
     if not config:
-        raise FileNotFoundError("No config.json found. Run: applemusic-mcp login --dev")
+        raise FileNotFoundError("No config.json found. Run: secure-applemusic-mcp login --dev")
     key_path = get_private_key_path(config)
 
     with open(key_path) as f:
@@ -291,12 +291,12 @@ def get_developer_token() -> str:
             return data["token"]  # still valid; no key to renew with, so keep using it
         raise ValueError(
             "Developer token expired or expiring soon and no signing key is available "
-            "to renew it. Run: applemusic-mcp login --dev (or `login` for the web path)."
+            "to renew it. Run: secure-applemusic-mcp login --dev (or `login` for the web path)."
         )
     # No stored token yet — generate if we have the key, else signal "not found".
     if can_generate_developer_token():
         return generate_developer_token()
-    raise FileNotFoundError("Developer token not found. Run: applemusic-mcp login --dev")
+    raise FileNotFoundError("Developer token not found. Run: secure-applemusic-mcp login --dev")
 
 
 def get_user_token() -> str:
@@ -308,7 +308,7 @@ def get_user_token() -> str:
         return env_tok
     raw = secret_get("music_user_token")
     if not raw:
-        raise FileNotFoundError("Music user token not found. Run: applemusic-mcp login")
+        raise FileNotFoundError("Music user token not found. Run: secure-applemusic-mcp login")
     return json.loads(raw)["music_user_token"]
 
 

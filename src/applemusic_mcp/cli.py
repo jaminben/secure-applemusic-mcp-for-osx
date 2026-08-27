@@ -2,12 +2,12 @@
 
 Five verbs, no ceremony:
 
-    applemusic-mcp serve            run the MCP server (your client calls this)
-    applemusic-mcp login            sign in (web flow, no developer account)
-    applemusic-mcp login --dev      sign in with an Apple Developer token (.p8)
-    applemusic-mcp logout           sign out (switch accounts)
-    applemusic-mcp status           show auth status
-    applemusic-mcp reset --force    wipe all credentials
+    secure-applemusic-mcp serve            run the MCP server (your client calls this)
+    secure-applemusic-mcp login            sign in (web flow, no developer account)
+    secure-applemusic-mcp login --dev      sign in with an Apple Developer token (.p8)
+    secure-applemusic-mcp logout           sign out (switch accounts)
+    secure-applemusic-mcp status           show auth status
+    secure-applemusic-mcp reset --force    wipe all credentials
 
 The developer-token flow folds the old init + generate-token + authorize steps
 into one guided `login --dev`.
@@ -44,7 +44,7 @@ def cmd_login(args):
             "  • Library, playlists, ratings, playback: no sign-in needed — they run\n"
             "    on the local Music.app over Apple Events.\n"
             "  • Catalog search: no sign-in needed — public iTunes Search API.\n"
-            "  • Adding a catalog track to your library: applemusic-mcp login --dev"
+            "  • Adding a catalog track to your library: secure-applemusic-mcp login --dev"
         )
         return 1
     if not args.dev:
@@ -53,7 +53,7 @@ def cmd_login(args):
             "Local Music.app features (library, playlists, ratings, playback) work with\n"
             "no credential. Catalog search uses Apple's public iTunes Search API.\n\n"
             "To enable adding catalog tracks to your library, set up an official Apple\n"
-            "Developer token:  applemusic-mcp login --dev"
+            "Developer token:  secure-applemusic-mcp login --dev"
         )
         return 0
     return _login_dev(args)
@@ -143,13 +143,16 @@ def cmd_reset(args):
         for d in paths.all_state_dirs():
             shutil.rmtree(d, ignore_errors=True)
         print("Full reset complete — all applemusic-mcp state removed (including your .p8).")
-        print("Run `applemusic-mcp login` to start fresh.")
+        print("Run `secure-applemusic-mcp login` to start fresh.")
         return 0
 
     cfg_file = get_config_dir() / "config.json"
     if cfg_file.exists():
         cfg_file.unlink()
-    print("Reset complete. Run `applemusic-mcp login` (web) or `login --dev` (developer token).")
+    print(
+        "Reset complete. Run `secure-applemusic-mcp login` (web) "
+        "or `login --dev` (developer token)."
+    )
     return 0
 
 
@@ -167,7 +170,7 @@ def cmd_status(args):
         days_left = (data["expires"] - time.time()) / 86400
         print(f"Developer token: valid ({days_left:.0f} days left)")
     elif data is not None:
-        print("Developer token: expired — re-run `applemusic-mcp login --dev` to renew")
+        print("Developer token: expired — re-run `secure-applemusic-mcp login --dev` to renew")
     elif has_user_token():
         # The web/Safari path has no generated token — it's harvested from Apple's
         # web player on demand. Say so rather than implying something's missing.
@@ -198,7 +201,7 @@ def cmd_status(args):
             )
             print("API: ok" if r.status_code == 200 else f"API: status {r.status_code}")
         else:
-            print("API: not configured (optional — run `applemusic-mcp login --dev`)")
+            print("API: not configured (optional — run `secure-applemusic-mcp login --dev`)")
     except Exception as e:
         print(f"API: error ({e})")
 

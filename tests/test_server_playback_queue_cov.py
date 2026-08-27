@@ -309,8 +309,15 @@ class TestConvertSongUrlToAlbum:
 
 class TestCatalogMissPlay:
 
-    def test_no_url_returns_found_message(self):
-        """Line 7185: no url -> found message without playing."""
+    def test_no_url_returns_found_message(self, monkeypatch):
+        """Line 7185: no url -> found message without playing.
+
+        Stubs the rails explicitly: unstubbed, this read whether the DEVELOPER's
+        checkout happened to contain a built, authorized MusicKit helper, and on
+        a machine that had one it fell through to a real catalog lookup.
+        """
+        monkeypatch.setattr(server, "_can_use_library_api", lambda: False)
+        monkeypatch.setattr(server.musickit, "is_available", lambda: False)
         out = server._catalog_miss_play("Strobe", "deadmau5", "", reveal=False)
         assert "Strobe" in out and "deadmau5" in out
 

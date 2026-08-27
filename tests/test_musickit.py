@@ -96,6 +96,7 @@ def test_catalog_play_off_blocks_every_add(monkeypatch):
     monkeypatch.setattr(server, "get_user_preferences", lambda: {"catalog_play": "off"})
     tried = []
     monkeypatch.setattr(server.musickit, "is_available", lambda: tried.append("mk") or True)
+    monkeypatch.setattr(server.musickit, "authorization_status", lambda: "authorized")
     monkeypatch.setattr(server, "_add_to_library_api", lambda *a, **k: tried.append("rest"))
 
     ok, msg = server._add_songs_to_library(["1440812085"])
@@ -108,6 +109,7 @@ def test_musickit_is_preferred_over_the_token_rail(monkeypatch):
     """Prefer the rail that needs no credential."""
     monkeypatch.setattr(server, "get_user_preferences", lambda: {"catalog_play": "add"})
     monkeypatch.setattr(server.musickit, "is_available", lambda: True)
+    monkeypatch.setattr(server.musickit, "authorization_status", lambda: "authorized")
     monkeypatch.setattr(server.musickit, "add_to_library", lambda cid: (True, "added (HTTP 202)"))
     rest = []
     monkeypatch.setattr(server, "_add_to_library_api", lambda *a, **k: rest.append(a) or (True, ""))
@@ -122,6 +124,7 @@ def test_falls_back_to_the_token_rail_when_musickit_refuses(monkeypatch):
     """A helper that is present but unauthorized must not block a working token."""
     monkeypatch.setattr(server, "get_user_preferences", lambda: {"catalog_play": "add"})
     monkeypatch.setattr(server.musickit, "is_available", lambda: True)
+    monkeypatch.setattr(server.musickit, "authorization_status", lambda: "authorized")
     monkeypatch.setattr(server.musickit, "add_to_library", lambda cid: (False, "not authorized"))
     monkeypatch.setattr(server, "_add_to_library_api", lambda *a, **k: (True, "Added 1 song"))
     monkeypatch.setattr(server, "_record_auto_added", lambda ids, known=None: None)
@@ -266,3 +269,495 @@ def test_names_are_passed_through_rather_than_looked_up(monkeypatch):
 
     server._record_auto_added(["123"], known=[("Pancakes", "Emancipator")])
     assert filed == ["Pancakes"], "caller-supplied names must be used"
+
+
+# ---------------------------------------------------------------------------
+# The MusicKit rail as a *routing* decision.
+#
+# Regression: a notarized bundle with an authorized helper could add a catalog
+# track to the library, but `_unified_auto_search_to_playlist` gated on
+# `_can_use_library_api()` — tokens only — and so refused, telling the user to
+# run `applemusic-mcp login --dev`: a binary this build does not install, for a
+# rail the helper made unnecessary. The capability was one layer below the gate
+# that turned it away.
+# ---------------------------------------------------------------------------
+
+
+class TestMusicKitIsAWriteRail:
+    def test_authorized_helper_counts_as_a_rail(self, monkeypatch):
+        monkeypatch.setattr(server.musickit, "is_available", lambda: True)
+        monkeypatch.setattr(server.musickit, "authorization_status", lambda: "authorized")
+        assert server._can_use_musickit_rail() is True
+
+    def test_unauthorized_helper_does_not(self, monkeypatch):
+        """Present but not consented to: `add` refuses, so promising the rail
+        here would only move the failure later and make it less legible."""
+        monkeypatch.setattr(server.musickit, "is_available", lambda: True)
+        monkeypatch.setattr(server.musickit, "authorization_status", lambda: "notDetermined")
+        assert server._can_use_musickit_rail() is False
+
+    def test_missing_helper_does_not(self, monkeypatch):
+        monkeypatch.setattr(server.musickit, "is_available", lambda: False)
+        assert server._can_use_musickit_rail() is False
+
+    def test_forced_tokenless_disables_it(self, monkeypatch):
+        """APPLEMUSIC_FORCE_TOKENLESS is documented as disabling every write
+        path, and status blames it by name. Quietly honouring MusicKit anyway
+        would make that flag lie."""
+        monkeypatch.setenv("APPLEMUSIC_FORCE_TOKENLESS", "1")
+        monkeypatch.setattr(server.musickit, "is_available", lambda: True)
+        monkeypatch.setattr(server.musickit, "authorization_status", lambda: "authorized")
+        assert server._can_use_musickit_rail() is False
+
+
+class TestSetupHintNeverSendsAnyoneToAShell:
+    @pytest.mark.parametrize(
+        "status,expected",
+        [
+            ("notDetermined", "config(action='signin')"),
+            ("denied", "System Settings"),
+            ("restricted", "restricted"),
+        ],
+    )
+    def test_hint_matches_the_authorization_state(self, monkeypatch, status, expected):
+        monkeypatch.setattr(server.musickit, "is_available", lambda: True)
+        monkeypatch.setattr(server.musickit, "authorization_status", lambda: status)
+        assert expected in server._musickit_setup_hint()
+
+    def test_no_helper_points_at_the_signed_bundle(self, monkeypatch):
+        monkeypatch.setattr(server.musickit, "is_available", lambda: False)
+        assert "notarized download" in server._musickit_setup_hint()
+
+    @pytest.mark.parametrize("status", ["notDetermined", "denied", "restricted", "unavailable"])
+    def test_no_branch_names_a_shell_command(self, monkeypatch, status):
+        monkeypatch.setattr(server.musickit, "is_available", lambda: status != "unavailable")
+        monkeypatch.setattr(server.musickit, "authorization_status", lambda: status)
+        hint = server._musickit_setup_hint()
+        assert "applemusic-mcp" not in hint
+        assert "login --dev" not in hint
+
+
+class TestPlaylistAddRoutesToMusicKitWithoutAToken:
+    def test_tokenless_host_with_a_helper_is_not_turned_away(self, monkeypatch):
+        monkeypatch.setattr(server, "_can_use_library_api", lambda: False)
+        monkeypatch.setattr(server.musickit, "is_available", lambda: True)
+        monkeypatch.setattr(server.musickit, "authorization_status", lambda: "authorized")
+        seen = {}
+
+        def fake(name, artist, playlist):
+            seen.update(name=name, artist=artist, playlist=playlist)
+            return True, "Pancakes - Emancipator (added via MusicKit)", ["found in catalog"]
+
+        monkeypatch.setattr(server, "_tokenless_search_and_add_to_playlist", fake)
+
+        ok, msg, steps = server._unified_auto_search_to_playlist("Pancakes", "Emancipator", "Chill")
+        assert ok is True
+        assert seen == {"name": "Pancakes", "artist": "Emancipator", "playlist": "Chill"}
+        assert "found in catalog" in steps
+
+    def test_combined_name_is_split_before_the_musickit_rail_sees_it(self, monkeypatch):
+        """The ' - ' split happens above the gate, so both rails get the clean
+        query — not just the token one."""
+        monkeypatch.setattr(server, "_can_use_library_api", lambda: False)
+        monkeypatch.setattr(server.musickit, "is_available", lambda: True)
+        monkeypatch.setattr(server.musickit, "authorization_status", lambda: "authorized")
+        seen = {}
+        monkeypatch.setattr(
+            server,
+            "_tokenless_search_and_add_to_playlist",
+            lambda n, a, p: (seen.update(name=n, artist=a), (True, "ok", []))[1],
+        )
+        server._unified_auto_search_to_playlist("Pancakes - Emancipator", "", "Chill")
+        assert seen == {"name": "Pancakes", "artist": "Emancipator"}
+
+    def test_no_rail_at_all_gives_an_in_app_fix(self, monkeypatch):
+        monkeypatch.setattr(server, "_can_use_library_api", lambda: False)
+        monkeypatch.setattr(server.musickit, "is_available", lambda: False)
+        ok, msg, _ = server._unified_auto_search_to_playlist("Pancakes", "Emancipator", "Chill")
+        assert ok is False
+        assert "applemusic-mcp" not in msg, "must not name a binary this build lacks"
+        assert "login --dev" not in msg
+
+
+class TestTokenlessSearchAndAdd:
+    def test_uses_the_public_catalog_rail_then_musickit_then_applescript(self, monkeypatch):
+        monkeypatch.setattr(
+            server,
+            "_find_catalog_hit_for",
+            lambda n, a: {"id": "123", "name": "Pancakes", "artist": "Emancipator"},
+        )
+        added = []
+        monkeypatch.setattr(
+            server,
+            "_add_songs_to_library",
+            lambda ids, known=None: (added.append((ids, known)), (True, "ok"))[1],
+        )
+        monkeypatch.setattr(
+            server,
+            "_sync_then_attach_native",
+            lambda n, a, p, steps, rail: (True, f"{n} (via {rail})", steps),
+        )
+
+        ok, msg, steps = server._tokenless_search_and_add_to_playlist(
+            "pancakes", "emancipator", "Chill"
+        )
+        assert ok is True
+        assert "via MusicKit" in msg
+        # Apple's canonical name/artist go downstream, not the caller's casing —
+        # the attach step polls the local library by name.
+        assert added == [(["123"], [("Pancakes", "Emancipator")])]
+        assert any("no credential" in s for s in steps)
+
+    def test_missing_from_the_catalog_is_reported_without_blaming_auth(self, monkeypatch):
+        monkeypatch.setattr(server, "_find_catalog_hit_for", lambda n, a: {})
+        ok, msg, _ = server._tokenless_search_and_add_to_playlist("Nope", "Nobody", "Chill")
+        assert ok is False
+        assert "Nope - Nobody" in msg
+        assert "login" not in msg
+
+    def test_a_refused_library_add_surfaces_the_helper_reason(self, monkeypatch):
+        monkeypatch.setattr(
+            server, "_find_catalog_hit_for", lambda n, a: {"id": "9", "name": "S", "artist": "A"}
+        )
+        monkeypatch.setattr(
+            server, "_add_songs_to_library", lambda ids, known=None: (False, "not authorized")
+        )
+        ok, msg, _ = server._tokenless_search_and_add_to_playlist("S", "A", "Chill")
+        assert ok is False
+        assert "not authorized" in msg
+
+
+class TestSyncThenAttachIsSharedByBothRails:
+    def _stub_a_clean_attach(self, monkeypatch):
+        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
+        monkeypatch.setattr(server.asc, "find_library_track", lambda n, a: (True, {}))
+        monkeypatch.setattr(
+            server, "_smart_as_add_track_to_playlist", lambda p, n, a, x: (True, "added", None)
+        )
+        monkeypatch.setattr(server, "_verify_track_in_playlist", lambda p, n, a: True)
+
+    def test_the_rail_label_reaches_the_success_message(self, monkeypatch):
+        """One implementation, two callers — the only thing that differs is which
+        rail is named, so the timing logic can never drift between them."""
+        self._stub_a_clean_attach(monkeypatch)
+        ok, msg, _ = server._sync_then_attach_native("S", "A", "Chill", [], "MusicKit")
+        assert ok is True
+        assert "added to library via MusicKit" in msg
+
+        ok, msg, _ = server._sync_then_attach_native("S", "A", "Chill", [], "the Apple Music API")
+        assert "added to library via the Apple Music API" in msg
+
+
+# ---------------------------------------------------------------------------
+# Same routing bug, second site: playing a catalog track you don't own.
+#
+# `_catalog_miss_play` is add-then-play, and EVERY step below its gate was
+# already credential-free — public iTunes for the id, MusicKit for the add,
+# Apple Events for the play. Only the gate asked for a token.
+# ---------------------------------------------------------------------------
+
+
+class TestCatalogPlayRoutesToMusicKitWithoutAToken:
+    def _stub_add_then_play(self, monkeypatch, added):
+        monkeypatch.setattr(server, "_find_catalog_id_for", lambda n, a: "123")
+        monkeypatch.setattr(
+            server,
+            "_add_songs_to_library",
+            lambda ids, known=None: (added.append(ids), (True, "ok"))[1],
+        )
+        monkeypatch.setattr(server.audit_log, "log_action", lambda *a, **k: None)
+        monkeypatch.setattr(server.asc, "find_library_track", lambda n, a: (True, {}))
+        monkeypatch.setattr(server, "file_under_auto_playlist", lambda n, a=None: None)
+        monkeypatch.setattr(server.asc, "play_track", lambda n, a: (True, "Strobe"))
+
+    def test_an_authorized_helper_is_enough(self, monkeypatch):
+        monkeypatch.setattr(server, "_can_use_library_api", lambda: False)
+        monkeypatch.setattr(server.musickit, "is_available", lambda: True)
+        monkeypatch.setattr(server.musickit, "authorization_status", lambda: "authorized")
+        added = []
+        self._stub_add_then_play(monkeypatch, added)
+
+        out = server._catalog_miss_play("Strobe", "deadmau5", "", reveal=False)
+        assert added == [["123"]], "the add must actually run, not be gated away"
+        assert "Added and playing" in out
+
+    def test_a_token_still_works_on_its_own(self, monkeypatch):
+        """The MusicKit rail is an OR, not a replacement — a token-only host
+        (source checkout, no Swift build) must be unaffected."""
+        monkeypatch.setattr(server, "_can_use_library_api", lambda: True)
+        monkeypatch.setattr(server.musickit, "is_available", lambda: False)
+        added = []
+        self._stub_add_then_play(monkeypatch, added)
+
+        out = server._catalog_miss_play("Strobe", "deadmau5", "", reveal=False)
+        assert added == [["123"]]
+        assert "Added and playing" in out
+
+    def test_neither_rail_gives_an_in_app_fix(self, monkeypatch):
+        monkeypatch.setattr(server, "_can_use_library_api", lambda: False)
+        monkeypatch.setattr(server.musickit, "is_available", lambda: False)
+        out = server._catalog_miss_play("Strobe", "deadmau5", "", reveal=False)
+        assert "Strobe by deadmau5" in out
+        assert "applemusic-mcp" not in out
+        assert "login --dev" not in out
+        assert "notarized download" in out
+
+    def test_forced_tokenless_blames_the_flag_not_your_auth(self, monkeypatch):
+        """`_forced_tokenless` is documented as requiring write-gate errors to
+        name it. This gate didn't, so setting the flag produced 'go get a
+        developer token' — advice that cannot possibly help while it is set."""
+        monkeypatch.setenv("APPLEMUSIC_FORCE_TOKENLESS", "1")
+        monkeypatch.setattr(server.musickit, "is_available", lambda: True)
+        monkeypatch.setattr(server.musickit, "authorization_status", lambda: "authorized")
+        out = server._catalog_miss_play("Strobe", "deadmau5", "", reveal=False)
+        assert "APPLEMUSIC_FORCE_TOKENLESS" in out
+        assert "login" not in out
+
+
+# ---------------------------------------------------------------------------
+# The verbs added so the developer token stops being load-bearing.
+# ---------------------------------------------------------------------------
+
+
+class TestIdentifierValidation:
+    """Every id here is interpolated into a URL that reaches Apple. The helper
+    re-validates in Swift too — one validation site is one too few."""
+
+    @pytest.mark.parametrize("bad", ["", "  ", "12a", "١٢٣٤٥", "1;2", "-1"])
+    def test_catalog_ids_must_be_ascii_digits(self, bad):
+        assert musickit._valid_catalog_id(bad) is None
+
+    def test_a_good_catalog_id_is_returned_stripped(self):
+        assert musickit._valid_catalog_id("  1440783617 ") == "1440783617"
+
+    @pytest.mark.parametrize(
+        "bad", ["", "abc", "p.", "p", "p.../etc/passwd", "p.ab/cd", "p." + "a" * 100]
+    )
+    def test_playlist_ids_must_be_p_dot_alnum(self, bad):
+        """This one lands in a URL PATH: a stray '/' or '..' would change WHICH
+        resource is addressed rather than merely failing."""
+        assert musickit._valid_playlist_id(bad) is None
+
+    def test_a_good_playlist_id_passes(self):
+        assert musickit._valid_playlist_id("p.AbC123") == "p.AbC123"
+
+
+class TestNewVerbsRejectBadInputBeforeSpawning:
+    def _never_runs(self, monkeypatch):
+        def boom(*a):
+            raise AssertionError("the helper must not be spawned for invalid input")
+
+        monkeypatch.setattr(musickit, "_run", boom)
+
+    def test_album_add(self, monkeypatch):
+        self._never_runs(monkeypatch)
+        assert musickit.add_album_to_library("nope")[0] is False
+
+    def test_rate_rejects_an_unknown_rating(self, monkeypatch):
+        self._never_runs(monkeypatch)
+        ok, msg = musickit.rate_song("1440783617", "sideways")
+        assert ok is False and "love" in msg
+
+    def test_playlist_add_rejects_a_path_traversal(self, monkeypatch):
+        self._never_runs(monkeypatch)
+        assert musickit.add_track_to_playlist("p.../../x", "1440783617")[0] is False
+
+    @pytest.mark.parametrize("bad", [[], ["SHORT"], ["A" * 13], ["US-ABC-12-345"], ["ÜSABC123456"]])
+    def test_isrc_shape_is_enforced(self, monkeypatch, bad):
+        """Length, ASCII and alphanumeric — the properties that make the value
+        safe in a URL. Note "xxxxxxxxxxxx" is deliberately ACCEPTED here: it is
+        not a real ISRC, but semantic validation belongs to the server's
+        `_parse_isrc_list`, and duplicating it in the transport would drift."""
+        self._never_runs(monkeypatch)
+        assert musickit.resolve_isrcs(bad)[0] is False
+
+    def test_more_than_a_hundred_isrcs_is_refused(self, monkeypatch):
+        self._never_runs(monkeypatch)
+        assert musickit.resolve_isrcs(["GBUM71029604"] * 101)[0] is False
+
+
+class TestNewVerbsShapeTheirResults:
+    def test_album_add_reports_the_http_status(self, monkeypatch):
+        monkeypatch.setattr(musickit, "_run", lambda *a: (True, {"httpStatus": 202}))
+        ok, msg = musickit.add_album_to_library("1065973699")
+        assert ok is True and "202" in msg
+
+    def test_rate_passes_the_normalised_verb(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(
+            musickit, "_run", lambda *a: (seen.append(a), (True, {"httpStatus": 200}))[1]
+        )
+        musickit.rate_song("1440783617", "LOVE")
+        assert seen == [("rate", "1440783617", "love")]
+
+    def test_isrc_returns_apples_data_array_verbatim(self, monkeypatch):
+        monkeypatch.setattr(
+            musickit,
+            "_run",
+            lambda *a: (True, {"body": '{"data":[{"id":"1","type":"songs"}]}'}),
+        )
+        ok, data = musickit.resolve_isrcs(["GBUM71029604"])
+        assert ok is True
+        assert data == [{"id": "1", "type": "songs"}]
+
+    def test_isrc_uppercases_and_joins(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(
+            musickit, "_run", lambda *a: (seen.append(a), (True, {"body": "{}"}))[1]
+        )
+        musickit.resolve_isrcs(["gbum71029604", " USABC1234567 "])
+        assert seen == [("isrc", "GBUM71029604,USABC1234567")]
+
+    def test_an_unparseable_body_is_an_error_not_a_crash(self, monkeypatch):
+        monkeypatch.setattr(musickit, "_run", lambda *a: (True, {"body": "not json"}))
+        assert musickit.resolve_isrcs(["GBUM71029604"])[0] is False
+
+
+class TestServerPrefersMusicKitForTheNewOperations:
+    def test_album_add_tries_musickit_first(self, monkeypatch):
+        monkeypatch.setattr(server.musickit, "is_available", lambda: True)
+        monkeypatch.setattr(server.musickit, "authorization_status", lambda: "authorized")
+        monkeypatch.setattr(
+            server.musickit, "add_album_to_library", lambda cid: (True, "added album (HTTP 202)")
+        )
+
+        def never(*a, **k):
+            raise AssertionError("the token rail must not run when MusicKit succeeds")
+
+        monkeypatch.setattr(server, "_add_to_library_api", never)
+        ok, msg = server._add_album_to_library("1065973699")
+        assert ok is True and "202" in msg
+
+    def test_album_add_falls_back_when_the_helper_refuses(self, monkeypatch):
+        monkeypatch.setattr(server.musickit, "is_available", lambda: True)
+        monkeypatch.setattr(server.musickit, "authorization_status", lambda: "authorized")
+        monkeypatch.setattr(
+            server.musickit, "add_album_to_library", lambda cid: (False, "not authorized")
+        )
+        monkeypatch.setattr(server, "_add_to_library_api", lambda ids, kind: (True, "via token"))
+        assert server._add_album_to_library("1065973699") == (True, "via token")
+
+    def test_rating_tries_musickit_first(self, monkeypatch):
+        monkeypatch.setattr(server.musickit, "is_available", lambda: True)
+        monkeypatch.setattr(server.musickit, "authorization_status", lambda: "authorized")
+        monkeypatch.setattr(server.musickit, "rate_song", lambda cid, r: (True, "rated"))
+
+        def never():
+            raise AssertionError("no headers should be needed when MusicKit succeeds")
+
+        monkeypatch.setattr(server, "get_headers", never)
+        assert server._rate_song_api("1440783617", "love") == (True, "Marked as love")
+
+    def test_isrc_uses_musickit_when_there_is_no_token(self, monkeypatch):
+        monkeypatch.setattr(server, "_has_developer_token", lambda: False)
+        monkeypatch.setattr(server, "_can_use_musickit_rail", lambda: True)
+        monkeypatch.setattr(server, "get_storefront", lambda: "us")
+        seen = []
+
+        def fake(batch):
+            seen.append(list(batch))
+            return True, [
+                {
+                    "id": "1440783617",
+                    "type": "songs",
+                    "attributes": {
+                        "name": "Strobe",
+                        "artistName": "deadmau5",
+                        "isrc": "GBUM71029604",
+                    },
+                }
+            ]
+
+        monkeypatch.setattr(server.musickit, "resolve_isrcs", fake)
+
+        def never():
+            raise AssertionError("no token exists — nothing may ask for headers")
+
+        monkeypatch.setattr(server, "get_headers", never)
+        out = server._catalog_resolve_isrc("GBUM71029604")
+        assert seen == [["GBUM71029604"]]
+        assert "Strobe" in out
+
+    def test_isrc_stays_on_the_token_rail_when_one_exists(self, monkeypatch):
+        """MusicKit is an OR, not a replacement: a token host is unaffected, and
+        its per-request rate-limit accounting keeps working."""
+        monkeypatch.setattr(server, "_has_developer_token", lambda: True)
+
+        def never(batch):
+            raise AssertionError("the token rail must win when a token is configured")
+
+        monkeypatch.setattr(server.musickit, "resolve_isrcs", never)
+        monkeypatch.setattr(server, "get_headers", lambda: {"Authorization": "Bearer x"})
+        monkeypatch.setattr(server, "get_storefront", lambda: "us")
+
+        class Resp:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"data": []}
+
+        monkeypatch.setattr(server.requests, "get", lambda *a, **k: Resp())
+        server._catalog_resolve_isrc("GBUM71029604")
+
+
+class TestTheKillSwitchCoversEveryMusicKitWrite:
+    """APPLEMUSIC_FORCE_TOKENLESS is documented as disabling every API write —
+    catalog add, playlist edit, rating. The MusicKit rails gated on "is the
+    helper binary on disk", which honoured neither that switch nor the user's
+    Apple Music consent, so a flag someone set to stop writes did not stop
+    these ones. Security review caught it; this keeps it caught."""
+
+    def _helper_that_would_write(self, monkeypatch, calls):
+        monkeypatch.setenv("APPLEMUSIC_FORCE_TOKENLESS", "1")
+        monkeypatch.setattr(server.musickit, "is_available", lambda: True)
+        monkeypatch.setattr(server.musickit, "authorization_status", lambda: "authorized")
+        for verb in ("add_to_library", "add_album_to_library"):
+            monkeypatch.setattr(
+                server.musickit, verb, lambda cid, v=verb: calls.append(v) or (True, "written")
+            )
+        monkeypatch.setattr(
+            server.musickit, "rate_song", lambda cid, r: calls.append("rate") or (True, "written")
+        )
+        # The token rail is unreachable in this configuration anyway; make that
+        # explicit so a fall-through cannot be mistaken for a pass.
+        monkeypatch.setattr(server, "_add_to_library_api", lambda *a, **k: (False, "no token"))
+
+    def test_song_add_is_refused(self, monkeypatch):
+        calls = []
+        self._helper_that_would_write(monkeypatch, calls)
+        server._add_songs_to_library(["1440783617"])
+        assert calls == [], "the kill switch must stop the MusicKit write"
+
+    def test_album_add_is_refused(self, monkeypatch):
+        calls = []
+        self._helper_that_would_write(monkeypatch, calls)
+        server._add_album_to_library("1065973699")
+        assert calls == []
+
+    def test_rating_is_refused(self, monkeypatch):
+        calls = []
+        self._helper_that_would_write(monkeypatch, calls)
+        monkeypatch.setattr(server, "get_headers", lambda: {"Authorization": "x"})
+
+        class Resp:
+            status_code = 401
+
+        monkeypatch.setattr(server.requests, "put", lambda *a, **k: Resp())
+        server._rate_song_api("1440783617", "love")
+        assert calls == []
+
+    def test_unconsented_helper_is_also_refused(self, monkeypatch):
+        """Same gate, second property: a helper present but not yet granted
+        Apple Music access must not be spawned to attempt a write."""
+        calls = []
+        monkeypatch.setattr(server.musickit, "is_available", lambda: True)
+        monkeypatch.setattr(server.musickit, "authorization_status", lambda: "notDetermined")
+        monkeypatch.setattr(
+            server.musickit, "add_to_library", lambda cid: calls.append("add") or (True, "written")
+        )
+        monkeypatch.setattr(server, "_add_to_library_api", lambda *a, **k: (False, "no token"))
+        server._add_songs_to_library(["1440783617"])
+        assert calls == []

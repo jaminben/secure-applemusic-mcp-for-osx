@@ -6,6 +6,58 @@ fork point, see [CHANGELOG-upstream.md](CHANGELOG-upstream.md).
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **A fully-capable machine was told to go get a credential it did not need.**
+  Adding a catalog track to a playlist, playing a catalog track you don't own,
+  adding by album, and adding by catalog ID all gated on "is a developer token
+  configured?" — while every step below those gates already had a credential-free
+  rail: the public iTunes endpoints for catalog reads, the signed MusicKit helper
+  for the library write, and Apple Events for the attach. A notarized bundle with
+  MusicKit authorized could do the work and was refused. Reported by a user who
+  hit it creating a playlist.
+- **The advice those refusals gave could not be followed.** They named
+  `applemusic-mcp login --dev`; the console script this package installs is
+  `secure-applemusic-mcp`, so pasting it gives "command not found". Several
+  offered a choice between two identical commands — the fossil of a web-login /
+  developer-login pair whose first half was removed. Error paths now point at
+  `config(action='signin')`, which shows the native Apple Music prompt, stores
+  nothing, and needs no developer account. No error path sends anyone to a shell
+  to authenticate.
+- **`APPLEMUSIC_FORCE_TOKENLESS=1` did not stop every write.** It is documented
+  as disabling every API write, and status blames it by name so nobody
+  misdiagnoses it as missing auth. The MusicKit rails gated on "is the helper
+  binary on disk", which honoured neither that switch nor the user's Apple Music
+  consent. Found by security review of this change.
+- **The test suite could mutate a real Apple Music account.** `is_available()`
+  reported whether the developer's checkout happened to contain a built, signed,
+  authorized helper, so on such a machine tests fell through to live, signed
+  calls. Apple returns HTTP 200 for a rating on a nonexistent id, so nothing
+  failed loudly. The helper now defaults to absent in tests.
+
+### Added
+
+- **A public `lookup` rail to match the existing `search` one.** `search` answers
+  "what is called this?"; `lookup` answers "what IS this id?". Only the first was
+  wired up, so paths needing the second declared a developer token mandatory —
+  for catalog facts Apple serves to anyone. This covers album tracklists and
+  catalog-id resolution. Play-by-catalog-id previously full-text-searched for the
+  id's digits, which is a different question that occasionally answers the right
+  one.
+- **Four MusicKit helper verbs**: `add-album` (the helper hardcoded `ids[songs]`,
+  which is why album adds still needed a token), `rate`, `playlist-add`, and
+  `isrc` — the last being the one query no public Apple endpoint answers, since
+  the iTunes Search API has no ISRC filter. Every identifier is validated in
+  Python and again in Swift before it reaches a URL.
+
+### Known gaps
+
+- `musickit.add_track_to_playlist` ships unwired: routing the Apple-Music-origin
+  playlist branch through it is a larger rewrite of `_playlist_add`'s API mode.
+- Ratings and album adds still fall back to the token rail when MusicKit refuses.
+
 ## [0.1.1] - 2026-08-25
 
 ### Fixed

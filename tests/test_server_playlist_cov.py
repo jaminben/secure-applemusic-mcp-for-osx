@@ -1786,13 +1786,14 @@ class TestPlaylistListOutputFormats:
 
 
 class TestPlaylistAddIdsWithNoToken:
-    """Test the IDs-require-token guard in _playlist_add."""
+    """The no-write-rail guard in _playlist_add: no token AND no MusicKit."""
 
     def test_ids_without_token_error(self, monkeypatch):
         monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
         monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
         monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
         monkeypatch.setattr(server, "_has_developer_token", lambda: False)
+        monkeypatch.setattr(server, "_can_use_musickit_rail", lambda: False)
         monkeypatch.setattr(
             server,
             "get_user_preferences",
@@ -1806,7 +1807,9 @@ class TestPlaylistAddIdsWithNoToken:
         )
         # Catalog ID input
         result = server._playlist_add("My PL", "1234567890")
-        assert "Error" in result or "token" in result.lower() or "login --dev" in result
+        assert "write to your library" in result
+        # The fix must be reachable from inside the app, not from a shell.
+        assert "applemusic-mcp" not in result
 
     def test_all_tracks_duplicate_returns_no_tracks_added(self, monkeypatch):
         """When all tracks are skipped as duplicates."""
@@ -3485,7 +3488,9 @@ class TestPlaylistAddAlbum:
         assert isinstance(result, str)
 
     def test_album_no_token_error(self, monkeypatch):
-        """Lines 3292-3298: no token for album add."""
+        """No token: the album now resolves over the public catalog instead of
+        erroring, so what is asserted here is that the tokenless rail is the one
+        that runs — and that nothing asks for headers on the way."""
         monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
         monkeypatch.setattr(server, "_find_api_playlist_by_name", lambda name: (None, None))
         monkeypatch.setattr(server.asc, "get_playlists", lambda: (True, [{"name": "My PL"}]))
@@ -3501,9 +3506,16 @@ class TestPlaylistAddAlbum:
                 "output_format": "text",
             },
         )
+        called = []
+        monkeypatch.setattr(
+            server,
+            "_itunes_album_tracks",
+            lambda album, artist="": (called.append(album), ([], ""))[1],
+        )
         result = server._playlist_add("My PL", album="Abbey Road")
-        assert "Error" in result
-        assert "token" in result.lower()
+        assert called == ["Abbey Road"], "must consult the public catalog rail"
+        assert "couldn't find the album" in result
+        assert "token" not in result.lower()
 
     @responses_lib.activate
     def test_album_with_artist_match(

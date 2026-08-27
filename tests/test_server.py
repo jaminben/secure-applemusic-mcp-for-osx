@@ -451,7 +451,10 @@ class TestCheckAuthStatus:
         """Should report missing tokens."""
         result = server.config(action="auth-status")
 
-        assert "MISSING" in result
+        # "MISSING" was the old wording, and it was wrong: the token is optional
+        # now, so status must not report its absence as a fault.
+        assert "not configured (optional" in result
+        assert "MISSING" not in result
         assert "Developer Token" in result
         assert "Music User Token" in result
 
@@ -3803,12 +3806,15 @@ class TestNotAllowedOvermatchFix:
 
 
 class TestPlaylistAddIdsRequireToken:
-    """When a tokenless macOS user passes a track ID (not name) to
-    playlist(action="add"), the AS-mode code path needs the API to
-    resolve the ID's metadata before handing off to AppleScript. Prior
-    to the fix, _playlist_add called get_headers() unconditionally inside
-    the AS block — leaking 'Developer token not found' on the same
-    user-facing surface as the bug this PR exists to close."""
+    """A tokenless macOS user passing a track ID or an album to
+    playlist(action="add"). The original bug was ``get_headers()`` called
+    unconditionally inside the AS block, leaking 'Developer token not found'.
+    The guard that fixed it then over-corrected: it refused CATALOG ids and
+    albums too, both of which Apple resolves for anyone over the public iTunes
+    endpoints. What still genuinely needs the account API is a LIBRARY id.
+
+    Class name kept so the history stays greppable; the requirement narrowed.
+    """
 
     def test_id_without_token_says_what_to_do_not_dev_token(self, monkeypatch):
         from applemusic_mcp import applescript as real_asc
@@ -3827,9 +3833,11 @@ class TestPlaylistAddIdsRequireToken:
         mock_asc.classify_error = real_asc.classify_error
         monkeypatch.setattr(server, "asc", mock_asc)
 
-        # No token configured — _has_developer_token returns False,
-        # which the new ID-guard catches and surfaces a specific message.
+        # Neither rail: no token, and no MusicKit helper either. Stub the rail
+        # explicitly — reading the developer's machine is how these tests
+        # started making live catalog calls.
         monkeypatch.setattr(server, "_has_developer_token", lambda: False)
+        monkeypatch.setattr(server, "_can_use_musickit_rail", lambda: False)
 
         # If the guard didn't fire, this would raise the misleading
         # FileNotFoundError. Patch get_headers to fail loudly so the
@@ -3852,16 +3860,92 @@ class TestPlaylistAddIdsRequireToken:
             auto_add=False,
         )
 
-        assert "Track IDs require an API token" in result
-        assert "pass the track by name instead" in result
-        # The legacy misleading error must NOT appear
-        assert "Developer token not found" not in result.split("Track IDs")[0]
+        # No token AND no MusicKit helper: the add genuinely can't happen, but
+        # the fix is in-app, not a shell command that doesn't exist.
+        assert "write to your library" in result
+        assert "applemusic-mcp" not in result
+        assert "login --dev" not in result
+        assert "Developer token not found" not in result
 
-    def test_album_without_token_does_not_leak_dev_token_error(self, monkeypatch):
-        """Adding by album also requires the catalog API (album's tracklist is
-        fetched there). On tokenless macOS, _playlist_add must surface a
-        specific 'add by album requires API' message — not 'Developer token
-        not found'. Reviewer-flagged sibling of the ID guard."""
+    def test_catalog_id_without_a_token_uses_the_public_rails(self, monkeypatch):
+        """A catalog id is a public fact. Looking it up needs no credential, and
+        the add it implies is exactly what the MusicKit helper is for — so a
+        notarized bundle must not be told to go get a developer token."""
+        from applemusic_mcp import applescript as real_asc
+
+        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
+        mock_asc = MagicMock()
+        mock_asc.get_playlists.return_value = (
+            True,
+            [{"name": "Workout", "id": "p.work", "smart": False, "track_count": 5}],
+        )
+        mock_asc.track_exists_in_playlist.return_value = (True, False)
+        mock_asc.add_track_to_playlist.return_value = (True, "added")
+        mock_asc.classify_error = real_asc.classify_error
+        monkeypatch.setattr(server, "asc", mock_asc)
+        monkeypatch.setattr(server, "_has_developer_token", lambda: False)
+        monkeypatch.setattr(server, "_can_use_musickit_rail", lambda: True)
+
+        def fail_loud():
+            raise AssertionError("no token exists — nothing may ask for headers")
+
+        monkeypatch.setattr(server, "get_headers", fail_loud)
+        monkeypatch.setattr(
+            server,
+            "_itunes_track_by_id",
+            lambda tid: {"id": tid, "name": "Strobe", "artist": "deadmau5"},
+        )
+        added = []
+        monkeypatch.setattr(
+            server,
+            "_add_songs_to_library",
+            lambda ids, known=None: (added.append((ids, known)), (True, "ok"))[1],
+        )
+
+        server._playlist_add(
+            playlist="Workout",
+            track="1440783617",
+            album="",
+            artist="",
+            allow_duplicates=False,
+            verify=False,
+            auto_add=False,
+        )
+        assert added == [(["1440783617"], [("Strobe", "deadmau5")])]
+
+    def test_library_ids_still_need_the_account_api(self, monkeypatch):
+        """The one case the old guard was right about, kept: a library id names
+        a row in YOUR library and no public endpoint can read it."""
+        from applemusic_mcp import applescript as real_asc
+
+        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
+        mock_asc = MagicMock()
+        mock_asc.get_playlists.return_value = (
+            True,
+            [{"name": "Workout", "id": "p.work", "smart": False, "track_count": 5}],
+        )
+        mock_asc.track_exists_in_playlist.return_value = (True, False)
+        mock_asc.classify_error = real_asc.classify_error
+        monkeypatch.setattr(server, "asc", mock_asc)
+        monkeypatch.setattr(server, "_has_developer_token", lambda: False)
+        monkeypatch.setattr(server, "_can_use_musickit_rail", lambda: True)
+
+        result = server._playlist_add(
+            playlist="Workout",
+            track="i.abc123XYZ",
+            album="",
+            artist="",
+            allow_duplicates=False,
+            verify=False,
+            auto_add=False,
+        )
+        assert "your own library" in result
+        assert "by name instead" in result
+
+    def test_album_without_a_token_resolves_over_the_public_catalog(self, monkeypatch):
+        """An album's tracklist is public. The token path was simply the only
+        one wired up, so "adding by album requires an API token" described this
+        function rather than Apple."""
         monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
 
         mock_asc = MagicMock()
@@ -3869,17 +3953,38 @@ class TestPlaylistAddIdsRequireToken:
             True,
             [{"name": "Workout", "id": "p.work", "smart": False, "track_count": 0}],
         )
+        mock_asc.track_exists_in_playlist.return_value = (True, False)
+        mock_asc.add_track_to_playlist.return_value = (True, "added")
         monkeypatch.setattr(server, "asc", mock_asc)
         monkeypatch.setattr(server, "_has_developer_token", lambda: False)
+        monkeypatch.setattr(server, "_can_use_musickit_rail", lambda: True)
 
-        # If we reach get_headers, the guard didn't fire.
         def fail_loud():
-            raise AssertionError(
-                "get_headers() should not have been called — the album guard "
-                "must intercept before this point"
-            )
+            raise AssertionError("no token exists — nothing may ask for headers")
 
         monkeypatch.setattr(server, "get_headers", fail_loud)
+        monkeypatch.setattr(
+            server,
+            "_itunes_album_tracks",
+            lambda album, artist="": (
+                [
+                    # Real 10-digit catalog ids: _detect_id_type requires 9+
+                    # digits, so a toy "1" would be classified "unknown".
+                    {"id": "1065973699", "name": "Speak to Me", "artist": "Pink Floyd"},
+                    {"id": "1065973700", "name": "Breathe", "artist": "Pink Floyd"},
+                ],
+                "The Dark Side of the Moon",
+            ),
+        )
+        monkeypatch.setattr(
+            server, "_itunes_track_by_id", lambda tid: {"id": tid, "name": "T", "artist": "A"}
+        )
+        added = []
+        monkeypatch.setattr(
+            server,
+            "_add_songs_to_library",
+            lambda ids, known=None: (added.append(ids), (True, "ok"))[1],
+        )
 
         result = server._playlist_add(
             playlist="Workout",
@@ -3891,8 +3996,35 @@ class TestPlaylistAddIdsRequireToken:
             auto_add=False,
         )
 
-        assert "Adding by album requires an API token" in result
+        assert [i for ids in added for i in ids] == [
+            "1065973699",
+            "1065973700",
+        ], "both album tracks must be added"
         assert "Developer token not found" not in result
+        assert "requires an API token" not in result
+
+    def test_an_album_that_is_not_in_the_catalog_says_so(self, monkeypatch):
+        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
+        mock_asc = MagicMock()
+        mock_asc.get_playlists.return_value = (
+            True,
+            [{"name": "Workout", "id": "p.work", "smart": False, "track_count": 0}],
+        )
+        monkeypatch.setattr(server, "asc", mock_asc)
+        monkeypatch.setattr(server, "_has_developer_token", lambda: False)
+        monkeypatch.setattr(server, "_itunes_album_tracks", lambda album, artist="": ([], ""))
+
+        result = server._playlist_add(
+            playlist="Workout",
+            track="",
+            album="Nonexistent Album XYZ",
+            artist="",
+            allow_duplicates=False,
+            verify=False,
+            auto_add=False,
+        )
+        assert "couldn't find the album" in result
+        assert "login" not in result
 
 
 class TestPlaylistCopyNoTokenLeakOnAsFailure:

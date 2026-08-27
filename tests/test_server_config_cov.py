@@ -1184,7 +1184,8 @@ class TestAuthStatusMissingBranch:
             patch.object(server, "has_user_token", return_value=False),
         ):
             out = server._config_auth_status()
-        assert "MISSING" in out
+        assert "not configured (optional" in out
+        assert "MISSING" not in out
         assert "Developer Token" in out
 
 

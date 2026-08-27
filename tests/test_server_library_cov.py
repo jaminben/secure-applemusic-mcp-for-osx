@@ -729,7 +729,10 @@ class TestLibraryAdd:
         monkeypatch.setattr(server, "_can_use_library_api", lambda: False)
         result = server._library_add(track="Song A")
         assert "Error" in result
-        assert "signin" in result or "login --dev" in result
+        # Whatever the host is missing, the fix must be reachable without a
+        # shell: sign in, or install the signed bundle.
+        assert "signin" in result or "notarized download" in result
+        assert "applemusic-mcp login" not in result
 
     @responses.activate
     def test_catalog_id_track_success(
@@ -1135,9 +1138,7 @@ class TestLibraryRecentlyPlayed:
         """No local history (no Music.app, or an empty window) still answers."""
         _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
         monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
-        monkeypatch.setattr(
-            server.asc, "get_recently_played", lambda **kw: (False, "no playlist")
-        )
+        monkeypatch.setattr(server.asc, "get_recently_played", lambda **kw: (False, "no playlist"))
         responses.add(
             responses.GET,
             "https://api.music.apple.com/v1/me/recent/played/tracks",
@@ -2312,3 +2313,208 @@ def test_unverified_rating_is_never_cached(monkeypatch):
         False,
     )
     assert writes == [], "an Unknown rating must not be written to the cache"
+
+
+# ============================================================================
+# The public iTunes LOOKUP rail.
+#
+# `search` answers "what is called this?"; `lookup` answers "what IS this id?".
+# Only the first had been wired up, so every path that needed the second one
+# declared a developer token mandatory — for catalog facts Apple serves to
+# anyone. These cover the lookup side.
+# ============================================================================
+
+
+class TestItunesLookup:
+    @responses.activate
+    def test_returns_results_for_a_numeric_id(self, monkeypatch):
+        monkeypatch.setattr(server, "get_storefront", lambda: "us")
+        responses.add(
+            responses.GET,
+            "https://itunes.apple.com/lookup",
+            json={"resultCount": 1, "results": [{"wrapperType": "track", "kind": "song"}]},
+            status=200,
+        )
+        assert server._itunes_lookup("1440783617") == [{"wrapperType": "track", "kind": "song"}]
+
+    @responses.activate
+    def test_passes_entity_and_storefront(self, monkeypatch):
+        monkeypatch.setattr(server, "get_storefront", lambda: "gb")
+        responses.add(
+            responses.GET, "https://itunes.apple.com/lookup", json={"results": []}, status=200
+        )
+        server._itunes_lookup("1065973699", entity="song")
+        qs = responses.calls[0].request.url
+        assert "entity=song" in qs
+        assert "country=gb" in qs
+
+    @pytest.mark.parametrize("bad", ["", "   ", "i.ABC123", "p.XYZ", "12a", "١٢٣٤٥٦٧٨٩"])
+    def test_non_numeric_ids_never_reach_the_wire(self, bad):
+        """This value is interpolated into a URL. Unicode digits pass
+        str.isdigit() — the same trap the MusicKit helper guards against — so
+        the check is isascii() AND isdigit(). No responses mock is registered
+        here: if one of these escaped, the test would fail on a real call."""
+        assert server._itunes_lookup(bad) == []
+
+    @responses.activate
+    def test_non_200_is_empty_not_an_exception(self, monkeypatch):
+        monkeypatch.setattr(server, "get_storefront", lambda: "us")
+        responses.add(responses.GET, "https://itunes.apple.com/lookup", json={}, status=503)
+        assert server._itunes_lookup("1440783617") == []
+
+    @responses.activate
+    def test_unparseable_body_is_empty(self, monkeypatch):
+        monkeypatch.setattr(server, "get_storefront", lambda: "us")
+        responses.add(responses.GET, "https://itunes.apple.com/lookup", body="not json", status=200)
+        assert server._itunes_lookup("1440783617") == []
+
+
+class TestItunesSongsFrom:
+    def test_the_looked_up_album_is_not_mistaken_for_a_track(self):
+        """A lookup echoes the thing you asked about first. Without the
+        wrapperType filter the album row becomes its own first 'track'."""
+        rows = server._itunes_songs_from(
+            [
+                {"wrapperType": "collection", "collectionName": "Album", "trackId": 999},
+                {"wrapperType": "track", "kind": "song", "trackId": 1, "trackName": "One"},
+                {"wrapperType": "track", "kind": "music-video", "trackId": 2},
+            ]
+        )
+        assert [r["name"] for r in rows] == ["One"]
+
+    def test_rows_without_an_id_are_dropped(self):
+        assert server._itunes_songs_from([{"wrapperType": "track", "kind": "song"}]) == []
+
+
+class TestItunesTrackById:
+    @responses.activate
+    def test_resolves_one_song(self, monkeypatch):
+        monkeypatch.setattr(server, "get_storefront", lambda: "us")
+        responses.add(
+            responses.GET,
+            "https://itunes.apple.com/lookup",
+            json={
+                "results": [
+                    {
+                        "wrapperType": "track",
+                        "kind": "song",
+                        "trackId": 1440783617,
+                        "trackName": "Strobe",
+                        "artistName": "deadmau5",
+                    }
+                ]
+            },
+            status=200,
+        )
+        row = server._itunes_track_by_id("1440783617")
+        assert row["name"] == "Strobe"
+        assert row["artist"] == "deadmau5"
+        assert row["id"] == "1440783617"
+
+    @responses.activate
+    def test_unknown_id_is_none(self, monkeypatch):
+        monkeypatch.setattr(server, "get_storefront", lambda: "us")
+        responses.add(
+            responses.GET, "https://itunes.apple.com/lookup", json={"results": []}, status=200
+        )
+        assert server._itunes_track_by_id("1440783617") is None
+
+
+class TestItunesFindAlbum:
+    def _albums(self):
+        return {
+            "results": [
+                {
+                    "collectionId": 111,
+                    "collectionName": "Greatest Hits",
+                    "artistName": "Someone Else",
+                },
+                {
+                    "collectionId": 222,
+                    "collectionName": "Abbey Road",
+                    "artistName": "The Beatles",
+                },
+            ]
+        }
+
+    @responses.activate
+    def test_prefers_the_hit_matching_both_name_and_artist(self, monkeypatch):
+        monkeypatch.setattr(server, "get_storefront", lambda: "us")
+        responses.add(
+            responses.GET, "https://itunes.apple.com/search", json=self._albums(), status=200
+        )
+        assert server._itunes_find_album("Abbey Road", "The Beatles")["id"] == "222"
+
+    @responses.activate
+    def test_falls_back_to_the_first_result(self, monkeypatch):
+        """Mirrors what the token path does over /catalog/{sf}/search: an
+        imperfect match beats refusing to answer."""
+        monkeypatch.setattr(server, "get_storefront", lambda: "us")
+        responses.add(
+            responses.GET, "https://itunes.apple.com/search", json=self._albums(), status=200
+        )
+        assert server._itunes_find_album("Nothing Like This", "")["id"] == "111"
+
+    def test_empty_query_never_hits_the_wire(self):
+        assert server._itunes_find_album("", "") == {}
+
+    @responses.activate
+    def test_non_200_is_empty(self, monkeypatch):
+        monkeypatch.setattr(server, "get_storefront", lambda: "us")
+        responses.add(responses.GET, "https://itunes.apple.com/search", json={}, status=500)
+        assert server._itunes_find_album("Abbey Road", "") == {}
+
+
+class TestItunesAlbumTracks:
+    @responses.activate
+    def test_search_then_lookup_gives_a_tracklist(self, monkeypatch):
+        """The two public calls that make 'adding by album requires an API
+        token' untrue."""
+        monkeypatch.setattr(server, "get_storefront", lambda: "us")
+        responses.add(
+            responses.GET,
+            "https://itunes.apple.com/search",
+            json={
+                "results": [
+                    {
+                        "collectionId": 222,
+                        "collectionName": "Abbey Road",
+                        "artistName": "The Beatles",
+                    }
+                ]
+            },
+            status=200,
+        )
+        responses.add(
+            responses.GET,
+            "https://itunes.apple.com/lookup",
+            json={
+                "results": [
+                    {"wrapperType": "collection", "collectionName": "Abbey Road"},
+                    {
+                        "wrapperType": "track",
+                        "kind": "song",
+                        "trackId": 401,
+                        "trackName": "Come Together",
+                    },
+                    {
+                        "wrapperType": "track",
+                        "kind": "song",
+                        "trackId": 402,
+                        "trackName": "Something",
+                    },
+                ]
+            },
+            status=200,
+        )
+        rows, name = server._itunes_album_tracks("Abbey Road", "The Beatles")
+        assert name == "Abbey Road"
+        assert [r["id"] for r in rows] == ["401", "402"]
+
+    @responses.activate
+    def test_unknown_album_is_empty(self, monkeypatch):
+        monkeypatch.setattr(server, "get_storefront", lambda: "us")
+        responses.add(
+            responses.GET, "https://itunes.apple.com/search", json={"results": []}, status=200
+        )
+        assert server._itunes_album_tracks("Nope", "") == ([], "")

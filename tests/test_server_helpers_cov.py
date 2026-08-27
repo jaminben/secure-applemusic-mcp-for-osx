@@ -1733,10 +1733,15 @@ class TestAutoSearchAndAddToPlaylist:
 
 class TestUnifiedAutoSearchToPlaylist:
     def test_no_library_api_available(self, monkeypatch):
+        """No token AND no MusicKit helper: the only honest answer. Note the
+        explicit is_available stub — without it this test read the DEVELOPER's
+        machine, so it passed or failed depending on whether a helper happened
+        to be built in the checkout. Routing tests live in test_musickit.py."""
         monkeypatch.setattr(server, "_can_use_library_api", lambda: False)
+        monkeypatch.setattr(server.musickit, "is_available", lambda: False)
         ok, msg, steps = server._unified_auto_search_to_playlist("Song", "Artist", "Playlist")
         assert ok is False
-        assert "login" in msg
+        assert "notarized download" in msg
 
     @responses.activate
     def test_splits_combined_name(

@@ -107,19 +107,113 @@ def request_authorization() -> tuple[bool, str]:
     return ok, str(payload.get("error") or payload.get("status", ""))
 
 
-def add_to_library(catalog_id: str) -> tuple[bool, str]:
-    """Add one catalog song to the library. Returns (ok, message).
+def _valid_catalog_id(catalog_id: str) -> Optional[str]:
+    """ASCII digits only, or None.
 
-    ``catalog_id`` is re-validated inside the helper too — this is a value that
-    reaches Apple's API, and one validation site is one too few.
+    str.isdigit() is True for Unicode digits such as Arabic-Indic "٣٤٥", which
+    would sail through a naive check and straight into a URL. (Swift's
+    Character.isNumber has the same trap, which is why the helper re-checks —
+    one validation site is one too few for a value that reaches Apple's API.)
     """
-    # ASCII digits only. str.isdigit() is True for Unicode digits such as
-    # Arabic-Indic "٣٤٥", which would sail through a naive check and straight
-    # into a URL. (Swift's Character.isNumber has the same trap.)
     raw = str(catalog_id).strip()
-    if not (raw.isascii() and raw.isdigit()):
+    return raw if (raw and raw.isascii() and raw.isdigit()) else None
+
+
+def _valid_playlist_id(playlist_id: str) -> Optional[str]:
+    """``p.`` followed by ASCII alphanumerics, or None.
+
+    This one lands in a URL PATH rather than a query value, so a stray ``/`` or
+    ``..`` would change which resource is addressed instead of merely failing.
+    """
+    raw = str(playlist_id).strip()
+    if not raw.startswith("p.") or not (3 <= len(raw) <= 64):
+        return None
+    tail = raw[2:]
+    return raw if (tail.isascii() and tail.isalnum()) else None
+
+
+def add_to_library(catalog_id: str) -> tuple[bool, str]:
+    """Add one catalog song to the library. Returns (ok, message)."""
+    if _valid_catalog_id(catalog_id) is None:
         return False, "catalog id must be numeric (ASCII digits)"
-    ok, payload = _run("add", str(catalog_id))
+    ok, payload = _run("add", str(catalog_id).strip())
     if ok:
         return True, f"added (HTTP {payload.get('httpStatus')})"
     return False, str(payload.get("error", "unknown MusicKit error"))
+
+
+def add_album_to_library(catalog_id: str) -> tuple[bool, str]:
+    """Add one catalog ALBUM to the library.
+
+    Songs and albums are different resources to Apple (``ids[songs]`` vs
+    ``ids[albums]``); the helper hardcoded the first, which is the whole reason
+    album adds still required a developer token.
+    """
+    if _valid_catalog_id(catalog_id) is None:
+        return False, "catalog id must be numeric (ASCII digits)"
+    ok, payload = _run("add-album", str(catalog_id).strip())
+    if ok:
+        return True, f"added album (HTTP {payload.get('httpStatus')})"
+    return False, str(payload.get("error", "unknown MusicKit error"))
+
+
+def rate_song(catalog_id: str, rating: str) -> tuple[bool, str]:
+    """Love or dislike a CATALOG song.
+
+    Tracks already in the library are rated through Music.app over Apple Events;
+    a catalog id has no library object to set a rating on, which is what sent
+    this down the developer-token path.
+    """
+    if _valid_catalog_id(catalog_id) is None:
+        return False, "catalog id must be numeric (ASCII digits)"
+    if str(rating).lower().strip() not in ("love", "dislike"):
+        return False, "rating must be 'love' or 'dislike'"
+    ok, payload = _run("rate", str(catalog_id).strip(), str(rating).lower().strip())
+    if ok:
+        return True, f"rated (HTTP {payload.get('httpStatus')})"
+    return False, str(payload.get("error", "unknown MusicKit error"))
+
+
+def add_track_to_playlist(playlist_id: str, catalog_id: str) -> tuple[bool, str]:
+    """Attach one catalog song to a library playlist.
+
+    For Apple-Music-origin playlists this is the ONLY rail: AppleScript can edit
+    only the playlists Music.app itself owns.
+    """
+    pid = _valid_playlist_id(playlist_id)
+    if pid is None:
+        return False, "playlist id must look like p.XXXXXXXX"
+    if _valid_catalog_id(catalog_id) is None:
+        return False, "catalog id must be numeric (ASCII digits)"
+    ok, payload = _run("playlist-add", pid, str(catalog_id).strip())
+    if ok:
+        return True, f"added to playlist (HTTP {payload.get('httpStatus')})"
+    return False, str(payload.get("error", "unknown MusicKit error"))
+
+
+def resolve_isrcs(codes: "list[str]") -> tuple[bool, object]:
+    """Resolve ISRCs to catalog songs. Returns ``(ok, data | error message)``.
+
+    The one query no PUBLIC Apple endpoint answers — the iTunes Search API,
+    which covers this server's other catalog needs with no credential, has no
+    ISRC filter at all. Batched deliberately: Apple's filter takes a list, and a
+    process launch per track would make this rail unaffordable.
+
+    ``data`` is Apple's ``data`` array verbatim, the same shape the REST rail
+    returns, so callers need no second code path.
+    """
+    cleaned = [str(c).strip().upper() for c in (codes or []) if str(c).strip()]
+    if not cleaned or len(cleaned) > 100:
+        return False, "expected between 1 and 100 ISRCs"
+    for code in cleaned:
+        if len(code) != 12 or not (code.isascii() and code.isalnum()):
+            return False, f"not an ISRC: {code}"
+    ok, payload = _run("isrc", ",".join(cleaned))
+    if not ok:
+        return False, str(payload.get("error", "unknown MusicKit error"))
+    try:
+        body = json.loads(payload.get("body") or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return False, "could not parse the MusicKit response"
+    data = body.get("data")
+    return True, data if isinstance(data, list) else []
