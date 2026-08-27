@@ -119,17 +119,39 @@ def _valid_catalog_id(catalog_id: str) -> Optional[str]:
     return raw if (raw and raw.isascii() and raw.isdigit()) else None
 
 
-def _valid_playlist_id(playlist_id: str) -> Optional[str]:
-    """``p.`` followed by ASCII alphanumerics, or None.
+def _valid_prefixed_id(value: str, prefix: str) -> Optional[str]:
+    """``<prefix>`` followed by ASCII alphanumerics, or None.
 
-    This one lands in a URL PATH rather than a query value, so a stray ``/`` or
-    ``..`` would change which resource is addressed instead of merely failing.
+    ``p.`` is a library playlist, ``i.`` a library song. These land in a URL
+    PATH rather than a query value, so a stray ``/`` or ``..`` would change
+    which resource is addressed instead of merely failing.
     """
-    raw = str(playlist_id).strip()
-    if not raw.startswith("p.") or not (3 <= len(raw) <= 64):
+    raw = str(value).strip()
+    if not raw.startswith(prefix) or not (len(prefix) < len(raw) <= 64):
         return None
-    tail = raw[2:]
+    tail = raw[len(prefix) :]
     return raw if (tail.isascii() and tail.isalnum()) else None
+
+
+def _valid_playlist_id(playlist_id: str) -> Optional[str]:
+    """A library playlist id (``p.XXXXXXXX``), or None."""
+    return _valid_prefixed_id(playlist_id, "p.")
+
+
+def _valid_track_ref(track_id: str, kind: str) -> Optional[str]:
+    """The id a library playlist will accept for ``kind``, or None.
+
+    ``songs`` is a CATALOG song — attaching it adds it to the library
+    implicitly. ``library-songs`` is a track already in the library, named by
+    its ``i.`` id. Getting these crossed is not a validation nicety: Apple
+    rejects the mismatched pair, and the failure reads as "the track doesn't
+    exist" rather than "you named it the wrong way".
+    """
+    if kind == "songs":
+        return _valid_catalog_id(track_id)
+    if kind == "library-songs":
+        return _valid_prefixed_id(track_id, "i.")
+    return None
 
 
 def add_to_library(catalog_id: str) -> tuple[bool, str]:
@@ -174,8 +196,8 @@ def rate_song(catalog_id: str, rating: str) -> tuple[bool, str]:
     return False, str(payload.get("error", "unknown MusicKit error"))
 
 
-def add_track_to_playlist(playlist_id: str, catalog_id: str) -> tuple[bool, str]:
-    """Attach one catalog song to a library playlist.
+def add_track_to_playlist(playlist_id: str, track_id: str, kind: str = "songs") -> tuple[bool, str]:
+    """Attach one track to a library playlist.
 
     For Apple-Music-origin playlists this is the ONLY rail: AppleScript can edit
     only the playlists Music.app itself owns.
@@ -183,12 +205,34 @@ def add_track_to_playlist(playlist_id: str, catalog_id: str) -> tuple[bool, str]
     pid = _valid_playlist_id(playlist_id)
     if pid is None:
         return False, "playlist id must look like p.XXXXXXXX"
-    if _valid_catalog_id(catalog_id) is None:
-        return False, "catalog id must be numeric (ASCII digits)"
-    ok, payload = _run("playlist-add", pid, str(catalog_id).strip())
+    tid = _valid_track_ref(track_id, kind)
+    if tid is None:
+        return False, f"track id {track_id!r} does not match kind {kind!r}"
+    ok, payload = _run("playlist-add", pid, tid, kind)
     if ok:
         return True, f"added to playlist (HTTP {payload.get('httpStatus')})"
     return False, str(payload.get("error", "unknown MusicKit error"))
+
+
+def playlist_tracks(playlist_id: str) -> tuple[bool, object]:
+    """Every track in a library playlist. Returns ``(ok, data | error)``.
+
+    Needed so the tokenless rail can refuse duplicates. Skipping that check
+    would be the cheaper option and the wrong one — silently stacking copies of
+    a track is a bug this codebase has already paid for once.
+    """
+    pid = _valid_playlist_id(playlist_id)
+    if pid is None:
+        return False, "playlist id must look like p.XXXXXXXX"
+    ok, payload = _run("playlist-tracks", pid)
+    if not ok:
+        return False, str(payload.get("error", "unknown MusicKit error"))
+    try:
+        body = json.loads(payload.get("body") or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return False, "could not parse the MusicKit response"
+    data = body.get("data") if isinstance(body, dict) else None
+    return True, data if isinstance(data, list) else []
 
 
 def resolve_isrcs(codes: "list[str]") -> tuple[bool, object]:

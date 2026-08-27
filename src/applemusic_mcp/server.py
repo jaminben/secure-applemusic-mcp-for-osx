@@ -3658,7 +3658,26 @@ def _is_catalog_id(track_id: str) -> bool:
 
 
 def _get_playlist_track_names(playlist_id: str) -> tuple[bool, list[dict] | str]:
-    """Get track names from a playlist for duplicate checking."""
+    """Get track names from a playlist for duplicate checking.
+
+    Two rails. Without a developer token the signed helper reads the playlist,
+    because refusing a duplicate requires knowing what is already there and the
+    alternative — skipping the check when there is no token — would silently
+    stack copies on exactly the rail that has no AppleScript verify behind it.
+    """
+    if not _has_developer_token() and _can_use_musickit_rail():
+        ok, payload = musickit.playlist_tracks(playlist_id)
+        if not ok:
+            return False, str(payload)
+        rows = payload if isinstance(payload, list) else []
+        return True, [
+            {
+                "id": t.get("id", ""),
+                "name": t.get("attributes", {}).get("name", ""),
+                "artist": t.get("attributes", {}).get("artistName", ""),
+            }
+            for t in rows
+        ]
     try:
         headers = get_headers()
         all_tracks = []
@@ -4089,6 +4108,93 @@ def _playlist_add_preview(
         "write itself succeeds. Re-run without dry_run to apply."
     )
     return "\n".join(lines)
+
+
+def _api_mode_add_via_musickit(
+    resolved: "ResolvedPlaylist",
+    ids_list: list[str],
+    names_list: list[dict],
+    steps: list[str],
+    allow_duplicates: bool,
+) -> str:
+    """Add tracks to a playlist by id, with no credential.
+
+    Much shorter than the token path it mirrors, because it does not need the
+    catalog-id → library-id dance: attaching a CATALOG song to a library
+    playlist adds it to the library implicitly, which is the same shape
+    ``_auto_search_and_add_to_playlist`` already uses for API-origin playlists.
+    The token path resolves library ids by polling ``/me/library/search`` after
+    the add; there is nothing to poll for here.
+    """
+    refs: list[tuple[str, str, str]] = []  # (id, kind, label)
+
+    for track_obj in names_list:
+        name = track_obj.get("name", "")
+        hit = _find_catalog_hit_for(name, track_obj.get("artist", "") or "")
+        if not hit or not hit.get("id"):
+            steps.append(f"Could not find '{name}' in the catalog")
+            continue
+        label = f"{hit.get('name') or name} - {hit.get('artist', '')}".strip(" -")
+        refs.append((hit["id"], "songs", label))
+        steps.append(f"Found in catalog: {label}")
+
+    for track_id in ids_list:
+        if _is_catalog_id(track_id):
+            row = _itunes_track_by_id(track_id)
+            label = f"{row['name']} - {row['artist']}" if row else track_id
+            refs.append((track_id, "songs", label))
+        elif str(track_id).startswith("i."):
+            # Already in the library; attach it by reference. Its name is only
+            # needed for the duplicate check and the audit line, and reading it
+            # would cost another helper spawn — so fall back to the id.
+            refs.append((track_id, "library-songs", track_id))
+        else:
+            steps.append(
+                f"Skipped {track_id}: not a catalog id, and only library ids "
+                "(i.XXXX) can be attached by reference"
+            )
+
+    if not refs:
+        return "Error: No tracks to add\n" + "\n".join(steps)
+
+    if not allow_duplicates:
+        ok, existing = _get_playlist_track_names(resolved.api_id)
+        if ok and isinstance(existing, list) and existing:
+            kept = []
+            for ref in refs:
+                name = ref[2].split(" - ")[0]
+                if name and _find_track_in_list(existing, name):
+                    steps.append(f"Skipped duplicate: {ref[2]}")
+                    continue
+                kept.append(ref)
+            refs = kept
+        elif not ok:
+            # Say so rather than silently adding: a failed read is not proof of
+            # an empty playlist, and quietly proceeding is how duplicates stack.
+            steps.append(f"Could not check for duplicates ({existing}) — adding anyway")
+
+    if not refs:
+        steps.append("All tracks already in playlist")
+        return "\n".join(steps)
+
+    added: list[str] = []
+    for track_id, kind, label in refs:
+        ok, msg = musickit.add_track_to_playlist(resolved.api_id, track_id, kind)
+        if ok:
+            added.append(label)
+            steps.append(f"Added {label} (MusicKit)")
+        else:
+            steps.append(f"Failed to add {label}: {msg}")
+
+    if not added:
+        return "Error: nothing was added\n" + "\n".join(steps)
+
+    audit_log.log_action(
+        "add_to_playlist",
+        {"playlist": resolved.api_id, "tracks": added, "method": "musickit"},
+        undo_info={"playlist_id": resolved.api_id, "library_ids": [r[0] for r in refs]},
+    )
+    return "\n".join(steps)
 
 
 def _playlist_add(
@@ -4557,6 +4663,16 @@ def _playlist_add(
             return "No tracks added" + fuzzy_info
 
     # === API mode (playlist by ID) ===
+    #
+    # Reachable with no credential at all: an explicit `p.` id sets api_id
+    # without a lookup, and on macOS a playlist NAME is routed to AppleScript
+    # mode above. So this branch is "the user named a playlist by id" — which
+    # for an Apple-Music-origin playlist is the one case AppleScript cannot
+    # serve, and therefore the one case that genuinely needs a signed rail
+    # rather than a credential.
+    if not _has_developer_token() and _can_use_musickit_rail():
+        return _api_mode_add_via_musickit(resolved, ids_list, names_list, steps, allow_duplicates)
+
     try:
         headers = get_headers()
         if not ids_list:

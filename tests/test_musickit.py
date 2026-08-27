@@ -761,3 +761,232 @@ class TestTheKillSwitchCoversEveryMusicKitWrite:
         monkeypatch.setattr(server, "_add_to_library_api", lambda *a, **k: (False, "no token"))
         server._add_songs_to_library(["1440783617"])
         assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# Attaching to an Apple-Music-origin playlist.
+#
+# The one operation with NO AppleScript equivalent: Music.app can only edit the
+# playlists it owns. So unlike every other rail here, this isn't "the same work
+# without a credential" — without it, a `p.` playlist simply cannot be edited
+# tokenlessly at all.
+# ---------------------------------------------------------------------------
+
+
+class TestTrackRefValidation:
+    def test_a_catalog_id_is_a_songs_ref(self):
+        assert musickit._valid_track_ref("1440783617", "songs") == "1440783617"
+
+    def test_a_library_id_is_a_library_songs_ref(self):
+        assert musickit._valid_track_ref("i.AbC123", "library-songs") == "i.AbC123"
+
+    def test_the_kinds_are_not_interchangeable(self):
+        """Apple rejects a mismatched pair, and the failure reads as 'the track
+        doesn't exist' rather than 'you named it the wrong way'."""
+        assert musickit._valid_track_ref("1440783617", "library-songs") is None
+        assert musickit._valid_track_ref("i.AbC123", "songs") is None
+
+    @pytest.mark.parametrize("bad", ["i.", "i.ab/cd", "i.../../x", "x.AbC123"])
+    def test_library_refs_reject_path_shapes(self, bad):
+        assert musickit._valid_track_ref(bad, "library-songs") is None
+
+    def test_an_unknown_kind_is_refused(self):
+        assert musickit._valid_track_ref("1440783617", "collections") is None
+
+
+class TestPlaylistBridgeVerbs:
+    def test_add_passes_the_kind_through(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(
+            musickit, "_run", lambda *a: (seen.append(a), (True, {"httpStatus": 204}))[1]
+        )
+        musickit.add_track_to_playlist("p.Ab1", "i.Cd2", "library-songs")
+        assert seen == [("playlist-add", "p.Ab1", "i.Cd2", "library-songs")]
+
+    def test_add_defaults_to_a_catalog_song(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(
+            musickit, "_run", lambda *a: (seen.append(a), (True, {"httpStatus": 204}))[1]
+        )
+        musickit.add_track_to_playlist("p.Ab1", "1440783617")
+        assert seen == [("playlist-add", "p.Ab1", "1440783617", "songs")]
+
+    def test_a_bad_playlist_id_never_spawns(self, monkeypatch):
+        def boom(*a):
+            raise AssertionError("must not spawn")
+
+        monkeypatch.setattr(musickit, "_run", boom)
+        assert musickit.add_track_to_playlist("p.../x", "1440783617")[0] is False
+        assert musickit.playlist_tracks("nope")[0] is False
+
+    def test_tracks_returns_apples_data_array(self, monkeypatch):
+        monkeypatch.setattr(
+            musickit, "_run", lambda *a: (True, {"body": '{"data":[{"id":"i.A"}]}'})
+        )
+        ok, rows = musickit.playlist_tracks("p.Ab1")
+        assert ok is True and rows == [{"id": "i.A"}]
+
+    def test_tracks_survives_an_unparseable_body(self, monkeypatch):
+        monkeypatch.setattr(musickit, "_run", lambda *a: (True, {"body": "["}))
+        assert musickit.playlist_tracks("p.Ab1")[0] is False
+
+
+class TestApiModeAddViaMusicKit:
+    def _resolved(self):
+        return server.ResolvedPlaylist(raw_input="p.Ab1", api_id="p.Ab1", applescript_name=None)
+
+    def _no_dupes(self, monkeypatch):
+        monkeypatch.setattr(server, "_get_playlist_track_names", lambda pid: (True, []))
+        monkeypatch.setattr(server.audit_log, "log_action", lambda *a, **k: None)
+
+    def test_names_resolve_over_the_public_catalog_and_attach_as_songs(self, monkeypatch):
+        self._no_dupes(monkeypatch)
+        monkeypatch.setattr(
+            server,
+            "_find_catalog_hit_for",
+            lambda n, a: {"id": "1440783617", "name": "Strobe", "artist": "deadmau5"},
+        )
+        sent = []
+        monkeypatch.setattr(
+            server.musickit,
+            "add_track_to_playlist",
+            lambda pid, tid, kind: (sent.append((pid, tid, kind)), (True, "ok"))[1],
+        )
+        out = server._api_mode_add_via_musickit(
+            self._resolved(), [], [{"name": "strobe", "artist": "deadmau5"}], [], False
+        )
+        assert sent == [("p.Ab1", "1440783617", "songs")]
+        assert "Strobe" in out
+
+    def test_library_ids_attach_by_reference(self, monkeypatch):
+        self._no_dupes(monkeypatch)
+        sent = []
+        monkeypatch.setattr(
+            server.musickit,
+            "add_track_to_playlist",
+            lambda pid, tid, kind: (sent.append((tid, kind)), (True, "ok"))[1],
+        )
+        server._api_mode_add_via_musickit(self._resolved(), ["i.AbC123"], [], [], False)
+        assert sent == [("i.AbC123", "library-songs")]
+
+    def test_an_id_that_is_neither_is_skipped_with_a_reason(self, monkeypatch):
+        self._no_dupes(monkeypatch)
+        monkeypatch.setattr(server.musickit, "add_track_to_playlist", lambda *a: (True, "ok"))
+        out = server._api_mode_add_via_musickit(self._resolved(), ["DEADBEEF1234"], [], [], False)
+        assert "not a catalog id" in out
+
+    def test_duplicates_are_refused(self, monkeypatch):
+        monkeypatch.setattr(
+            server,
+            "_get_playlist_track_names",
+            lambda pid: (True, [{"id": "i.X", "name": "Strobe", "artist": "deadmau5"}]),
+        )
+        monkeypatch.setattr(
+            server,
+            "_find_catalog_hit_for",
+            lambda n, a: {"id": "1440783617", "name": "Strobe", "artist": "deadmau5"},
+        )
+
+        def never(*a):
+            raise AssertionError("a duplicate must not be attached")
+
+        monkeypatch.setattr(server.musickit, "add_track_to_playlist", never)
+        out = server._api_mode_add_via_musickit(
+            self._resolved(), [], [{"name": "Strobe", "artist": "deadmau5"}], [], False
+        )
+        assert "already in playlist" in out
+
+    def test_allow_duplicates_skips_the_read_entirely(self, monkeypatch):
+        def never(pid):
+            raise AssertionError("no need to read the playlist when dupes are allowed")
+
+        monkeypatch.setattr(server, "_get_playlist_track_names", never)
+        monkeypatch.setattr(server.audit_log, "log_action", lambda *a, **k: None)
+        monkeypatch.setattr(server, "_itunes_track_by_id", lambda tid: {"name": "S", "artist": "A"})
+        monkeypatch.setattr(server.musickit, "add_track_to_playlist", lambda *a: (True, "ok"))
+        out = server._api_mode_add_via_musickit(self._resolved(), ["1440783617"], [], [], True)
+        assert "Added" in out
+
+    def test_a_failed_duplicate_read_is_reported_not_swallowed(self, monkeypatch):
+        """A failed read is not proof of an empty playlist. Proceeding quietly
+        is how copies stack."""
+        monkeypatch.setattr(
+            server, "_get_playlist_track_names", lambda pid: (False, "helper timed out")
+        )
+        monkeypatch.setattr(server.audit_log, "log_action", lambda *a, **k: None)
+        monkeypatch.setattr(server, "_itunes_track_by_id", lambda tid: {"name": "S", "artist": "A"})
+        monkeypatch.setattr(server.musickit, "add_track_to_playlist", lambda *a: (True, "ok"))
+        out = server._api_mode_add_via_musickit(self._resolved(), ["1440783617"], [], [], False)
+        assert "Could not check for duplicates" in out
+        assert "helper timed out" in out
+
+    def test_a_refused_attach_is_surfaced(self, monkeypatch):
+        self._no_dupes(monkeypatch)
+        monkeypatch.setattr(server, "_itunes_track_by_id", lambda tid: {"name": "S", "artist": "A"})
+        monkeypatch.setattr(
+            server.musickit, "add_track_to_playlist", lambda *a: (False, "Apple returned 403")
+        )
+        out = server._api_mode_add_via_musickit(self._resolved(), ["1440783617"], [], [], False)
+        assert "nothing was added" in out
+        assert "403" in out
+
+
+class TestDuplicateCheckHasBothRails:
+    def test_musickit_rail_shapes_rows_like_the_rest_rail(self, monkeypatch):
+        monkeypatch.setattr(server, "_has_developer_token", lambda: False)
+        monkeypatch.setattr(server, "_can_use_musickit_rail", lambda: True)
+        monkeypatch.setattr(
+            server.musickit,
+            "playlist_tracks",
+            lambda pid: (
+                True,
+                [{"id": "i.A", "attributes": {"name": "Strobe", "artistName": "deadmau5"}}],
+            ),
+        )
+
+        def never():
+            raise AssertionError("no token exists — nothing may ask for headers")
+
+        monkeypatch.setattr(server, "get_headers", never)
+        ok, rows = server._get_playlist_track_names("p.Ab1")
+        assert ok is True
+        assert rows == [{"id": "i.A", "name": "Strobe", "artist": "deadmau5"}]
+
+    def test_a_token_host_still_uses_the_rest_rail(self, monkeypatch):
+        monkeypatch.setattr(server, "_has_developer_token", lambda: True)
+
+        def never(pid):
+            raise AssertionError("the token rail must win when a token exists")
+
+        monkeypatch.setattr(server.musickit, "playlist_tracks", never)
+        monkeypatch.setattr(server, "get_headers", lambda: {"Authorization": "x"})
+
+        class Resp:
+            status_code = 404
+
+        monkeypatch.setattr(server.requests, "get", lambda *a, **k: Resp())
+        ok, rows = server._get_playlist_track_names("p.Ab1")
+        assert ok is True and rows == []
+
+
+class TestPlaylistAddRoutesApiModeToMusicKit:
+    def test_a_p_id_with_no_token_takes_the_musickit_rail(self, monkeypatch):
+        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
+        monkeypatch.setattr(server, "_has_developer_token", lambda: False)
+        monkeypatch.setattr(server, "_can_use_musickit_rail", lambda: True)
+
+        def never():
+            raise AssertionError("no token exists — nothing may ask for headers")
+
+        monkeypatch.setattr(server, "get_headers", never)
+        seen = {}
+        monkeypatch.setattr(
+            server,
+            "_api_mode_add_via_musickit",
+            lambda r, ids, names, steps, dupes: seen.update(api_id=r.api_id, ids=ids, names=names)
+            or "done",
+        )
+        out = server._playlist_add("p.Ab1", track="1440783617")
+        assert out == "done"
+        assert seen["api_id"] == "p.Ab1"
+        assert seen["ids"] == ["1440783617"]

@@ -46,7 +46,8 @@
 //   amcp-musickit add        <catalogSongID>
 //   amcp-musickit add-album  <catalogAlbumID>
 //   amcp-musickit rate       <catalogSongID> love|dislike
-//   amcp-musickit playlist-add <playlistID> <catalogSongID>
+//   amcp-musickit playlist-add <playlistID> <trackID> [songs|library-songs]
+//   amcp-musickit playlist-tracks <playlistID>
 //   amcp-musickit isrc       <ISRC>[,<ISRC>...]
 //
 // Read verbs return Apple's response body verbatim in `body` rather than
@@ -102,15 +103,29 @@ func validCatalogID(_ raw: String) -> String? {
     return raw
 }
 
-/// Library playlist ids look like `p.AbCdEf123`. Same reasoning as
-/// `validCatalogID`: this is interpolated into a URL path, where a `/` or a
-/// `..` would change which resource is addressed rather than merely failing.
-func validPlaylistID(_ raw: String) -> String? {
-    guard raw.count >= 3, raw.count <= 64, raw.hasPrefix("p.") else { return nil }
-    let tail = raw.dropFirst(2)
+/// Apple's dot-prefixed ids: `p.AbCdEf123` for a library playlist, `i.AbCdEf123`
+/// for a library song. Same reasoning as `validCatalogID`, but stricter about
+/// why: these are interpolated into a URL path, where a `/` or a `..` would
+/// change WHICH resource is addressed rather than merely failing.
+func validPrefixedID(_ raw: String, prefix: String) -> String? {
+    guard raw.count > prefix.count, raw.count <= 64, raw.hasPrefix(prefix) else { return nil }
+    let tail = raw.dropFirst(prefix.count)
     guard !tail.isEmpty, tail.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) })
     else { return nil }
     return raw
+}
+
+func validPlaylistID(_ raw: String) -> String? { validPrefixedID(raw, prefix: "p.") }
+
+/// The two things a library playlist accepts as a track. A CATALOG song
+/// (`songs` + numeric id) is added to the library implicitly by the attach; a
+/// track already in the library is referenced by its `library-songs` id.
+func validTrackRef(_ raw: String, kind: String) -> String? {
+    switch kind {
+    case "songs": return validCatalogID(raw)
+    case "library-songs": return validPrefixedID(raw, prefix: "i.")
+    default: return nil
+    }
 }
 
 /// An ISRC is 12 characters: 2-letter country, 3-char registrant, 2-digit year,
@@ -212,24 +227,78 @@ func cmdRate(_ raw: String, _ ratingRaw: String) async -> Never {
 /// Attach a catalog song to a library playlist. AppleScript can only edit
 /// playlists Music.app itself owns, so an Apple-Music-origin playlist (the
 /// `kind == "api"` case on the Python side) had no tokenless rail at all.
-func cmdPlaylistAdd(_ playlistRaw: String, _ trackRaw: String) async -> Never {
+func cmdPlaylistAdd(_ playlistRaw: String, _ trackRaw: String, _ kind: String) async -> Never {
     _ = requireAuthorization()
     guard let playlistID = validPlaylistID(playlistRaw) else {
         fail("playlist id must look like p.XXXXXXXX")
     }
-    guard let trackID = validCatalogID(trackRaw) else { fail("catalog id must be numeric") }
+    guard let trackID = validTrackRef(trackRaw, kind: kind) else {
+        fail("track id does not match kind \(kind)")
+    }
 
     let url = URL(
         string: "https://api.music.apple.com/v1/me/library/playlists/\(playlistID)/tracks")!
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    let payload: [String: Any] = ["data": [["id": trackID, "type": "songs"]]]
+    let payload: [String: Any] = ["data": [["id": trackID, "type": kind]]]
     guard let data = try? JSONSerialization.data(withJSONObject: payload) else {
         fail("could not encode the playlist body")
     }
     request.httpBody = data
     await send(request, id: trackID)
+}
+
+/// List a library playlist's tracks, paging until Apple stops returning more.
+///
+/// This is the only verb that returns a `/v1/me/...` body on stdout, so it is
+/// worth being explicit: that body goes to the parent process that spawned this
+/// helper — same machine, same user, the boundary the unix socket already
+/// assumes — and nowhere else. It exists because refusing to add a duplicate
+/// requires knowing what is already in the playlist, and skipping that check
+/// silently is how the AppleScript rail once stacked four copies of a track.
+func cmdPlaylistTracks(_ playlistRaw: String) async -> Never {
+    _ = requireAuthorization()
+    guard let playlistID = validPlaylistID(playlistRaw) else {
+        fail("playlist id must look like p.XXXXXXXX")
+    }
+
+    var collected: [Any] = []
+    var offset = 0
+    while true {
+        var components = URLComponents(
+            string: "https://api.music.apple.com/v1/me/library/playlists/"
+                + "\(playlistID)/tracks")!
+        components.queryItems = [
+            URLQueryItem(name: "limit", value: "100"),
+            URLQueryItem(name: "offset", value: String(offset)),
+        ]
+        do {
+            let response = try await MusicDataRequest(urlRequest: URLRequest(url: components.url!))
+                .response()
+            let code = response.urlResponse.statusCode
+            // An empty playlist 404s rather than returning an empty list.
+            if code == 404 { break }
+            guard (200...299).contains(code) else {
+                emit(Result(ok: false, httpStatus: code, error: "Apple returned \(code)"))
+            }
+            let parsed = try? JSONSerialization.jsonObject(with: response.data)
+            let page = ((parsed as? [String: Any])?["data"] as? [Any]) ?? []
+            collected.append(contentsOf: page)
+            if page.count < 100 { break }
+            offset += 100
+            // A library playlist is bounded, but never trust a remote service
+            // to terminate a loop for us.
+            if offset >= 10_000 { break }
+        } catch {
+            fail(error.localizedDescription)
+        }
+    }
+
+    guard let out = try? JSONSerialization.data(withJSONObject: ["data": collected]),
+        let text = String(data: out, encoding: .utf8)
+    else { fail("could not encode the playlist tracks") }
+    emit(Result(ok: true, httpStatus: 200, body: text))
 }
 
 /// Resolve ISRCs to catalog songs. The only verb here that answers a question
@@ -260,7 +329,9 @@ func cmdISRC(_ raw: String) async -> Never {
 
 let args = Array(CommandLine.arguments.dropFirst())
 guard let verb = args.first else {
-    fail("usage: amcp-musickit status|authorize|add|add-album|rate|playlist-add|isrc")
+    fail(
+        "usage: amcp-musickit status|authorize|add|add-album|rate|playlist-add"
+            + "|playlist-tracks|isrc")
 }
 
 switch verb {
@@ -278,8 +349,15 @@ case "rate":
     guard args.count == 3 else { fail("rate needs a catalog id and love|dislike") }
     await cmdRate(args[1], args[2])
 case "playlist-add":
-    guard args.count == 3 else { fail("playlist-add needs a playlist id and a catalog id") }
-    await cmdPlaylistAdd(args[1], args[2])
+    // The kind is optional and defaults to a catalog song, which is what every
+    // caller wants; `library-songs` is for a track already in the library.
+    guard args.count == 3 || args.count == 4 else {
+        fail("playlist-add needs a playlist id, a track id, and an optional kind")
+    }
+    await cmdPlaylistAdd(args[1], args[2], args.count == 4 ? args[3] : "songs")
+case "playlist-tracks":
+    guard args.count == 2 else { fail("playlist-tracks needs exactly one playlist id") }
+    await cmdPlaylistTracks(args[1])
 case "isrc":
     guard args.count == 2 else { fail("isrc needs one comma-separated list") }
     await cmdISRC(args[1])

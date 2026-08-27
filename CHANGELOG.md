@@ -52,11 +52,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the iTunes Search API has no ISRC filter. Every identifier is validated in
   Python and again in Swift before it reaches a URL.
 
+- **Apple-Music-origin playlists can now be edited with no credential.** This is
+  the one operation with no AppleScript equivalent at all — Music.app edits only
+  the playlists it owns — so `_playlist_add`'s API mode (reached by passing an
+  explicit `p.` id) previously required a developer token outright. It now has a
+  MusicKit rail, including the duplicate check: `_get_playlist_track_names` grew
+  a second rail rather than letting the tokenless path skip the check, because
+  silently stacking copies of a track is a bug this codebase has already paid
+  for once.
+
 ### Known gaps
 
-- `musickit.add_track_to_playlist` ships unwired: routing the Apple-Music-origin
-  playlist branch through it is a larger rewrite of `_playlist_add`'s API mode.
 - Ratings and album adds still fall back to the token rail when MusicKit refuses.
+- The new playlist verbs are validated and unit-tested but have not been
+  exercised against a live account.
 
 ## [0.1.1] - 2026-08-25
 
