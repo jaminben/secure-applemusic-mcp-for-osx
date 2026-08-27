@@ -4144,10 +4144,17 @@ def _api_mode_add_via_musickit(
             label = f"{row['name']} - {row['artist']}" if row else track_id
             refs.append((track_id, "songs", label))
         elif str(track_id).startswith("i."):
-            # Already in the library; attach it by reference. Its name is only
-            # needed for the duplicate check and the audit line, and reading it
-            # would cost another helper spawn — so fall back to the id.
-            refs.append((track_id, "library-songs", track_id))
+            # Already in the library; attach it by reference. Resolve its name
+            # so the duplicate check below can actually compare it — an id
+            # compares equal to nothing, so skipping this silently disabled
+            # dedup for exactly the tracks most likely to already be there.
+            ok_row, attrs = musickit.library_song(track_id)
+            label = (
+                f"{attrs.get('name', '')} - {attrs.get('artistName', '')}".strip(" -")
+                if ok_row and isinstance(attrs, dict)
+                else track_id
+            )
+            refs.append((track_id, "library-songs", label or track_id))
         else:
             steps.append(
                 f"Skipped {track_id}: not a catalog id, and only library ids "
@@ -4466,34 +4473,32 @@ def _playlist_add(
 
         # Process IDs (catalog or library IDs).
         #
-        # These are two different questions wearing one name. A CATALOG id names
-        # something in Apple's public catalog: it looks up tokenlessly, and the
-        # add it implies is what the MusicKit rail is for. A LIBRARY id (i.XXXX)
-        # names a row in YOUR library, which no public endpoint can read — that
-        # one really does need the account API. The old guard rejected both on
-        # the strength of the second, and pointed at a shell command besides.
+        # Three kinds of id wearing one name. A CATALOG id (9+ digits) names
+        # something public: it looks up over iTunes and the add it implies is
+        # what MusicKit signs. A LIBRARY id (i.XXXX) names a row in the user's
+        # OWN library — invisible to any public endpoint, but MusicKit reads it
+        # too, so it is a missing verb rather than a missing capability. Anything
+        # else is not an id we can resolve at all; a mistyped id is not a library
+        # id, and calling it one sends the user hunting a problem they lack.
         tokenless_ids = ids_list and not _has_developer_token()
         if tokenless_ids:
-            catalog_ids = [t for t in ids_list if _is_catalog_id(t)]
-            # Everything that is NOT a catalog id resolves against the user's own
-            # library below (library, persistent, and unrecognised ids all take
-            # that branch), and no public endpoint can read that. Don't call them
-            # all "library IDs" — a mistyped id is not a library id, and saying so
-            # sends the user looking for a problem they don't have.
-            other_ids = [t for t in ids_list if not _is_catalog_id(t)]
-            if other_ids:
-                errors.append(
-                    f"These IDs ({', '.join(other_ids[:3])}) aren't catalog IDs, so "
-                    "resolving them means reading your own library — which only the "
-                    "Apple Music API can do. Pass those tracks by name instead."
+            resolvable, unknown = [], []
+            for t in ids_list:
+                (resolvable if (_is_catalog_id(t) or str(t).startswith("i.")) else unknown).append(
+                    t
                 )
-            if catalog_ids and not _can_use_musickit_rail():
+            if unknown:
                 errors.append(
-                    f"Adding by catalog ID needs a way to write to your library. "
-                    f"{_musickit_setup_hint()}"
+                    f"Unrecognised IDs ({', '.join(unknown[:3])}): not a catalog id "
+                    "(9+ digits) and not a library id (i.XXXX). Pass those tracks by "
+                    "name instead."
                 )
-                catalog_ids = []
-            ids_list = catalog_ids
+            if resolvable and not _can_use_musickit_rail():
+                errors.append(
+                    f"Adding by ID needs a way to reach your library. {_musickit_setup_hint()}"
+                )
+                resolvable = []
+            ids_list = resolvable
 
         if ids_list:
             # Resolved lazily: on the tokenless rail there is no token to build
@@ -4542,6 +4547,17 @@ def _playlist_add(
                     if not data:
                         continue
                     attrs = data[0].get("attributes", {})
+                    name = attrs.get("name", "")
+                    artist_name = attrs.get("artistName", "")
+                elif tokenless_ids:
+                    # Library ID over the signed rail. `i.` ids are the one read
+                    # with no public equivalent — they name rows in this user's
+                    # library — so this verb is what stops a library id from
+                    # being the last thing that needs a developer token.
+                    ok_row, attrs = musickit.library_song(track_id)
+                    if not ok_row:
+                        errors.append(f"Could not get info for {track_id}: {attrs}")
+                        continue
                     name = attrs.get("name", "")
                     artist_name = attrs.get("artistName", "")
                 else:
@@ -4699,27 +4715,22 @@ def _playlist_add(
                 )  # pragma: no cover  # unreachable: [UI] steps only come from AppleScript auto_add; never present in this API-mode branch
             return "Error: No tracks to add\n" + "\n".join(steps)
 
-        library_ids = []
+        refs: list[tuple[str, str, str]] = []  # (id, kind, label)
         track_info = {}  # For verbose output
 
-        # Process each ID - add to library if catalog ID
+        # Resolve each id to something the playlist endpoint accepts.
+        #
+        # A CATALOG song can be attached directly as type "songs" — doing so
+        # adds it to the library implicitly. The previous shape POSTed to
+        # /me/library and then polled /me/library/search up to ten times to
+        # recover a library id the playlist endpoint never needed, which cost a
+        # write plus up to ten reads per track and reported "could not find it
+        # in library after adding" whenever iCloud was slower than one second.
+        # `_auto_search_and_add_to_playlist` has always attached catalog ids
+        # directly for API-origin playlists; this is the same move.
         for track_id in ids_list:
             if _is_catalog_id(track_id):
-                # It's a catalog ID - need to add to library first
-                steps.append(f"Adding catalog ID {track_id} to library...")
-
-                # Add to library
-                params = {"ids[songs]": track_id}
-                response = requests.post(
-                    f"{BASE_URL}/me/library",
-                    headers=headers,
-                    params=params,
-                    timeout=REQUEST_TIMEOUT,
-                )
-                if response.status_code not in (200, 202):
-                    steps.append(f"  Warning: library add returned {response.status_code}")
-
-                # Get catalog info for the track name
+                label = track_id
                 cat_response = requests.get(
                     f"{BASE_URL}/catalog/{get_storefront()}/songs/{track_id}",
                     headers=headers,
@@ -4729,86 +4740,60 @@ def _playlist_add(
                     cat_data = cat_response.json().get("data", [])
                     if cat_data:
                         attrs = cat_data[0].get("attributes", {})
-                        name = attrs.get("name", "")
-                        artist_name = attrs.get("artistName", "")
-                        track_info[track_id] = f"{name} - {artist_name}"
-
-                        # Poll library until track appears (up to 1s)
-                        found_id = None
-                        for attempt in range(10):
-                            if attempt > 0:
-                                time.sleep(0.1)
-                            lib_response = requests.get(
-                                f"{BASE_URL}/me/library/search",
-                                headers=headers,
-                                params={"term": name, "types": "library-songs", "limit": 25},
-                                timeout=REQUEST_TIMEOUT,
-                            )
-                            if lib_response.status_code == 200:
-                                lib_data = lib_response.json()
-                                songs = (
-                                    lib_data.get("results", {})
-                                    .get("library-songs", {})
-                                    .get("data", [])
-                                )
-                                for song in songs:
-                                    song_attrs = song.get("attributes", {})
-                                    if (
-                                        song_attrs.get("name", "").lower() == name.lower()
-                                        and artist_name.lower()
-                                        in song_attrs.get("artistName", "").lower()
-                                    ):
-                                        found_id = song["id"]
-                                        break
-                                if found_id:
-                                    break
-                        if found_id:
-                            library_ids.append(found_id)
-                            steps.append(f"  Found in library: {name} (ID: {found_id})")
-                        else:
-                            steps.append(
-                                f"  Warning: could not find '{name}' in library after adding"
-                            )
+                        label = (f"{attrs.get('name', '')} - {attrs.get('artistName', '')}").strip(
+                            " -"
+                        )
+                        track_info[track_id] = label
+                        # Name the track in the output. The old shape only did
+                        # so from inside the library-search poll, so removing
+                        # that would have quietly reduced this to a bare count.
+                        steps.append(f"Resolved catalog ID {track_id}: {label}")
                 else:
                     steps.append(f"  Warning: could not get catalog info for {track_id}")
+                refs.append((track_id, "songs", label))
             else:
-                # Already a library ID
-                library_ids.append(track_id)
+                # Already a library ID.
+                refs.append((track_id, "library-songs", track_id))
 
-        if not library_ids:
-            return "Error: No valid library IDs to add\n" + "\n".join(steps)
+        if not refs:
+            return "Error: No valid IDs to add\n" + "\n".join(steps)
 
         # Check for duplicates
         if not allow_duplicates:
             success, existing = _get_playlist_track_names(resolved.api_id)
             if success and existing:
-                filtered_ids = []
-                for lib_id in library_ids:
-                    # Get track name for this library ID
-                    response = requests.get(
-                        f"{BASE_URL}/me/library/songs/{lib_id}",
-                        headers=headers,
-                        timeout=REQUEST_TIMEOUT,
-                    )
-                    if response.status_code == 200:
-                        data = response.json().get("data", [])
-                        if data:
-                            attrs = data[0].get("attributes", {})
-                            name = attrs.get("name", "")
-                            artist_name = attrs.get("artistName", "")
-                            matches = _find_track_in_list(existing, name, artist_name)
-                            if matches:
-                                steps.append(f"Skipped duplicate: {name} - {artist_name}")
-                                continue
-                    filtered_ids.append(lib_id)
-                library_ids = filtered_ids
+                filtered = []
+                for track_id, kind, label in refs:
+                    name, artist_name = "", ""
+                    if kind == "songs":
+                        # Already known from the catalog read above — no second
+                        # request to learn what we just fetched.
+                        name, _, artist_name = label.partition(" - ")
+                    else:
+                        response = requests.get(
+                            f"{BASE_URL}/me/library/songs/{track_id}",
+                            headers=headers,
+                            timeout=REQUEST_TIMEOUT,
+                        )
+                        if response.status_code == 200:
+                            data = response.json().get("data", [])
+                            if data:
+                                attrs = data[0].get("attributes", {})
+                                name = attrs.get("name", "")
+                                artist_name = attrs.get("artistName", "")
+                    if name and _find_track_in_list(existing, name, artist_name):
+                        steps.append(f"Skipped duplicate: {name} - {artist_name}")
+                        continue
+                    filtered.append((track_id, kind, label))
+                refs = filtered
 
-        if not library_ids:
+        if not refs:
             steps.append("All tracks already in playlist")
             return "\n".join(steps)
 
-        # Add to playlist
-        track_data = [{"id": lid, "type": "library-songs"} for lid in library_ids]
+        # Add to playlist. Mixed kinds in one call are fine: the data array
+        # carries each item's own type.
+        track_data = [{"id": tid, "type": kind} for tid, kind, _ in refs]
         body = {"data": track_data}
 
         response = requests.post(
@@ -4819,7 +4804,7 @@ def _playlist_add(
         )
 
         if response.status_code == 204:
-            steps.append(f"Added {len(library_ids)} track(s) to playlist")
+            steps.append(f"Added {len(refs)} track(s) to playlist")
         elif response.status_code == 403:
             return (
                 "Error: Cannot edit this playlist (not API-created). Use playlist_name on macOS.\n"
@@ -4839,11 +4824,14 @@ def _playlist_add(
             steps.append(f"Verified: playlist now has {len(updated)} tracks")
 
         # Log successful add (API mode)
-        added_tracks = [track_info.get(tid, tid) for tid in library_ids]
+        added_tracks = [track_info.get(tid, label) for tid, _kind, label in refs]
         audit_log.log_action(
             "add_to_playlist",
             {"playlist": resolved.api_id, "tracks": added_tracks, "method": "api"},
-            undo_info={"playlist_id": resolved.api_id, "library_ids": library_ids},
+            undo_info={
+                "playlist_id": resolved.api_id,
+                "tracks": [{"id": tid, "type": kind} for tid, kind, _ in refs],
+            },
         )
         return "\n".join(steps)
 
@@ -5645,6 +5633,40 @@ def _itunes_album_tracks(album: str, artist: str = "") -> tuple[list[dict], str]
     if not found:
         return [], ""
     return _itunes_songs_from(_itunes_lookup(found["id"], entity="song")), found["name"]
+
+
+def _catalog_search_musickit(query: str, limit: int = 25) -> list[dict]:
+    """Catalog search over MusicKit, shaped like the iTunes rows.
+
+    A second opinion, not a replacement: ``_catalog_search_itunes`` answers the
+    same question for free and without a process launch, so this only runs when
+    that came back empty. Apple's own search indexes some things the public
+    endpoint does not, which is the entire reason to reach for it.
+    """
+    if not _can_use_musickit_rail():
+        return []
+    ok, results = musickit.catalog_search(query, "songs", min(limit or 25, 25))
+    if not ok or not isinstance(results, dict):
+        return []
+    rows = []
+    for song in results.get("songs", {}).get("data", []) or []:
+        attrs = song.get("attributes", {}) or {}
+        released = str(attrs.get("releaseDate") or "")
+        rows.append(
+            {
+                "name": attrs.get("name", ""),
+                "duration": format_duration(attrs.get("durationInMillis", 0)),
+                "artist": attrs.get("artistName", ""),
+                "album": attrs.get("albumName", ""),
+                "year": released[:4],
+                "genre": (attrs.get("genreNames") or [""])[0],
+                "explicit": "Yes" if attrs.get("contentRating") == "explicit" else "No",
+                "id": str(song.get("id", "")),
+                "catalog_id": str(song.get("id", "")),
+                "url": attrs.get("url", "") or "",
+            }
+        )
+    return [r for r in rows if r["id"]]
 
 
 def _resolve_catalog_track_itunes(name: str, artist: str = "") -> Optional[dict]:
@@ -7958,10 +7980,19 @@ def catalog(
                 return "Error: query required for search"
             hits = _catalog_search_itunes(query, limit or 25)
             if not hits:
+                # The public index and Apple's own search disagree at the
+                # margins. Only pay the process launch when the cheap rail has
+                # already come up empty — not on every search.
+                hits = _catalog_search_musickit(query, limit or 25)
+            if not hits:
                 return (
-                    f"No catalog results for '{query}' (public iTunes Search API). "
-                    "This is Apple's public catalog index; a configured "
-                    "developer token can differ at the margins."
+                    f"No catalog results for '{query}'. Searched Apple's public "
+                    "catalog index"
+                    + (
+                        " and, through the signed helper, Apple Music's own search."
+                        if _can_use_musickit_rail()
+                        else "."
+                    )
                 )
             return format_output(hits, format, export, full, "catalog_search")
     elif action in ("resolve", "resolve_isrc", "match", "match_tracks", "resolve_tracks"):

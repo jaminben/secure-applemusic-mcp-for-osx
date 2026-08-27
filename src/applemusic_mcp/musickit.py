@@ -196,6 +196,21 @@ def rate_song(catalog_id: str, rating: str) -> tuple[bool, str]:
     return False, str(payload.get("error", "unknown MusicKit error"))
 
 
+def unrate_song(catalog_id: str) -> tuple[bool, str]:
+    """Clear a rating. The counterpart to :func:`rate_song`.
+
+    Exists because the release gate must leave no residue: without a way to
+    remove a rating, "exercise the rating path" and "leave the account as you
+    found it" were mutually exclusive, so the gate did neither.
+    """
+    if _valid_catalog_id(catalog_id) is None:
+        return False, "catalog id must be numeric (ASCII digits)"
+    ok, payload = _run("unrate", str(catalog_id).strip())
+    if ok:
+        return True, f"rating cleared (HTTP {payload.get('httpStatus')})"
+    return False, str(payload.get("error", "unknown MusicKit error"))
+
+
 def add_track_to_playlist(playlist_id: str, track_id: str, kind: str = "songs") -> tuple[bool, str]:
     """Attach one track to a library playlist.
 
@@ -227,12 +242,74 @@ def playlist_tracks(playlist_id: str) -> tuple[bool, object]:
     ok, payload = _run("playlist-tracks", pid)
     if not ok:
         return False, str(payload.get("error", "unknown MusicKit error"))
+    ok, body = _json_body(payload)
+    if not ok:
+        return False, body
+    data = body.get("data")
+    return True, data if isinstance(data, list) else []
+
+
+def _json_body(payload: dict) -> tuple[bool, object]:
+    """Parse the ``body`` a read verb returns. Shared so every read fails the
+    same way rather than each inventing its own half-guard."""
     try:
         body = json.loads(payload.get("body") or "{}")
     except (json.JSONDecodeError, TypeError):
         return False, "could not parse the MusicKit response"
-    data = body.get("data") if isinstance(body, dict) else None
-    return True, data if isinstance(data, list) else []
+    return (True, body) if isinstance(body, dict) else (False, "unexpected response shape")
+
+
+def library_song(library_id: str) -> tuple[bool, object]:
+    """Metadata for one library song id (``i.XXXX``). Returns ``(ok, attrs)``.
+
+    The last read with no public equivalent: an ``i.`` id names a row in the
+    user's OWN library, which no anonymous endpoint can see. Returns Apple's
+    ``attributes`` dict so callers read ``name``/``artistName`` exactly as they
+    do on the REST rail.
+    """
+    lid = _valid_prefixed_id(library_id, "i.")
+    if lid is None:
+        return False, "library song id must look like i.XXXXXXXX"
+    ok, payload = _run("library-song", lid)
+    if not ok:
+        return False, str(payload.get("error", "unknown MusicKit error"))
+    ok, body = _json_body(payload)
+    if not ok:
+        return False, body
+    data = body.get("data")
+    if not isinstance(data, list) or not data:
+        return False, f"no library song {lid}"
+    return True, data[0].get("attributes", {}) or {}
+
+
+def catalog_search(term: str, types: str = "songs", limit: int = 25) -> tuple[bool, object]:
+    """Search Apple's catalog through the account's storefront.
+
+    The public iTunes Search API already does this with no credential, so this
+    is for the margins where the two differ (relevance, and types iTunes does
+    not index the same way). Prefer the public rail: this one costs a process
+    launch per call. Returns Apple's ``results`` dict.
+    """
+    query = str(term or "").strip()
+    if not query or len(query) > 512:
+        return False, "term must be 1-512 characters"
+    allowed = {"songs", "albums", "artists", "playlists"}
+    wanted = [t.strip() for t in str(types or "").split(",") if t.strip()]
+    if not wanted or not set(wanted) <= allowed:
+        return False, f"types must be a subset of {sorted(allowed)}"
+    try:
+        count = int(limit)
+    except (TypeError, ValueError):
+        return False, "limit must be an integer"
+    count = max(1, min(count, 25))
+    ok, payload = _run("catalog-search", query, ",".join(wanted), str(count))
+    if not ok:
+        return False, str(payload.get("error", "unknown MusicKit error"))
+    ok, body = _json_body(payload)
+    if not ok:
+        return False, body
+    results = body.get("results")
+    return True, results if isinstance(results, dict) else {}
 
 
 def resolve_isrcs(codes: "list[str]") -> tuple[bool, object]:
@@ -255,9 +332,8 @@ def resolve_isrcs(codes: "list[str]") -> tuple[bool, object]:
     ok, payload = _run("isrc", ",".join(cleaned))
     if not ok:
         return False, str(payload.get("error", "unknown MusicKit error"))
-    try:
-        body = json.loads(payload.get("body") or "{}")
-    except (json.JSONDecodeError, TypeError):
-        return False, "could not parse the MusicKit response"
+    ok, body = _json_body(payload)
+    if not ok:
+        return False, body
     data = body.get("data")
     return True, data if isinstance(data, list) else []

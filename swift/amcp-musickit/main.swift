@@ -46,8 +46,11 @@
 //   amcp-musickit add        <catalogSongID>
 //   amcp-musickit add-album  <catalogAlbumID>
 //   amcp-musickit rate       <catalogSongID> love|dislike
+//   amcp-musickit unrate     <catalogSongID>
 //   amcp-musickit playlist-add <playlistID> <trackID> [songs|library-songs]
 //   amcp-musickit playlist-tracks <playlistID>
+//   amcp-musickit library-song <librarysongID>
+//   amcp-musickit catalog-search <term> <types> <limit>
 //   amcp-musickit isrc       <ISRC>[,<ISRC>...]
 //
 // Read verbs return Apple's response body verbatim in `body` rather than
@@ -173,6 +176,17 @@ func send(_ request: URLRequest, id: String? = nil, wantBody: Bool = false) asyn
     }
 }
 
+/// The account's storefront, from MusicKit rather than from an argument: it
+/// already knows which one this account belongs to, and a mismatched storefront
+/// silently returns nothing rather than erroring — the worst failure shape.
+func currentStorefront() async -> String {
+    do {
+        return try await MusicDataRequest.currentCountryCode
+    } catch {
+        fail("could not determine the storefront: \(error.localizedDescription)")
+    }
+}
+
 func cmdStatus() -> Never {
     emit(Result(ok: true, status: describe(MusicAuthorization.currentStatus)))
 }
@@ -221,6 +235,19 @@ func cmdRate(_ raw: String, _ ratingRaw: String) async -> Never {
         fail("could not encode the rating body")
     }
     request.httpBody = data
+    await send(request, id: id)
+}
+
+/// Clear a rating. The counterpart to `rate`, and not an afterthought: the
+/// release gate is required to leave no residue, so a rating it sets must be
+/// removable. Without this, "test the rating path" and "leave the account as
+/// you found it" were mutually exclusive.
+func cmdUnrate(_ raw: String) async -> Never {
+    _ = requireAuthorization()
+    guard let id = validCatalogID(raw) else { fail("catalog id must be numeric") }
+    let url = URL(string: "https://api.music.apple.com/v1/me/ratings/songs/\(id)")!
+    var request = URLRequest(url: url)
+    request.httpMethod = "DELETE"
     await send(request, id: id)
 }
 
@@ -301,6 +328,53 @@ func cmdPlaylistTracks(_ playlistRaw: String) async -> Never {
     emit(Result(ok: true, httpStatus: 200, body: text))
 }
 
+/// Resolve one library song id (`i.XXXX`) to its metadata.
+///
+/// This is the last read with no public equivalent: `i.` ids name rows in the
+/// user's OWN library, and no anonymous endpoint can see those. Not a
+/// capability barrier — just a verb that did not exist, which is why passing a
+/// library id anywhere still demanded a developer token.
+func cmdLibrarySong(_ raw: String) async -> Never {
+    _ = requireAuthorization()
+    guard let id = validPrefixedID(raw, prefix: "i.") else {
+        fail("library song id must look like i.XXXXXXXX")
+    }
+    let url = URL(string: "https://api.music.apple.com/v1/me/library/songs/\(id)")!
+    await send(URLRequest(url: url), id: id, wantBody: true)
+}
+
+/// Search Apple's catalog through the account's own storefront.
+///
+/// The public iTunes Search API already covers this without a credential, so
+/// this exists for the margins where the two differ — relevance, and types
+/// (playlists, artists) that iTunes does not index the same way. Callers should
+/// keep preferring the public rail: this one costs a process launch.
+func cmdCatalogSearch(_ term: String, _ typesRaw: String, _ limitRaw: String) async -> Never {
+    _ = requireAuthorization()
+    guard !term.isEmpty, term.count <= 512 else { fail("term must be 1-512 characters") }
+
+    // Whitelist rather than pass through: `types` is a URL parameter Apple
+    // routes on, and an unexpected value is a silent empty result.
+    let allowed = ["songs", "albums", "artists", "playlists"]
+    let types = typesRaw.split(separator: ",").map(String.init)
+    guard !types.isEmpty, types.allSatisfy({ allowed.contains($0) }) else {
+        fail("types must be a comma-separated subset of \(allowed.joined(separator: ","))")
+    }
+    guard let limit = Int(limitRaw), limit >= 1, limit <= 25 else {
+        fail("limit must be 1-25")
+    }
+
+    let storefront = await currentStorefront()
+    var components = URLComponents(
+        string: "https://api.music.apple.com/v1/catalog/\(storefront)/search")!
+    components.queryItems = [
+        URLQueryItem(name: "term", value: term),
+        URLQueryItem(name: "types", value: types.joined(separator: ",")),
+        URLQueryItem(name: "limit", value: String(limit)),
+    ]
+    await send(URLRequest(url: components.url!), wantBody: true)
+}
+
 /// Resolve ISRCs to catalog songs. The only verb here that answers a question
 /// the public iTunes Search API cannot answer at all, and the only READ verb —
 /// batched, because Apple's filter takes a list and a process launch per track
@@ -310,15 +384,7 @@ func cmdISRC(_ raw: String) async -> Never {
     guard let codes = validISRCList(raw) else {
         fail("each ISRC must be 12 alphanumeric characters")
     }
-    // Ask MusicKit for the storefront rather than taking one as an argument:
-    // it already knows which one this account belongs to, and a mismatched
-    // storefront silently returns nothing rather than erroring.
-    let storefront: String
-    do {
-        storefront = try await MusicDataRequest.currentCountryCode
-    } catch {
-        fail("could not determine the storefront: \(error.localizedDescription)")
-    }
+    let storefront = await currentStorefront()
 
     var components = URLComponents(
         string: "https://api.music.apple.com/v1/catalog/\(storefront)/songs")!
@@ -330,8 +396,8 @@ func cmdISRC(_ raw: String) async -> Never {
 let args = Array(CommandLine.arguments.dropFirst())
 guard let verb = args.first else {
     fail(
-        "usage: amcp-musickit status|authorize|add|add-album|rate|playlist-add"
-            + "|playlist-tracks|isrc")
+        "usage: amcp-musickit status|authorize|add|add-album|rate|unrate|playlist-add"
+            + "|playlist-tracks|library-song|catalog-search|isrc")
 }
 
 switch verb {
@@ -348,6 +414,9 @@ case "add-album":
 case "rate":
     guard args.count == 3 else { fail("rate needs a catalog id and love|dislike") }
     await cmdRate(args[1], args[2])
+case "unrate":
+    guard args.count == 2 else { fail("unrate needs exactly one catalog id") }
+    await cmdUnrate(args[1])
 case "playlist-add":
     // The kind is optional and defaults to a catalog song, which is what every
     // caller wants; `library-songs` is for a track already in the library.
@@ -358,6 +427,12 @@ case "playlist-add":
 case "playlist-tracks":
     guard args.count == 2 else { fail("playlist-tracks needs exactly one playlist id") }
     await cmdPlaylistTracks(args[1])
+case "library-song":
+    guard args.count == 2 else { fail("library-song needs exactly one i. id") }
+    await cmdLibrarySong(args[1])
+case "catalog-search":
+    guard args.count == 4 else { fail("catalog-search needs a term, types and a limit") }
+    await cmdCatalogSearch(args[1], args[2], args[3])
 case "isrc":
     guard args.count == 2 else { fail("isrc needs one comma-separated list") }
     await cmdISRC(args[1])

@@ -61,11 +61,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   silently stacking copies of a track is a bug this codebase has already paid
   for once.
 
+- **A library id was the last thing that genuinely needed a token.** `i.` ids
+  name rows in the user's own library, which no public endpoint can read — but
+  MusicKit reads them, so this was a missing verb, not a missing capability.
+  Passing a library id to `playlist(action='add')` now works with no credential.
+- **The release gate had not run since `d4fc279`.** That commit removed the
+  amp-api rail, but left `scripts/check_live_env.py` importing the deleted
+  module and `scripts/preflight.sh` invoking a deleted test file. `make
+  preflight` died with an ImportError at step 3 on every machine, tokens or
+  not — while RELEASING.md kept calling it mandatory. Both are rebuilt around
+  the MusicKit rail: the gate now passes if EITHER write rail works, and a
+  machine with only MusicKit is a valid release machine (it is the
+  configuration most users are on).
+
+### Added
+
+- **`unrate`**, so the gate can leave no residue. Without a way to remove a
+  rating, "exercise the rating path" and "leave the account as you found it"
+  were mutually exclusive.
+- **`library-song`** (resolve an `i.` id) and **`catalog-search`** (Apple's own
+  search, consulted only when the free public index comes up empty, so the
+  process launch is not paid on every query).
+
+### Changed
+
+- **The API-mode playlist add stopped doing unnecessary work.** It POSTed to
+  `/me/library` and then polled `/me/library/search` up to ten times to recover
+  a library id the playlist endpoint never needed — a write plus up to ten reads
+  per track, reporting "could not find it in library after adding" whenever
+  iCloud was slower than one second. A catalog song attaches directly as type
+  `songs`, which adds it to the library implicitly; that is what
+  `_auto_search_and_add_to_playlist` has always done for these playlists.
+
 ### Known gaps
 
 - Ratings and album adds still fall back to the token rail when MusicKit refuses.
-- The new playlist verbs are validated and unit-tested but have not been
-  exercised against a live account.
+- `test_full_mutation_lifecycle` needs Music.app Automation permission for the
+  process running pytest, so the gate must be run from an unlocked console
+  session — as RELEASING.md already requires for `preflight-ui`.
 
 ## [0.1.1] - 2026-08-25
 

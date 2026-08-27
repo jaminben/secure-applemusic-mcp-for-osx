@@ -990,3 +990,155 @@ class TestPlaylistAddRoutesApiModeToMusicKit:
         assert out == "done"
         assert seen["api_id"] == "p.Ab1"
         assert seen["ids"] == ["1440783617"]
+
+
+# ---------------------------------------------------------------------------
+# The last two reads: a library song, and Apple's own catalog search.
+# ---------------------------------------------------------------------------
+
+
+class TestLibrarySongLookup:
+    def test_returns_apples_attributes(self, monkeypatch):
+        monkeypatch.setattr(
+            musickit,
+            "_run",
+            lambda *a: (
+                True,
+                {"body": '{"data":[{"attributes":{"name":"Strobe","artistName":"deadmau5"}}]}'},
+            ),
+        )
+        ok, attrs = musickit.library_song("i.AbC123")
+        assert ok is True
+        assert attrs["name"] == "Strobe" and attrs["artistName"] == "deadmau5"
+
+    @pytest.mark.parametrize("bad", ["1440783617", "i.", "i.../x", "p.AbC123", ""])
+    def test_only_library_ids_are_accepted(self, monkeypatch, bad):
+        def boom(*a):
+            raise AssertionError("must not spawn")
+
+        monkeypatch.setattr(musickit, "_run", boom)
+        assert musickit.library_song(bad)[0] is False
+
+    def test_an_empty_data_array_is_an_error_not_an_empty_dict(self, monkeypatch):
+        """Returning {} would read as 'a track with no name' downstream."""
+        monkeypatch.setattr(musickit, "_run", lambda *a: (True, {"body": '{"data":[]}'}))
+        ok, msg = musickit.library_song("i.AbC123")
+        assert ok is False and "i.AbC123" in msg
+
+
+class TestCatalogSearchVerb:
+    def test_passes_a_normalised_query(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(
+            musickit, "_run", lambda *a: (seen.append(a), (True, {"body": '{"results":{}}'}))[1]
+        )
+        musickit.catalog_search("  strobe  ", "songs,albums", 100)
+        # limit is clamped to Apple's maximum rather than rejected.
+        assert seen == [("catalog-search", "strobe", "songs,albums", "25")]
+
+    @pytest.mark.parametrize("types", ["", "tracks", "songs,tracks", "  "])
+    def test_types_are_whitelisted(self, monkeypatch, types):
+        """`types` is a parameter Apple routes on: an unexpected value returns
+        an empty result rather than an error, which is the worst failure shape."""
+
+        def boom(*a):
+            raise AssertionError("must not spawn")
+
+        monkeypatch.setattr(musickit, "_run", boom)
+        assert musickit.catalog_search("strobe", types)[0] is False
+
+    @pytest.mark.parametrize("term", ["", "   ", "x" * 513])
+    def test_term_bounds(self, monkeypatch, term):
+        def boom(*a):
+            raise AssertionError("must not spawn")
+
+        monkeypatch.setattr(musickit, "_run", boom)
+        assert musickit.catalog_search(term)[0] is False
+
+    def test_a_non_integer_limit_is_refused(self, monkeypatch):
+        def boom(*a):
+            raise AssertionError("must not spawn")
+
+        monkeypatch.setattr(musickit, "_run", boom)
+        assert musickit.catalog_search("strobe", "songs", "lots")[0] is False
+
+
+class TestCatalogSearchIsASecondOpinion:
+    def _results(self):
+        return {
+            "songs": {
+                "data": [
+                    {
+                        "id": "1440783617",
+                        "attributes": {
+                            "name": "Strobe",
+                            "artistName": "deadmau5",
+                            "albumName": "For Lack of a Better Name",
+                            "durationInMillis": 634000,
+                            "releaseDate": "2009-09-22",
+                            "genreNames": ["Electronic"],
+                            "contentRating": "clean",
+                            "url": "https://music.apple.com/us/album/strobe/1",
+                        },
+                    }
+                ]
+            }
+        }
+
+    def test_rows_match_the_itunes_shape(self, monkeypatch):
+        """Both rails feed the same formatter, so a caller must not be able to
+        tell which one answered."""
+        monkeypatch.setattr(server, "_can_use_musickit_rail", lambda: True)
+        monkeypatch.setattr(
+            server.musickit, "catalog_search", lambda q, t, l: (True, self._results())
+        )
+        rows = server._catalog_search_musickit("strobe", 5)
+        assert len(rows) == 1
+        row = rows[0]
+        assert set(row) == {
+            "name",
+            "duration",
+            "artist",
+            "album",
+            "year",
+            "genre",
+            "explicit",
+            "id",
+            "catalog_id",
+            "url",
+        }
+        assert row["year"] == "2009" and row["explicit"] == "No"
+
+    def test_it_is_not_consulted_without_the_rail(self, monkeypatch):
+        monkeypatch.setattr(server, "_can_use_musickit_rail", lambda: False)
+
+        def never(*a):
+            raise AssertionError("must not spawn without the rail")
+
+        monkeypatch.setattr(server.musickit, "catalog_search", never)
+        assert server._catalog_search_musickit("strobe", 5) == []
+
+    def test_a_failed_search_is_empty_not_an_exception(self, monkeypatch):
+        monkeypatch.setattr(server, "_can_use_musickit_rail", lambda: True)
+        monkeypatch.setattr(
+            server.musickit, "catalog_search", lambda q, t, l: (False, "helper timed out")
+        )
+        assert server._catalog_search_musickit("strobe", 5) == []
+
+
+class TestUnrate:
+    def test_clears_a_rating(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(
+            musickit, "_run", lambda *a: (seen.append(a), (True, {"httpStatus": 204}))[1]
+        )
+        ok, msg = musickit.unrate_song("1440783617")
+        assert ok is True and "204" in msg
+        assert seen == [("unrate", "1440783617")]
+
+    def test_a_bad_id_never_spawns(self, monkeypatch):
+        def boom(*a):
+            raise AssertionError("must not spawn")
+
+        monkeypatch.setattr(musickit, "_run", boom)
+        assert musickit.unrate_song("12a")[0] is False

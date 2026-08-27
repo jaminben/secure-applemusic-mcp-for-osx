@@ -1807,7 +1807,7 @@ class TestPlaylistAddIdsWithNoToken:
         )
         # Catalog ID input
         result = server._playlist_add("My PL", "1234567890")
-        assert "write to your library" in result
+        assert "reach your library" in result
         # The fix must be reachable from inside the app, not from a shell.
         assert "applemusic-mcp" not in result
 
@@ -2338,40 +2338,24 @@ class TestPlaylistAddApiMode:
         assert isinstance(result, str)
 
     @responses_lib.activate
-    def test_api_mode_catalog_track_found_in_library(
+    def test_api_mode_attaches_a_catalog_id_directly(
         self, mock_config_dir, mock_developer_token, mock_user_token, monkeypatch
     ):
-        """API mode: an added catalog track that DOES appear in library search
-        exercises the found_id success branch (server.py:3713-3725), then gets
-        added to the playlist. Fully mocked — never touches a real account.
-        (allow_duplicates=True / verify=False skip the extra dup/verify calls.)"""
+        """A catalog song can be attached to a library playlist as type "songs",
+        which adds it to the library implicitly.
+
+        This replaces a test of the old shape: POST /me/library, then poll
+        /me/library/search up to ten times to recover a library id the playlist
+        endpoint never needed. That cost a write plus up to ten reads per track
+        and reported "could not find it in library after adding" whenever iCloud
+        was slower than one second. Fully mocked — never touches a real account.
+        """
         monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", False)
         _write_tokens(mock_config_dir, mock_developer_token, mock_user_token)
-        responses_lib.add(
-            responses_lib.POST, "https://api.music.apple.com/v1/me/library", status=202
-        )
         responses_lib.add(
             responses_lib.GET,
             "https://api.music.apple.com/v1/catalog/us/songs/1234567890",
             json={"data": [{"attributes": {"name": "Song A", "artistName": "Artist A"}}]},
-            status=200,
-        )
-        # Library search now RETURNS the freshly-added song -> found_id branch.
-        responses_lib.add(
-            responses_lib.GET,
-            "https://api.music.apple.com/v1/me/library/search",
-            json={
-                "results": {
-                    "library-songs": {
-                        "data": [
-                            {
-                                "id": "i.libA",
-                                "attributes": {"name": "Song A", "artistName": "Artist A"},
-                            }
-                        ]
-                    }
-                }
-            },
             status=200,
         )
         responses_lib.add(
@@ -2380,7 +2364,16 @@ class TestPlaylistAddApiMode:
             status=204,
         )
         result = server._playlist_add("p.dest", "1234567890", allow_duplicates=True, verify=False)
-        assert "Found in library" in result and "Song A" in result
+
+        assert "Song A" in result
+        attach = [c for c in responses_lib.calls if c.request.url.endswith("p.dest/tracks")]
+        assert json.loads(attach[0].request.body) == {
+            "data": [{"id": "1234567890", "type": "songs"}]
+        }
+        # The library-search poll is gone, not merely unasserted. `responses`
+        # errors on an unregistered URL, so reaching it would fail loudly — but
+        # say so explicitly, since that is the point of the change.
+        assert not [c for c in responses_lib.calls if "library/search" in c.request.url]
 
 
 # ---------------------------------------------------------------------------

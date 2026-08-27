@@ -3862,7 +3862,7 @@ class TestPlaylistAddIdsRequireToken:
 
         # No token AND no MusicKit helper: the add genuinely can't happen, but
         # the fix is in-app, not a shell command that doesn't exist.
-        assert "write to your library" in result
+        assert "reach your library" in result
         assert "applemusic-mcp" not in result
         assert "login --dev" not in result
         assert "Developer token not found" not in result
@@ -3913,9 +3913,7 @@ class TestPlaylistAddIdsRequireToken:
         )
         assert added == [(["1440783617"], [("Strobe", "deadmau5")])]
 
-    def test_library_ids_still_need_the_account_api(self, monkeypatch):
-        """The one case the old guard was right about, kept: a library id names
-        a row in YOUR library and no public endpoint can read it."""
+    def _as_playlist(self, monkeypatch):
         from applemusic_mcp import applescript as real_asc
 
         monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
@@ -3925,12 +3923,30 @@ class TestPlaylistAddIdsRequireToken:
             [{"name": "Workout", "id": "p.work", "smart": False, "track_count": 5}],
         )
         mock_asc.track_exists_in_playlist.return_value = (True, False)
+        mock_asc.add_track_to_playlist.return_value = (True, "added")
         mock_asc.classify_error = real_asc.classify_error
         monkeypatch.setattr(server, "asc", mock_asc)
+        return mock_asc
+
+    def test_library_ids_resolve_over_the_signed_rail(self, monkeypatch):
+        """`i.` ids name rows in the user's OWN library, so no public endpoint
+        can read them — but MusicKit can. This was the last thing that made a
+        developer token genuinely load-bearing rather than merely wired-in."""
+        mock_asc = self._as_playlist(monkeypatch)
         monkeypatch.setattr(server, "_has_developer_token", lambda: False)
         monkeypatch.setattr(server, "_can_use_musickit_rail", lambda: True)
 
-        result = server._playlist_add(
+        def fail_loud():
+            raise AssertionError("no token exists — nothing may ask for headers")
+
+        monkeypatch.setattr(server, "get_headers", fail_loud)
+        monkeypatch.setattr(
+            server.musickit,
+            "library_song",
+            lambda lid: (True, {"name": "Strobe", "artistName": "deadmau5"}),
+        )
+
+        server._playlist_add(
             playlist="Workout",
             track="i.abc123XYZ",
             album="",
@@ -3939,7 +3955,26 @@ class TestPlaylistAddIdsRequireToken:
             verify=False,
             auto_add=False,
         )
-        assert "your own library" in result
+        # Resolved to a real name, then handed to AppleScript to attach.
+        assert mock_asc.add_track_to_playlist.call_args[0][1] == "Strobe"
+
+    def test_an_id_that_is_neither_shape_is_still_refused(self, monkeypatch):
+        """A mistyped id is not a library id. Saying so sends the user hunting
+        a problem they do not have."""
+        self._as_playlist(monkeypatch)
+        monkeypatch.setattr(server, "_has_developer_token", lambda: False)
+        monkeypatch.setattr(server, "_can_use_musickit_rail", lambda: True)
+
+        result = server._playlist_add(
+            playlist="Workout",
+            track="DEADBEEF1234",
+            album="",
+            artist="",
+            allow_duplicates=False,
+            verify=False,
+            auto_add=False,
+        )
+        assert "Unrecognised IDs" in result
         assert "by name instead" in result
 
     def test_album_without_a_token_resolves_over_the_public_catalog(self, monkeypatch):

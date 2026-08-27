@@ -396,7 +396,36 @@ Cross-platform but requires Apple Developer account ($99/year) and token setup.
 
 ## Authentication
 
-**Requirements:**
+**No credential is required.** The packaged app ships a signed MusicKit helper
+that signs Apple Music API calls from the app's own code-signing identity plus
+the user's one-time consent — nothing is stored, nothing expires, and there is
+no developer account to have. Approve it once:
+
+```
+config(action='signin')
+```
+
+That shows the native Apple Music prompt. `config(action='status')` reports the
+rail separately from the token rail, because one can work while the other does
+not.
+
+What runs on which rail:
+
+| Work | Rail | Credential |
+|---|---|---|
+| Library, playlists, playback, ratings on owned tracks | Music.app over Apple Events | none |
+| Catalog search, album tracklists, catalog-id lookup | Apple's public iTunes endpoints | none |
+| Adding catalog songs/albums to the library, rating catalog songs, editing an Apple-Music-origin playlist (`p.` id), resolving a library id (`i.`), ISRC resolution | signed MusicKit helper | none stored |
+| Bulk work wanting a larger rate-limit quota | developer token | **optional** |
+
+ISRC resolution is the one query with no public equivalent — the iTunes Search
+API has no ISRC filter — so it needs either the MusicKit helper or a token.
+
+**The developer token is optional**, and buys exactly one thing: a much larger
+rate-limit quota (see Rate Limits below). Everything below this line describes
+that optional rail.
+
+**Requirements (optional developer-token rail only):**
 1. Apple Developer account
 2. MusicKit key (.p8 file) from [developer portal](https://developer.apple.com/account/resources/authkeys/list)
 3. Developer token (JWT, 180 day max)
@@ -503,7 +532,7 @@ for i in range(0, len(isrcs), 25):
 
 ## Available Endpoints
 
-### Catalog (Public - dev token only)
+### Catalog (public — via the iTunes endpoints, the MusicKit helper, or a dev token)
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -521,7 +550,7 @@ for i in range(0, len(isrcs), 25):
 | `/catalog/{storefront}/search/suggestions` | GET | Search autocomplete |
 | `/catalog/{storefront}/stations/{id}` | GET | Radio station |
 
-### Library (Requires user token)
+### Library (requires the MusicKit helper, or a user token)
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
