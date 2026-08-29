@@ -5,7 +5,10 @@ fork — written by the author of the fork, so weigh it accordingly. Where a cla
 is checkable, the check is named.
 
 Star counts and last-push dates: 22 August 2026. The credential and permission
-claims about upstream were re-checked against its `main` source on 29 August 2026.
+claims about all three were re-checked against their current `main` sources on
+29 August 2026 — which is when the Cifero74 row was corrected: it has no
+add-to-library tool, but `add_tracks_to_playlist` accepts catalog tracks, and
+that route lands them in the library.
 
 | | [kennethreitz/mcp-applemusic](https://github.com/kennethreitz/mcp-applemusic) | [epheterson/applemusic-mcp](https://github.com/epheterson/applemusic-mcp) | [Cifero74/mcp-apple-music](https://github.com/Cifero74/mcp-apple-music) | **this fork** |
 |---|---|---|---|---|
@@ -15,7 +18,7 @@ claims about upstream were re-checked against its `main` source on 29 August 202
 | How it reaches Music | AppleScript | AppleScript + web API + browser | Apple Music REST API | AppleScript only |
 | Platforms | macOS | macOS, Windows, Linux | any | macOS |
 | **Apple Developer account** | not needed | not needed | **required** (.p8 + Team/Key ID) | not needed (optional: raises the rate limit) |
-| **To add music to your library, it needs** | can't add | a browser token — you enable "Allow JavaScript from Apple Events" in Safari, or it drives a Playwright Chrome | can't add | **one consent prompt — nothing stored** |
+| **To add music to your library, it needs** | can't add | a browser token — you enable "Allow JavaScript from Apple Events" in Safari, or it drives a Playwright Chrome | an Apple Developer account (`.p8`) | **one consent prompt — nothing stored** |
 | Install | clone + uv | pip / uvx | clone + setup wizard | **download, drag, double-click** |
 
 ## What each one is for
@@ -78,7 +81,7 @@ what it requires, not in what you can ask for.
 | **AirPlay output switching** | ❌ | ✅ | ❌ | ✅ |
 | Library search | ✅ | ✅ | ✅ | ✅ |
 | Library browse (songs/albums/artists) | ✅ list all | ✅ | ✅ | ✅ |
-| Add to library | ❌ | ✅ (harvested token) | ❌ | ✅ (MusicKit — no credential) |
+| Add to library | ❌ | ✅ (harvested token) | ✅ via playlist add (dev account) | ✅ (MusicKit — no credential) |
 | Remove from library | ❌ | ✅ | ❌ | ✅ |
 | Recently played / added | ❌ | ✅ | ✅ played | ✅ |
 | Favorites / loved | ❌ | ✅ | ❌ | ✅ |
@@ -129,19 +132,26 @@ account, which is the difference between software you can hand to a friend and
 software you cannot.
 
 **What needs a credential differs, and adding to your library is where it
-shows.** Only two of the four can put a catalog track into your library at all:
-kennethreitz has no catalog access, and Cifero74 needs a developer account for
-everything yet still cannot do this one. That leaves upstream and this fork —
-and they get there differently. Upstream harvests the token Apple ships to every
-browser: no developer account, but a real credential, obtained by a route Apple
-did not intend and stored on disk. This fork uses MusicKit, so the request is
-signed from the app's own code-signing identity plus one consent prompt, and
-there is no credential at any point — none issued, none harvested, none stored.
+shows.** kennethreitz cannot: it has no catalog access at all. The other three
+can, and what separates them is what each must obtain and keep first.
+
+- **Cifero74** has no add-to-library tool as such, but `add_tracks_to_playlist`
+  takes `track_type: "songs"`, and attaching a catalog song to a library
+  playlist puts it in the library — the same mechanism this fork uses. It costs
+  an Apple Developer account: a `.p8` key you create, download and store.
+- **Upstream** harvests the token Apple ships to every browser. No developer
+  account, but a real credential, obtained by a route Apple did not intend and
+  written to disk.
+- **This fork** uses MusicKit, so the request is signed from the app's own
+  code-signing identity plus one consent prompt. No credential at any point —
+  none issued, none harvested, none stored.
 
 So the precise claim is not "the only one that works without a developer
-account" — upstream does too. It is **the only one that adds to your library
-without a credential of any kind.** A source checkout without the bundled helper
-still falls back to an optional developer token; the packaged app never does.
+account" — upstream does too — nor "the only one that can add to your library",
+which is now wrong in two directions. It is **the only one that adds to your
+library without a credential of any kind.** A source checkout without the
+bundled helper still falls back to an optional developer token; the packaged app
+never does.
 
 **What the harvest costs, specifically.** Upstream gets that token over the
 Apple Events `do JavaScript` channel, which requires the user to turn on Safari

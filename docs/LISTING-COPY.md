@@ -48,13 +48,14 @@ obvious claim on purpose — see `COMPARISON.md`, which shows why the blanket
 version ("the only one that needs no developer account") is false.
 
 > It is the only Apple Music MCP server that can add music to your library
-> without a credential of any kind. Of the four, two cannot add to your library
-> at all. The one that can gets there by harvesting the token Apple ships to
-> every browser — which means storing a real credential, and turning on "Allow
-> JavaScript from Apple Events", a Safari setting that permits script execution
-> in every tab you have open. This one uses Apple's MusicKit, so each request is
-> signed from the app's own code-signing identity plus a one-time consent
-> prompt. Nothing is issued, harvested, or kept.
+> without a credential of any kind. The others that can do it at all need
+> something first: one wants an Apple Developer account and a `.p8` key you
+> download and store; the other harvests the token Apple ships to every browser,
+> which means keeping a real credential and turning on "Allow JavaScript from
+> Apple Events" — a Safari setting that permits script execution in every tab
+> you have open. This one uses Apple's MusicKit, so each request is signed from
+> the app's own code-signing identity plus a one-time consent prompt. Nothing is
+> issued, harvested, or kept.
 
 ## Install
 
@@ -104,7 +105,9 @@ one publish seeds two directories.
 ## Before submitting
 
 The "why it is different" copy makes comparative claims about three named
-projects. `COMPARISON.md` records when each was last checked. Upstream was
-re-verified against its `main` on 29 August 2026; **Cifero74 and kennethreitz
-have not been re-checked**, and their "cannot add to your library" cells are
-what the claim rests on. Verify before this goes public, not after.
+projects. All three were re-verified against their current `main` sources on
+29 August 2026, which is when the Cifero74 claim was corrected: it has no
+add-to-library tool, but `add_tracks_to_playlist` accepts catalog tracks, and
+that route puts them in the library. The claim above survived the correction —
+it is about credentials, not capability — but re-check before reusing this copy
+later. `COMPARISON.md` carries the dates.
