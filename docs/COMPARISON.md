@@ -13,7 +13,7 @@ Star counts and last-push dates: 22 August 2026.
 | Size | ~165 lines | ~18k lines | mid-size | ~10k lines |
 | How it reaches Music | AppleScript | AppleScript + web API + browser | Apple Music REST API | AppleScript only |
 | Platforms | macOS | macOS, Windows, Linux | any | macOS |
-| **Apple Developer account** | not needed | not needed | **required** (.p8 + Team/Key ID) | optional |
+| **Apple Developer account** | not needed | not needed | **required** (.p8 + Team/Key ID) | not needed (optional: raises the rate limit) |
 | Install | clone + uv | pip / uvx | clone + setup wizard | **download, drag, double-click** |
 
 ## What each one is for
@@ -76,7 +76,7 @@ what it requires, not in what you can ask for.
 | **AirPlay output switching** | ❌ | ✅ | ❌ | ✅ |
 | Library search | ✅ | ✅ | ✅ | ✅ |
 | Library browse (songs/albums/artists) | ✅ list all | ✅ | ✅ | ✅ |
-| Add to library | ❌ | ✅ | ❌ | ✅ (needs token) |
+| Add to library | ❌ | ✅ (harvested token) | ❌ | ✅ (MusicKit — no credential) |
 | Remove from library | ❌ | ✅ | ❌ | ✅ |
 | Recently played / added | ❌ | ✅ | ✅ played | ✅ |
 | Favorites / loved | ❌ | ✅ | ❌ | ✅ |
@@ -126,12 +126,20 @@ getting that capability without the system-wide permission or the developer
 account, which is the difference between software you can hand to a friend and
 software you cannot.
 
-**What needs a credential differs.** On this fork, everything above works with
-no account at all. A source checkout without the bundled MusicKit helper falls
-back to an optional Apple Developer token for catalog adds; the packaged app
-never needs one. Upstream covers that case without one
-by harvesting Apple's web-player token; Cifero74 requires a developer account
-for everything.
+**What needs a credential differs, and adding to your library is where it
+shows.** Only two of the four can put a catalog track into your library at all:
+kennethreitz has no catalog access, and Cifero74 needs a developer account for
+everything yet still cannot do this one. That leaves upstream and this fork —
+and they get there differently. Upstream harvests the token Apple ships to every
+browser: no developer account, but a real credential, obtained by a route Apple
+did not intend and stored on disk. This fork uses MusicKit, so the request is
+signed from the app's own code-signing identity plus one consent prompt, and
+there is no credential at any point — none issued, none harvested, none stored.
+
+So the precise claim is not "the only one that works without a developer
+account" — upstream does too. It is **the only one that adds to your library
+without a credential of any kind.** A source checkout without the bundled helper
+still falls back to an optional developer token; the packaged app never does.
 
 **Catalog search is tokenless here** via Apple's public iTunes Search API, and it
 returns an explicit flag — so `clean_only` is *verified* rather than assumed.
