@@ -44,7 +44,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-swiftc -O -target arm64-apple-macosx14.0 -o amcp-musickit main.swift
+# Universal (arm64 + x86_64). The app bundle only ever runs on the Mac that
+# downloaded it, so a single-arch build was fine there — but the wheel is
+# resolved by pip against a platform tag, and an arm64-only wheel silently
+# excludes every Intel Mac. Build both slices and lipo them together.
+swiftc -O -target arm64-apple-macosx14.0  -o amcp-musickit-arm64  main.swift
+swiftc -O -target x86_64-apple-macosx14.0 -o amcp-musickit-x86_64 main.swift
+lipo -create -output amcp-musickit amcp-musickit-arm64 amcp-musickit-x86_64
+rm -f amcp-musickit-arm64 amcp-musickit-x86_64
 
 rm -rf "$APP"
 mkdir -p "${APP}/Contents/MacOS"

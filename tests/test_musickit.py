@@ -14,6 +14,7 @@ against the live service — it needs a signed bundle and a real account.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -1324,3 +1325,48 @@ class TestStatusAnswersTheQuestionAsked:
         out = server._auth_action("status")
         assert "Signed in to: nothing." not in out
         assert "APPLEMUSIC_FORCE_TOKENLESS" in out
+
+
+class TestTheHelperShipsInsideTheWheel:
+    """PyPI distribution was ruled out because a wheel would carry no MusicKit
+    helper, making the packaged install the weakest build of the product. It
+    turned out the helper survives a wheel intact — 148K, three files, with the
+    signature in regular files and the notarization ticket in
+    Contents/CodeResources, so nothing depends on extended attributes."""
+
+    def test_the_packaged_location_is_searched(self, monkeypatch):
+        """A pip/uvx install has no .app parent and no source checkout. Without
+        this candidate the packaged install has no MusicKit rail at all."""
+        import applemusic_mcp.musickit as mk
+
+        beside_module = Path(mk.__file__).resolve().parent / mk.HELPER_APP / mk._HELPER_REL
+        assert beside_module in mk._candidates()
+
+    def test_the_env_override_still_wins(self, monkeypatch):
+        """Ordering matters: an explicit override must beat every discovered
+        location, including the new one."""
+        import applemusic_mcp.musickit as mk
+
+        monkeypatch.setenv(mk._ENV_OVERRIDE, "/tmp/some/other/helper")
+        assert mk._candidates()[0] == Path("/tmp/some/other/helper")
+
+    def test_pyproject_ships_the_helper_beside_the_module(self):
+        """The wheel must place the .app where _candidates() looks. These two
+        are coupled only by this test — nothing else fails if they drift."""
+        import applemusic_mcp.musickit as mk
+
+        cfg = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        text = cfg.read_text(encoding="utf-8")
+        assert "force-include" in text, "the wheel no longer ships the helper"
+        assert f"applemusic_mcp/{mk.HELPER_APP}" in text, (
+            f"the wheel ships the helper somewhere other than beside the module; "
+            f"_candidates() looks for applemusic_mcp/{mk.HELPER_APP}"
+        )
+
+    def test_the_wheel_is_not_tagged_pure_python(self):
+        """A py3-none-any tag would let pip install this on Linux and Windows,
+        where the signed helper is dead weight that cannot run."""
+        hook = Path(__file__).resolve().parents[1] / "scripts" / "wheel_tag.py"
+        assert hook.exists(), "the platform-tag build hook is gone"
+        text = hook.read_text(encoding="utf-8")
+        assert "macosx" in text and "pure_python" in text

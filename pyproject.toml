@@ -65,6 +65,21 @@ Issues = "https://github.com/jaminben/secure-applemusic-mcp-for-osx/issues"
 [tool.hatch.build.targets.wheel]
 packages = ["src/applemusic_mcp"]
 
+# The signed MusicKit helper ships inside the wheel, beside the module, which is
+# where musickit._candidates() looks. Verified to survive the round trip: the
+# signature lives in regular files (_CodeSignature/CodeResources plus the
+# Mach-O's own LC_CODE_SIGNATURE) and the notarization ticket in
+# Contents/CodeResources, so nothing depends on extended attributes, and pip
+# preserves the executable bit. A wheel built without it still works — every
+# call site gates on musickit.is_available() — it just has no MusicKit rail.
+force-include = { "swift/amcp-musickit/AMCPMusicKit.app" = "applemusic_mcp/AMCPMusicKit.app" }
+
+# Not a pure-python wheel: it carries a macOS-only, Developer-ID-signed binary.
+# Without this the wheel is tagged py3-none-any and pip will happily install it
+# on Linux and Windows, where the helper is dead weight that cannot run.
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "scripts/wheel_tag.py"
+
 [tool.black]
 line-length = 100
 target-version = ["py310"]

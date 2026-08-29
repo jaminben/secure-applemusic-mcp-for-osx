@@ -46,6 +46,13 @@ def _candidates() -> list[Path]:
             found.append(parent / "Contents" / "Helpers" / HELPER_APP / _HELPER_REL)
             break
 
+    # Beside this module, which is where the wheel puts it. A pip/uvx install
+    # has no .app parent and no source checkout, so without this the packaged
+    # install silently had no MusicKit rail — the reason this project did not
+    # publish to PyPI at all until the helper was proven to survive a wheel
+    # with its signature and notarization intact.
+    found.append(Path(__file__).resolve().parent / HELPER_APP / _HELPER_REL)
+
     # A source checkout, after swift/amcp-musickit/build.sh.
     repo = Path(__file__).resolve().parents[2]
     found.append(repo / "swift" / "amcp-musickit" / HELPER_APP / _HELPER_REL)

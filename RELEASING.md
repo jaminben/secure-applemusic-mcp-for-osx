@@ -120,18 +120,20 @@ runtime behavior can skip the live gate (note that in the PR), but anything that
 touches `applescript.py` or the add/resolve/playback flow in `server.py` must
 pass `make preflight` first.
 
-## Distribution: the app, not a package
+## Distribution: two channels
 
-**This project does not publish to PyPI, and that is deliberate.**
+**The notarized app is the primary channel**, and the PyPI wheel is a real
+second one — it carries the signed MusicKit helper, so a `uvx` install is a full
+install rather than a crippled one. See "The PyPI wheel" below for what makes
+that work and what to verify before publishing.
 
-The signed MusicKit helper lives inside the `.app` bundle. `musickit._candidates()`
-looks for it in a `.app` parent of `sys.executable` or in a source checkout's
-`swift/` directory — a wheel has neither. So a `pip`/`uvx` install produces a
-build with **no MusicKit rail**: no catalog adds, no ratings on catalog songs,
-no editing an Apple-Music-origin playlist. Publishing that under this name would
-have made the weakest version of the product the default install for everyone
-who found it through a directory, because the aggregators mirror whatever the
-registry advertises.
+That was not always true. The helper lives inside the `.app` bundle, and
+`musickit._candidates()` used to look only in a `.app` parent of
+`sys.executable` or a source checkout — so a wheel had **no MusicKit rail** at
+all: no catalog adds, no ratings on catalog songs, no editing an
+Apple-Music-origin playlist. Publishing that would have made the weakest version
+of the product the default install for everyone arriving from a directory,
+because aggregators mirror whatever the registry advertises.
 
 It was also never working. The PyPI trusted publisher was never configured, so
 the `Publish to PyPI` job failed on v0.1.0, v0.1.1, v0.2.0 and v0.2.1 with
@@ -139,9 +141,15 @@ the `Publish to PyPI` job failed on v0.1.0, v0.1.1, v0.2.0 and v0.2.1 with
 ran at all. Nobody noticed, because the tag and the GitHub Release are created
 by a *different* workflow that was succeeding.
 
-So `publish.yml` now has one job: publish `server.json` to the MCP Registry. The
-`packages` array is gone, and the download URL travels in `_meta` under
-`io.modelcontextprotocol.registry/publisher-provided` instead.
+`publish.yml` currently has one job: publish `server.json` to the MCP Registry.
+The `packages` array is gone and the download URL travels in `_meta` under
+`io.modelcontextprotocol.registry/publisher-provided`.
+
+**Both of those want revisiting now the wheel is real.** Once the PyPI trusted
+publisher exists, restore a build+publish job and add a `packages` entry with
+`registryType: "pypi"` pointing at the wheel — that gives the registry an
+installable package, which is also the leading suspicion for why Glama and
+PulseMCP have not rendered the listing.
 
 **The download link is version-independent on purpose.** Everything — the README
 button, `server.json`, every directory listing — points at:
@@ -156,25 +164,56 @@ release uploads the **unversioned** asset name alongside the versioned one — s
 the asset step below. Skip it and every external link silently keeps serving the
 previous version.
 
+### The PyPI wheel
+
+The wheel carries the signed MusicKit helper beside the module, so
+`uvx secure-applemusic-mcp-for-osx serve` is a full install rather than a
+crippled one. That was not obvious — it is why this project shipped without
+PyPI until it was tested. What makes it work:
+
+- the helper is **148K and four files**, with the code signature in
+  `_CodeSignature/CodeResources` plus the Mach-O's own `LC_CODE_SIGNATURE`, and
+  the notarization ticket in `Contents/CodeResources`. All regular files, so a
+  zip round trip preserves them; nothing lives in an extended attribute.
+- pip preserves the executable bit, so the helper still runs.
+- **it must be notarized and stapled on its own.** The outer app's ticket does
+  not travel with it. Un-stapled it still passes Gatekeeper *online*, because
+  Apple's notary recognises the hash — but not offline. `swift/amcp-musickit`
+  is submitted separately and stapled before the wheel is built.
+- the binary is **universal** (arm64 + x86_64). The app bundle can be
+  single-arch because it only runs on the Mac that downloaded it; a wheel is
+  resolved against a platform tag, and an arm64-only wheel silently excludes
+  every Intel Mac.
+- `scripts/wheel_tag.py` forces `py3-none-macosx_14_0_universal2`. Without it
+  hatchling infers `py3-none-any` and pip installs it happily on Linux, where
+  the helper cannot run.
+
+Verify a built wheel before publishing — install it with `--no-deps` into a
+clean venv and confirm the rail is live, not just that the files are present:
+
+```python
+from applemusic_mcp import musickit
+assert musickit.is_available()
+assert musickit.authorization_status() == "authorized"
+ok, data = musickit.resolve_isrcs(["GBUM71029604"])   # a signed, server-validated call
+assert ok
+```
+
+`xcrun stapler validate` on the installed `.app` should also still pass.
+
+### Publishing it
+
 ### If a wrapper package ever ships
 
-A PyPI package that *downloads or embeds* the signed app, rather than pretending
-to be it, would be a real distribution channel. That is a future release, not a
-missing step. It would need:
+Superseded — see "The PyPI wheel" above. The wheel carries the real signed
+helper rather than wrapping a download, which is better than the wrapper idea
+this section used to describe.
 
-1. A pending publisher on PyPI (pending, because the project has never been
-   uploaded — a regular trusted publisher cannot attach to a project that does
-   not exist): project `secure-applemusic-mcp-for-osx`, owner `jaminben`, repo
-   `secure-applemusic-mcp-for-osx`, workflow `publish.yml`, environment `pypi`.
-2. A `build` + `publish` job restored in `publish.yml`.
-3. A `packages` entry in `server.json` with `registryType: "pypi"`. The
-   ownership check looks for `mcp-name: io.github.jaminben/secure-applemusic-mcp-for-osx`
-   in the package README — already present at README line 3, so that part is done.
-
-`registryType: "mcpb"` is the other option the registry supports for
-GitHub-release artifacts, but MCPB is a specific bundle format that clients
-install programmatically. Listing a macOS `.app` zip under it would make clients
-fail on install, so it is not a shortcut.
+What is still true from it: the ownership check for a PyPI package looks for
+`mcp-name: io.github.jaminben/secure-applemusic-mcp-for-osx` in the package
+README, which is already at README line 3. And `registryType: "mcpb"` remains
+the other option the registry supports for GitHub-release artifacts — relevant
+if Smithery matters, since it takes a hosted URL or an `.mcpb` and nothing else.
 
 ### Release assets
 
