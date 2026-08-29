@@ -77,6 +77,24 @@ jobs:
             exit 0
           fi
           ls -l dist
+
+          # The wheel is built on a maintainer's Mac and attached to the
+          # release, so it is NOT reproducible from this commit the way a
+          # CI-built artifact would be. That is forced — the wheel carries a
+          # signed, notarized .app and CI has no signing identity — but it means
+          # the one thing this job CAN check is that the artifact matches the
+          # release it claims to belong to. A wheel for the wrong version, stale
+          # or otherwise, must not reach PyPI under this tag.
+          want="${tag#v}"
+          for whl in dist/*.whl; do
+            got="$(basename "$whl" | cut -d- -f2)"
+            if [ "$got" != "$want" ]; then
+              echo "::error::$(basename "$whl") is version ${got}, but ${tag} expects ${want}."
+              echo "::error::Refusing to publish a wheel that does not match its release."
+              exit 1
+            fi
+            echo "verified: $(basename "$whl") matches ${tag}"
+          done
           echo "found=true" >> "$GITHUB_OUTPUT"
 
       - name: Publish to PyPI
