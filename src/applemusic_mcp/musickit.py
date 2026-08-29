@@ -84,9 +84,19 @@ def _run(*args: str) -> tuple[bool, dict]:
 
     raw = (proc.stdout or "").strip()
     if not raw:
-        # An unsigned or wrongly-signed helper is SIGKILLed by the kernel before
-        # it can print anything ("restricted entitlements ... validation failed"),
-        # so silence means a signing problem, not an API problem. Say so.
+        # Empty output usually means a signing problem: a helper built with the
+        # wrong entitlements is SIGKILLed before it can print ("restricted
+        # entitlements ... validation failed").
+        #
+        # It does NOT mean the helper is verified. Nothing here checks the
+        # signature, and an ad-hoc-signed stand-in that just prints JSON runs
+        # fine — confirmed by audit. That is acceptable because reaching this
+        # binary means writing to the running user's own site-packages or
+        # setting APPLEMUSIC_MUSICKIT_HELPER, both of which already require code
+        # execution as that user. It is worth being precise that the protection
+        # is the filesystem, not a check we perform. What a substituted helper
+        # cannot do is impersonate us to Apple: MusicKit keys consent to the
+        # bundle id and signing identity, so it gets no Apple Music credential.
         return False, {
             "error": (
                 f"MusicKit helper produced no output (exit {proc.returncode}). "

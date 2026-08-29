@@ -46,14 +46,15 @@
     "io.modelcontextprotocol.registry/publisher-provided": {
       "distribution": {
         "kind": "macos-app",
-        "note": "Distributed as a notarized macOS app, not a package. Download, drag to Applications, double-click. The first-run window installs the background helper and writes the MCP client config.",
+        "note": "The primary channel is a notarized macOS app: download, drag to Applications, double-click. The first-run window installs the background helper and writes the MCP client config. The PyPI package in `packages` is the same server for people who prefer a terminal install; it bundles the same signed MusicKit helper, so it is not a reduced build.",
         "download": "https://github.com/jaminben/secure-applemusic-mcp-for-osx/releases/latest/download/UnofficialAppleMusicMCP-macos-arm64.zip",
         "releases": "https://github.com/jaminben/secure-applemusic-mcp-for-osx/releases/latest",
-        "checksums": "https://github.com/jaminben/secure-applemusic-mcp-for-osx/releases/latest/download/SHA256SUMS.txt"
+        "checksums": "https://github.com/jaminben/secure-applemusic-mcp-for-osx/releases/latest/download/SHA256SUMS.txt",
+        "download_intel": "https://github.com/jaminben/secure-applemusic-mcp-for-osx/releases/latest/download/UnofficialAppleMusicMCP-macos-x86_64.zip"
       },
       "requirements": {
         "os": "macOS 14 or later",
-        "arch": "Apple Silicon (arm64)",
+        "arch": "Apple Silicon or Intel (both are published)",
         "needs": "The Music app, signed into Apple Music. A subscription is required for catalog playback and adds.",
         "account": "No Apple Developer account, no API key, and no token are required."
       },

@@ -40,6 +40,18 @@ dependencies = [
     # at 49, so without it an Intel `pip install` tries to compile Rust from
     # source and fails on any machine without the x86_64-apple-darwin toolchain.
     # Scoped by marker so Apple Silicon keeps current upstream.
+    #
+    # Known cost, from a security audit: on Intel this caps cryptography for the
+    # WHOLE environment, so a co-installed package that does use x509 path
+    # verification would be held below the 49.0.0 fixes (PYSEC-2026-3553/3554)
+    # and the 50.0.0 PKCS#7 fix. Nothing here can reach those — the only
+    # consumer is PyJWT's ES256 encode over an EC key, and requests uses the
+    # stdlib ssl module — but the environment-wide effect is real.
+    #
+    # It cannot move to the dev-token extra: mcp pulls cryptography regardless,
+    # so a cap that only applies with the extra would not bind. DROP THIS LINE
+    # when cryptography ships Intel wheels again, or when mcp stops requiring
+    # pyjwt[crypto]; check both before assuming it is still needed.
     "cryptography<49; platform_machine == 'x86_64'",
     # tomllib landed in 3.11; we still support 3.10, where the Codex/TOML client
     # config path needs the backport. Not installed on 3.11+.

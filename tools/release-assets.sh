@@ -33,6 +33,7 @@ cd "$REPO"
 SIGN_ID=""
 UPLOAD=0
 SKIP_WHEEL=0
+ALLOW_DIRTY=0
 PROFILE="amcp-notary"
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -40,6 +41,7 @@ while [[ $# -gt 0 ]]; do
     --profile)    PROFILE="${2:?--profile needs a name}"; shift 2 ;;
     --upload)     UPLOAD=1; shift ;;
     --skip-wheel) SKIP_WHEEL=1; shift ;;
+    --allow-dirty) ALLOW_DIRTY=1; shift ;;
     -h|--help)    sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -52,6 +54,27 @@ OUT="${REPO}/dist"
 echo "==> Releasing ${VERSION}"
 
 python3 scripts/check_versions.py
+
+# A clean tree, unless you say otherwise. The wheel that reaches every pip user
+# is built HERE, not in CI — CI has no signing identity — so nothing downstream
+# can tell whether it came from the tagged commit or from uncommitted edits on
+# this Mac. That check existed in the publish script this replaced and was not
+# carried over; the audit that caught it also noted the artifact has no
+# cryptographic link to any commit, which makes this the only thing standing
+# between "published from the tag" and "published from whatever was on disk".
+if [[ -n "$(git status --porcelain 2>/dev/null)" ]]; then
+  if [[ "$ALLOW_DIRTY" -eq 1 ]]; then
+    echo "!!  Working tree is DIRTY and --allow-dirty was passed."
+    echo "!!  These artifacts will not correspond to any commit."
+  else
+    echo "error: the working tree has uncommitted changes." >&2
+    echo "       The wheel is built here and published to PyPI, so it must come" >&2
+    echo "       from a committed state. Commit, stash, or pass --allow-dirty" >&2
+    echo "       for a local build you do not intend to ship." >&2
+    git status --short >&2
+    exit 1
+  fi
+fi
 
 echo "==> Swift helpers (universal)"
 ./swift/amcp-musickit/build.sh --sign "$SIGN_ID" >/dev/null
@@ -111,7 +134,12 @@ fi
 
 echo "==> Checksums"
 cd "$OUT"
-shasum -a 256 ${APP_NAME}-*.zip *.whl 2>/dev/null > SHA256SUMS.txt
+# Build the list first: with --skip-wheel there is no *.whl, the glob goes
+# unmatched, shasum exits non-zero and `set -e` kills the run before the
+# checksums are written. Found by audit.
+SUM_FILES=(${APP_NAME}-*.zip)
+if compgen -G "*.whl" >/dev/null; then SUM_FILES+=(*.whl); fi
+shasum -a 256 "${SUM_FILES[@]}" > SHA256SUMS.txt
 for z in ${APP_NAME}-${VERSION}-macos-*.zip; do shasum -a 256 "$z" > "${z}.sha256"; done
 cd "$REPO"
 
