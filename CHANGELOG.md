@@ -6,6 +6,33 @@ fork point, see [CHANGELOG-upstream.md](CHANGELOG-upstream.md).
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-08-28
+
+### Fixed
+
+- **The direct library add refused a rail it could see.** `config(action='status')`
+  reported catalog adds as ready while `library(action='add')` answered "this
+  build ships no MusicKit helper" — both from the same process, seconds apart.
+  Reported from the field against 0.2.0.
+
+  `_library_add` was the one site converted in 0.2.0 that got the new *message*
+  without the new *routing*: its error text pointed at `config(action='signin')`
+  while its gate still asked only about developer tokens, so a MusicKit-only
+  host was refused. It now checks both rails like the other sites, and its adds
+  go through the rail-aware helpers instead of calling the token rail directly.
+- **The setup hint could deny a helper it could see.** `_musickit_setup_hint`
+  looked the authorization status up in a dict whose default was "this build
+  ships no MusicKit helper" — and `authorized` was not a key, so an authorized
+  helper produced the one message guaranteed to be wrong. "No helper" is now
+  reachable only when there is genuinely no helper, and an unrecognised status
+  names itself rather than being guessed at.
+- **Two silent false negatives in catalog search.** `_search_catalog_songs` and
+  `_search_catalog_albums` called `get_headers()` inside a bare `except` that
+  returned `[]`, which every caller reads as "not in the catalog". On a host
+  with no developer token that turned "you have no token" into "that song does
+  not exist", with no error surfaced. Both take the public rail first now, so
+  `library(action='add', track=…)` and `album=…` work without a credential.
+
 ## [0.2.0] - 2026-08-27
 
 ### Fixed

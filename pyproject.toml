@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "secure-applemusic-mcp-for-osx"
-version = "0.2.0"
+version = "0.2.1"
 description = "Hardened macOS-only MCP server for Apple Music: no Accessibility, no browser automation, no stored credentials by default"
 readme = "README.md"
 license = "MIT"

@@ -6,12 +6,12 @@
     "url": "https://github.com/jaminben/secure-applemusic-mcp-for-osx",
     "source": "github"
   },
-  "version": "0.2.0",
+  "version": "0.2.1",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "secure-applemusic-mcp-for-osx",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "transport": {
         "type": "stdio"
       },
