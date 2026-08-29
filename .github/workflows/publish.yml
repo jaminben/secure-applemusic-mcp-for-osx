@@ -29,6 +29,54 @@ jobs:
   # add a `packages` entry to server.json. Until then the registry entry
   # carries the download URL in `_meta` instead. See RELEASING.md.
 
+  pypi:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    # This job does NOT build the wheel. It cannot: the wheel carries a signed,
+    # notarized .app, which needs a macOS runner, the Developer ID certificate
+    # and the notary credentials — none of which exist in CI, and none of which
+    # should. `make release-assets` builds it on the maintainer's Mac and
+    # attaches it to the release; this uploads that exact artifact.
+    #
+    # Trusted publishing still applies. OIDC proves the upload came from this
+    # repo, so there is no API token stored anywhere.
+    environment:
+      name: pypi
+      url: https://pypi.org/project/secure-applemusic-mcp-for-osx/
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Fetch the wheel from this release
+        id: fetch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          tag="${GITHUB_REF_NAME}"
+          # On a tag push this runs before the assets are uploaded — they are
+          # built locally and attached afterwards. That is not a failure; it
+          # means "run this again once the wheel is up", which is what
+          # workflow_dispatch is for.
+          if ! gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+                 --pattern '*.whl' --dir dist 2>/dev/null; then
+            echo "No wheel attached to $tag yet — nothing to publish."
+            echo "Attach it with: make release-assets SIGN_ID=... EXTRA=--upload"
+            echo "then re-run this workflow (Actions -> publish -> Run workflow)."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          ls -l dist
+          echo "found=true" >> "$GITHUB_OUTPUT"
+
+      - name: Publish to PyPI
+        if: steps.fetch.outputs.found == 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # A re-dispatch after a successful upload must not fail the run.
+          skip-existing: true
+
   registry:
     name: Publish to MCP Registry
     runs-on: ubuntu-latest

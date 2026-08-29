@@ -222,7 +222,41 @@ Note there is no stable-name wheel asset the way there is for the apps. A
 wheel's filename encodes its version and pip parses the version from it, so a
 copy renamed to drop the version would not install.
 
-To finish the PyPI half:
+**To register the project on PyPI** (one time, and only a maintainer can do it):
+
+1. Sign in at <https://pypi.org> and go to
+   <https://pypi.org/manage/account/publishing/>.
+2. Add a **pending publisher**. It must be *pending*, not a regular trusted
+   publisher: the project has never been uploaded, and a regular publisher can
+   only be attached to a project that already exists.
+
+   | Field | Value |
+   |---|---|
+   | PyPI Project Name | `secure-applemusic-mcp-for-osx` |
+   | Owner | `jaminben` |
+   | Repository name | `secure-applemusic-mcp-for-osx` |
+   | Workflow name | `publish.yml` |
+   | Environment name | `pypi` |
+
+   These are the exact claims the workflow presents. Nothing in the repo needs
+   to change to match them.
+3. Cut a release as normal, then run `make release-assets … EXTRA=--upload` so
+   the wheel is attached to the tag.
+4. Re-run the publish workflow — Actions → publish → Run workflow, or
+   `gh workflow run publish.yml`. The `pypi` job downloads the wheel from the
+   release and uploads it under OIDC. No API token is stored anywhere.
+
+The first successful upload converts the pending publisher into a normal one
+automatically.
+
+**Why the job does not build the wheel.** It cannot: the wheel carries a signed,
+notarized `.app`, which needs a macOS runner, the Developer ID certificate and
+the notary credentials. Those belong on the maintainer's Mac, not in CI. So the
+wheel is built by `make release-assets`, attached to the release, and the
+workflow uploads that exact artifact. On a tag push the job runs before the
+assets exist and exits cleanly saying so — re-run it once the wheel is up.
+
+Other notes:
 
 
 ### If a wrapper package ever ships
