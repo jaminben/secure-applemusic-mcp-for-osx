@@ -106,6 +106,12 @@ jobs:
 
   registry:
     name: Publish to MCP Registry
+    # AFTER PyPI, and only if it succeeded. server.json now declares a pypi
+    # package, and the registry validates that the exact version exists on PyPI
+    # before it will accept the entry. Running these in parallel raced: the
+    # registry asked PyPI for 0.3.1 while the upload was still being indexed,
+    # got a 404, and burned all three retries in 45 seconds.
+    needs: pypi
     runs-on: ubuntu-latest
     permissions:
       # OIDC proves the job runs in this repo, which is what authorizes the
@@ -140,6 +146,28 @@ jobs:
         # by now the tag, the GitHub Release, and PyPI have all happened. The
         # gate is the same script run pre-tag in release.yml.
         run: python3 scripts/check_versions.py
+
+      - name: Wait for PyPI to serve this version
+        # The registry validates the declared pypi package by fetching
+        # pypi.org/pypi/<pkg>/<version>/json and treats a 404 as fatal. PyPI's
+        # JSON API trails an upload by seconds to minutes, so poll rather than
+        # race it. This step existed before, was removed with the PyPI job as
+        # dead weight, and became load-bearing again the moment server.json
+        # started declaring a package.
+        run: |
+          set -euo pipefail
+          ver="$(python3 -c "import json;print(json.load(open('server.json'))['version'])")"
+          for i in $(seq 1 30); do
+            if curl -fsS -o /dev/null \
+                 "https://pypi.org/pypi/secure-applemusic-mcp-for-osx/${ver}/json"; then
+              echo "PyPI is serving ${ver}"
+              exit 0
+            fi
+            echo "attempt ${i}: PyPI has no ${ver} yet"
+            sleep 10
+          done
+          echo "PyPI never served ${ver} — not registering an entry that points at nothing" >&2
+          exit 1
 
       - name: Publish to MCP Registry
         # The registry answers 429/5xx as "likely transient, retry later", so
