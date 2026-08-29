@@ -15,8 +15,16 @@
 
 <p align="center">
   <a href="https://github.com/jaminben/secure-applemusic-mcp-for-osx/releases/latest/download/UnofficialAppleMusicMCP-macos-arm64.zip">
-    <b>⬇ Download the MCP server for macOS (Apple Silicon)</b>
+    <b>⬇ Download for Apple Silicon</b>
   </a>
+  &nbsp;·&nbsp;
+  <a href="https://github.com/jaminben/secure-applemusic-mcp-for-osx/releases/latest/download/UnofficialAppleMusicMCP-macos-x86_64.zip">
+    <b>⬇ Download for Intel</b>
+  </a>
+  <br>
+  <sub>
+    Not sure which? Apple menu → About This Mac. "Apple M1/M2/M3…" is Apple Silicon.
+  </sub>
   <br>
   <sub>
     notarized by Apple · no terminal · no developer account ·
@@ -228,6 +236,45 @@ The shim holds nothing and can't talk to Music; the launchd-started helper owns
 the grant. You get one revocable row in System Settings → Privacy & Security →
 Automation, and your terminal gets nothing.
 [docs/PERMISSIONS.md](docs/PERMISSIONS.md) has the details.
+
+### With pip, pipx or uvx
+
+For people who already live in a terminal. The wheel carries the same signed
+MusicKit helper the app does, so this is a full install, not a reduced one.
+
+```bash
+pipx install secure-applemusic-mcp-for-osx     # or: uv tool install …
+```
+
+There is no first-run window on this path, so two steps are yours:
+
+**1. Add it to your MCP client.** For Claude Desktop, in
+`~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "unofficial-apple-music": {
+      "command": "secure-applemusic-mcp",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+For Claude Code: `claude mcp add unofficial-apple-music -- secure-applemusic-mcp serve`.
+Other clients take the same command and argument in their own config file.
+
+Use the full path if the command is not on your client's `PATH` — GUI apps
+often do not inherit a shell `PATH`. `which secure-applemusic-mcp` will tell
+you what to paste.
+
+**2. Approve Apple Music once.** Restart the client, then ask it to run
+`config(action='signin')`. A native prompt appears; nothing is stored. Until
+you do this, everything works except adding music you don't already own.
+
+The wheel is macOS-only and covers both architectures. `pip` will decline to
+install it elsewhere rather than give you a build with no MusicKit rail.
 
 ### From source
 

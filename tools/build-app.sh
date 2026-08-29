@@ -106,7 +106,20 @@ VENDORED_PY="${RES}/python/bin/python${PYVER}"
 # --- 2. install the package into a plain directory (no venv, no abs paths) ---
 echo "==> Installing the package and dependencies"
 "$VENDORED_PY" -m pip install --quiet --upgrade pip >/dev/null 2>&1 || true
-"$VENDORED_PY" -m pip install --quiet --target "${RES}/lib" "${REPO}" \
+# `mcp` requires pyjwt[crypto], which pulls `cryptography` — and cryptography
+# stopped publishing Intel macOS wheels at version 49. Without a ceiling, an
+# x86_64 build tries to compile it from Rust source and fails unless the builder
+# happens to have the x86_64-apple-darwin toolchain installed. 48.0.1 is the
+# newest release with a universal2 wheel, and satisfies pyjwt's >=3.4.0.
+# Applied ONLY to the Intel build, so the arm64 app keeps current upstream.
+PIP_CONSTRAINT_ARGS=()
+if [[ "$UV_ARCH" == "x86_64" ]]; then
+  INTEL_CONSTRAINT="$(mktemp)"
+  echo "cryptography<49" > "$INTEL_CONSTRAINT"
+  PIP_CONSTRAINT_ARGS=(-c "$INTEL_CONSTRAINT")
+  echo "    Intel build: pinning cryptography<49 (no Intel wheels above that)"
+fi
+"$VENDORED_PY" -m pip install --quiet --target "${RES}/lib" "${PIP_CONSTRAINT_ARGS[@]}" "${REPO}" \
   || { echo "error: pip install failed" >&2; exit 1; }
 find "${RES}/lib" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
 # Console-script stubs bake in an absolute interpreter path; the launcher uses

@@ -34,15 +34,24 @@ dependencies = [
     # unbounded requirement is what let that break every fresh install. Raise the
     # ceiling deliberately after testing, never by leaving it open.
     "mcp>=1.0.0,<3",
-    "pyjwt[crypto]>=2.8.0",
     "requests>=2.31.0",
-    "cryptography>=41.0.0",
+    # Not used directly — `mcp` requires pyjwt[crypto], which pulls it in. The
+    # ceiling exists because cryptography stopped publishing Intel macOS wheels
+    # at 49, so without it an Intel `pip install` tries to compile Rust from
+    # source and fails on any machine without the x86_64-apple-darwin toolchain.
+    # Scoped by marker so Apple Silicon keeps current upstream.
+    "cryptography<49; platform_machine == 'x86_64'",
     # tomllib landed in 3.11; we still support 3.10, where the Codex/TOML client
     # config path needs the backport. Not installed on 3.11+.
     "tomli>=2.0.1; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
+# Only needed to SIGN an Apple Developer token from a .p8 — the optional rail
+# that buys a larger rate limit. `cryptography` dropped Intel macOS wheels at
+# 49, so keeping it in the base dependency set made every Intel install compile
+# Rust from source for a feature almost nobody uses.
+dev-token = ["pyjwt[crypto]>=2.8.0", "cryptography>=41.0.0"]
 dev = [
     "pytest>=7.0.0",
     "pytest-mock>=3.0.0",

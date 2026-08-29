@@ -9,8 +9,6 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qs
 
-import jwt
-
 from . import paths
 
 logger = logging.getLogger(__name__)
@@ -229,6 +227,23 @@ def generate_developer_token(expiry_days: int = 180) -> str:
 
     now = int(time.time())
     exp = now + (expiry_days * 24 * 60 * 60)
+
+    # Imported here, not at module scope, because this is the ONLY use of jwt in
+    # the package and it sits on the optional developer-token rail. PyJWT pulls
+    # in `cryptography`, which stopped publishing Intel macOS wheels at 49 — so a
+    # module-level import made `cryptography` a hard dependency of every install
+    # and left Intel Macs compiling Rust from source on both the app build and
+    # `pip install`. Nobody on the packaged app signs a .p8; they should not pay
+    # for the machinery that does.
+    try:
+        import jwt
+    except ImportError as exc:  # pragma: no cover - exercised by the extras test
+        raise RuntimeError(
+            "Generating an Apple Developer token needs the optional 'dev-token' "
+            "extra: pip install 'secure-applemusic-mcp-for-osx[dev-token]'. "
+            "It is not needed for anything else — catalog adds, playback, "
+            "playlists and ratings all work without it."
+        ) from exc
 
     headers = {"alg": "ES256", "kid": config["key_id"]}
     payload = {"iss": config["team_id"], "iat": now, "exp": exp}

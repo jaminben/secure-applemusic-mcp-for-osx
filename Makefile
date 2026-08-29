@@ -2,7 +2,7 @@
 # no venv activated. Override for a specific interpreter:  PY="python3.12" make test
 PY ?= uv run python
 
-.PHONY: help test test-all preflight preflight-ui invariants swift app notarize release publish-release clean-dist dev dev-stop reset
+.PHONY: help test test-all preflight preflight-ui invariants swift app apps wheel notarize release publish-release clean-dist dev dev-stop reset
 
 # Needed to name the release zip the way the README tells people to expect it.
 VERSION := $(shell sed -nE 's/^version = "(.*)"/\1/p' pyproject.toml | head -1)
@@ -75,6 +75,20 @@ swift:
 
 app: swift
 	./tools/build-app.sh --zip $(if $(SIGN_ID),--sign "$(SIGN_ID)",)
+
+# Both Mac architectures. There is no universal .app: it vendors a per-arch
+# CPython and uv publishes no universal2 build, so a "universal" bundle would
+# mean carrying two Pythons. Two arch-specific apps are smaller and honest.
+# The nested Swift helpers ARE universal, so they work in either.
+apps: swift
+	./tools/build-app.sh --arch arm64  --zip $(if $(SIGN_ID),--sign "$(SIGN_ID)",)
+	./tools/build-app.sh --arch x86_64 --zip $(if $(SIGN_ID),--sign "$(SIGN_ID)",)
+
+# The PyPI wheel carries the signed helper, which needs its OWN notarization
+# ticket — the app bundle's does not travel with it. Staple before building.
+wheel: swift
+	./tools/notarize-helper.sh
+	uv build --wheel
 
 clean-dist:
 	rm -rf dist

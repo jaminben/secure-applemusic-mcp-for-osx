@@ -38,7 +38,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-swiftc -O -target arm64-apple-macosx12.0 -o amcp-setup main.swift
+# Universal, for the same reason as the MusicKit helper: the app is now built
+# per-architecture, and a single-arch nested helper would leave the Intel build
+# with a setup wizard that cannot launch.
+swiftc -O -target arm64-apple-macosx12.0  -o amcp-setup-arm64  main.swift
+swiftc -O -target x86_64-apple-macosx12.0 -o amcp-setup-x86_64 main.swift
+lipo -create -output amcp-setup amcp-setup-arm64 amcp-setup-x86_64
+rm -f amcp-setup-arm64 amcp-setup-x86_64
 
 rm -rf "$APP"
 mkdir -p "${APP}/Contents/MacOS"
