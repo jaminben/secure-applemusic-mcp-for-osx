@@ -8870,6 +8870,39 @@ def _auth_action(action: str = "status", confirm: bool = False) -> str:
         # (Music.app), so a stale API session must not be reported as "your writes
         # are broken."
         rail = _write_rail("add")
+
+        # The common case deserves a plain answer, not a reading exercise.
+        #
+        # Someone who asks "what is this signed in to?" wants "nothing" — which
+        # is both the true answer and the entire point of the project. What they
+        # got was two lines of token bookkeeping ("Developer Token: not
+        # configured (optional — ...)"), a rail report, a mode, an engine list
+        # and a writes line, from which they were left to infer it. Every line
+        # was accurate and the whole thing answered the wrong question.
+        #
+        # So: when there is genuinely no credential and the signed helper is
+        # working, say so and stop. The diagnostic breakdown below still runs
+        # for every other configuration, which is where it earns its keep.
+        if (
+            not forced
+            and rail == "native"
+            and not has_any_developer_token()
+            and not has_user_token()
+            and _can_use_musickit_rail()
+        ):
+            return (
+                "Signed in to: nothing.\n"
+                "\n"
+                "No account, no password, no token. None needed, and none stored.\n"
+                "\n"
+                "Playing, searching, playlists, library edits and ratings all run "
+                "locally through the Music app. Adding music you don't own yet is "
+                "signed by Apple's MusicKit using this app's own identity and the "
+                "permission you granted once — nothing is kept afterwards.\n"
+                "\n"
+                "Everything works. There is nothing to set up."
+            )
+
         mut = _api_session_status() if (tokens_present and not forced) else None
         body = _config_auth_status(mut)
         if forced:

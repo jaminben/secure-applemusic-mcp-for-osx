@@ -1263,8 +1263,11 @@ class TestStatusDoesNotContradictItself:
         monkeypatch.setattr(server.musickit, "is_available", lambda: True)
         monkeypatch.setattr(server.musickit, "authorization_status", lambda: "authorized")
         out = server._auth_action("status")
-        assert "Catalog add: OK" in out
+        # This host now takes the plain-answer path, which is the same fix seen
+        # from the other end: it cannot contradict itself because it no longer
+        # reports rails at all. What must never come back is a sign-in demand.
         assert "needs sign-in" not in out
+        assert "signin" not in out
 
     def test_a_host_with_neither_rail_is_still_told(self, monkeypatch):
         # _write_rail returns "none" off macOS, so the native branch carrying
@@ -1275,3 +1278,49 @@ class TestStatusDoesNotContradictItself:
         monkeypatch.setattr(server.musickit, "is_available", lambda: False)
         out = server._auth_action("status")
         assert "needs sign-in" in out
+
+
+class TestStatusAnswersTheQuestionAsked:
+    """ "What is this signed in to?" — "nothing" is both the true answer and the
+    whole point of the project, and it used to be something you had to infer
+    from two lines of token bookkeeping plus a rail report."""
+
+    def _clean_host(self, monkeypatch):
+        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
+        monkeypatch.setattr(server, "has_any_developer_token", lambda: False)
+        monkeypatch.setattr(server, "has_user_token", lambda: False)
+        monkeypatch.setattr(server, "_can_use_musickit_rail", lambda: True)
+        monkeypatch.setattr(server.musickit, "is_available", lambda: True)
+        monkeypatch.setattr(server.musickit, "authorization_status", lambda: "authorized")
+
+    def test_it_leads_with_nothing(self, monkeypatch):
+        self._clean_host(monkeypatch)
+        out = server._auth_action("status")
+        assert out.startswith("Signed in to: nothing.")
+
+    def test_it_drops_the_token_bookkeeping(self, monkeypatch):
+        """The old output opened with two 'not configured (optional — …)' lines
+        about tokens the user does not have and does not need."""
+        self._clean_host(monkeypatch)
+        out = server._auth_action("status")
+        for jargon in ("Developer Token:", "Music User Token:", "Engines:", "Writes:", "Mode:"):
+            assert jargon not in out, f"{jargon!r} is bookkeeping, not an answer"
+
+    def test_a_configured_token_still_gets_the_full_breakdown(self, monkeypatch):
+        """The detail earns its keep in every other configuration — someone who
+        opted into a token is debugging something."""
+        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
+        monkeypatch.setattr(server, "has_any_developer_token", lambda: True)
+        monkeypatch.setattr(server, "has_user_token", lambda: True)
+        monkeypatch.setattr(server, "_api_session_status", lambda: "ok")
+        out = server._auth_action("status")
+        assert "Signed in to: nothing." not in out
+        assert "Writes:" in out
+
+    def test_forced_tokenless_is_never_reported_as_fine(self, monkeypatch):
+        """The kill switch must not be swallowed by the happy path."""
+        self._clean_host(monkeypatch)
+        monkeypatch.setenv("APPLEMUSIC_FORCE_TOKENLESS", "1")
+        out = server._auth_action("status")
+        assert "Signed in to: nothing." not in out
+        assert "APPLEMUSIC_FORCE_TOKENLESS" in out
