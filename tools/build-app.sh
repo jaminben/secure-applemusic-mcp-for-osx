@@ -92,6 +92,20 @@ mkdir -p "${RES}/python"
 # -L: resolve symlinks so the copy stands alone even if the source is pruned.
 (cd "$PY_ROOT" && tar cf - bin lib include 2>/dev/null) | (cd "${RES}/python" && tar xf -)
 # Drop what a runtime never needs; keeps the download roughly a third smaller.
+# Tcl/Tk and tkinter. Nothing here imports tkinter — the first-run window is
+# the signed Swift AMCPSetup.app — so this was ~4.3 MB of embedded scripting
+# interpreter inside a bundle that holds the Automation-to-Music and Apple
+# Music TCC grants. Tcl is a capable language: exec, file I/O, sockets. Same
+# reasoning as the pip stubs below, with more teeth, because an interpreter is
+# exactly what someone wants to find already living inside a trusted bundle.
+rm -rf "${RES}/python/lib/tcl8" "${RES}/python/lib/tcl8.6" "${RES}/python/lib/tk8.6" \
+       "${RES}/python/lib/itcl4.2.4" "${RES}/python/lib/thread2.8.9" \
+       "${RES}/python/lib/python${PYVER}/tkinter" \
+       "${RES}/python/lib/python${PYVER}/idlelib" 2>/dev/null || true
+find "${RES}/python" -name "_tkinter*.so" -delete 2>/dev/null || true
+find "${RES}/python" \( -name "libtcl*" -o -name "libtk*" -o -name "libitcl*" \
+     -o -name "libthread*" -o -name "libtdbc*" \) -delete 2>/dev/null || true
+
 rm -rf "${RES}/python/lib/python${PYVER}/test" \
        "${RES}/python/lib/python${PYVER}/idlelib" \
        "${RES}/python/lib/python${PYVER}/tkinter" \
@@ -125,6 +139,22 @@ find "${RES}/lib" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/nu
 # Console-script stubs bake in an absolute interpreter path; the launcher uses
 # `-m applemusic_mcp` instead, so they would only be a stale trap.
 rm -rf "${RES}/lib/bin" 2>/dev/null || true
+
+# Drop the vendored interpreter's console-script wrappers. Nothing here runs
+# them: the launcher uses `-m applemusic_mcp`, and the build above uses
+# `python -m pip`, which is the pip PACKAGE, not these.
+#
+# Why bother, when they are sealed by the signature and the bundle is
+# notarized: pip in particular is a capable living-off-the-land binary — it
+# fetches from the network and executes setup code — sitting inside a bundle
+# that holds the Automation-to-Music and Apple Music TCC grants. It buys an
+# attacker nothing they could not do with the system python, so this is surface
+# reduction rather than a fix, but a fork whose entire pitch is a smaller
+# capability surface should not ship a package manager it never calls.
+for _stub in 2to3 2to3-3.12 idle3 idle3.12 pip pip3 "pip3.${PYVER#*.}" \
+             pydoc3 "pydoc3.${PYVER#*.}" python3-config "python${PYVER}-config"; do
+  rm -f "${RES}/python/bin/${_stub}" 2>/dev/null || true
+done
 
 # The wheel force-includes the MusicKit helper beside the module, so that pip
 # install just dragged a second copy of it into the app. The app places its own
