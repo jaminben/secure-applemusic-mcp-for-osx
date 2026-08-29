@@ -126,6 +126,14 @@ find "${RES}/lib" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/nu
 # `-m applemusic_mcp` instead, so they would only be a stale trap.
 rm -rf "${RES}/lib/bin" 2>/dev/null || true
 
+# The wheel force-includes the MusicKit helper beside the module, so that pip
+# install just dragged a second copy of it into the app. The app places its own
+# at Contents/Helpers below, which is what musickit._candidates() selects first,
+# so the packaged copy is inert — ~290 KB of dead weight and a confusing second
+# binary for anyone auditing the bundle. Drop it here, BEFORE signing, so the
+# outer signature is computed over what actually ships.
+rm -rf "${RES}/lib/applemusic_mcp/AMCPMusicKit.app" 2>/dev/null || true
+
 # --- 2b. the MusicKit helper -------------------------------------------------
 # A signed Swift .app nested inside ours. It is the only way to add a catalog
 # track without shipping an Apple Music credential: MusicKit signs the API call

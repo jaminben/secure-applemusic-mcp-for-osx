@@ -306,6 +306,23 @@ that catches trap 1. It fails the release rather than shipping a rejected zip,
 and fails if it cannot even set the bit, since an unquarantined copy always
 passes and would be a green light proving nothing.
 
+### Do not poke the built app in place
+
+Verifying the bundle by running its own Python invalidates the signature, in
+both directions, and neither is obvious:
+
+- executing it **writes** `__pycache__` next to the modules, and codesign
+  reports `file added ... a sealed resource is missing or invalid`. The app's
+  own launcher sets `PYTHONDONTWRITEBYTECODE=1`, so normal use is fine — an
+  ad-hoc `python3 -c` is not.
+- "cleaning up" that `__pycache__` afterwards then **deletes** `.pyc` files that
+  were sealed in at signing (pip's vendored ones), and codesign reports
+  `file missing`.
+
+Test a `ditto` copy with `PYTHONDONTWRITEBYTECODE=1`, and leave the shipping
+bundle alone. `release-assets.sh` already does the right thing: its Gatekeeper
+check extracts the zip to a temp directory and never touches the original.
+
 ### There is no universal .app
 
 The bundle vendors a per-architecture CPython and uv publishes no universal2
