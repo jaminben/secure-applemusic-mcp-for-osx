@@ -6,6 +6,51 @@ fork point, see [CHANGELOG-upstream.md](CHANGELOG-upstream.md).
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-08-28
+
+### Added
+
+- **Intel Macs are supported.** Releases now ship two apps —
+  `-macos-arm64.zip` and `-macos-x86_64.zip` — and both nested Swift helpers are
+  universal binaries. There is no single universal app: the bundle vendors a
+  per-architecture CPython and uv publishes no universal2 build, so one bundle
+  would have to carry two Pythons.
+- **A PyPI wheel that actually works.** It carries the signed, notarized
+  MusicKit helper beside the module, so `pipx install` is a full install rather
+  than one missing its main rail. This was previously believed impossible; it
+  turns out the helper is 148K and four files, with its signature and
+  notarization ticket all in regular files, so it survives a wheel intact.
+  Verified on both architectures with a live, Apple-validated API call.
+- **A landing page** at <https://jaminben.github.io/secure-applemusic-mcp-for-osx/>
+  for people who want to know what it does rather than evaluate the source.
+
+### Fixed
+
+- **Intel installs were broken by an upstream dependency, on both channels.**
+  `mcp` requires `pyjwt[crypto]`, which pulls `cryptography`, and cryptography
+  stopped publishing Intel macOS wheels at version 49 — so any Intel install
+  tried to compile Rust from source and failed. Pinned by marker on Intel only,
+  so Apple Silicon keeps current upstream.
+- The `jwt` import is now lazy and `pyjwt`/`cryptography` moved to a `dev-token`
+  extra. It is used at exactly one line, on the optional developer-token rail,
+  and a module-level import made it a hard requirement of every install.
+
+### Changed
+
+- **One command builds and ships a release.** `make release-assets` builds both
+  architectures, notarizes and staples each, zips from the *stapled* bundle,
+  builds the wheel with its own notarized helper, writes checksums, and can
+  attach it all to the tag. It ends by setting the quarantine bit on each zip
+  and asking Gatekeeper — the check that catches a zip made before stapling,
+  which is a mistake this project had made in every release to date.
+- `docs/COMPARISON.md` corrected: Cifero74 *can* put a catalog track in your
+  library, via `add_tracks_to_playlist` with `track_type: "songs"` — the same
+  mechanism this fork uses. The differentiator is unchanged and narrower than
+  the obvious claim: this is the only one that does it with no credential of
+  any kind.
+- The README leads with a real conversation instead of the installer window, and
+  documents pip/pipx/uvx for the first time.
+
 ## [0.2.2] - 2026-08-28
 
 ### Changed

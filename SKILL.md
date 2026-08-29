@@ -1,6 +1,6 @@
 ---
 name: apple-music
-version: 0.2.2
+version: 0.3.0
 description: Apple Music integration for macOS — local Music.app via Apple Events, plus the official Apple Music API for catalog reads. No UI automation, no web player, no queue.
 ---
 
