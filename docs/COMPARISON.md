@@ -4,7 +4,8 @@ There are several. This is an honest read of the three most-starred, plus this
 fork — written by the author of the fork, so weigh it accordingly. Where a claim
 is checkable, the check is named.
 
-Star counts and last-push dates: 22 August 2026.
+Star counts and last-push dates: 22 August 2026. The credential and permission
+claims about upstream were re-checked against its `main` source on 29 August 2026.
 
 | | [kennethreitz/mcp-applemusic](https://github.com/kennethreitz/mcp-applemusic) | [epheterson/applemusic-mcp](https://github.com/epheterson/applemusic-mcp) | [Cifero74/mcp-apple-music](https://github.com/Cifero74/mcp-apple-music) | **this fork** |
 |---|---|---|---|---|
@@ -14,7 +15,7 @@ Star counts and last-push dates: 22 August 2026.
 | How it reaches Music | AppleScript | AppleScript + web API + browser | Apple Music REST API | AppleScript only |
 | Platforms | macOS | macOS, Windows, Linux | any | macOS |
 | **Apple Developer account** | not needed | not needed | **required** (.p8 + Team/Key ID) | not needed (optional: raises the rate limit) |
-| **To add music to your library, it needs** | can't add | a browser token it harvests and stores | can't add | **one consent prompt — nothing stored** |
+| **To add music to your library, it needs** | can't add | a browser token — you enable "Allow JavaScript from Apple Events" in Safari, or it drives a Playwright Chrome | can't add | **one consent prompt — nothing stored** |
 | Install | clone + uv | pip / uvx | clone + setup wizard | **download, drag, double-click** |
 
 ## What each one is for
@@ -142,6 +143,26 @@ account" — upstream does too. It is **the only one that adds to your library
 without a credential of any kind.** A source checkout without the bundled helper
 still falls back to an optional developer token; the packaged app never does.
 
+**What the harvest costs, specifically.** Upstream gets that token over the
+Apple Events `do JavaScript` channel, which requires the user to turn on Safari
+→ Settings → Advanced → Show features for web developers → Develop → **"Allow
+JavaScript from Apple Events"**. Its own `safari_player.py` names the setting as
+a prerequisite and is careful about it — *"user-enabled, one-time security
+setting — we never flip it"* — and the same channel serves both the token
+harvest and its Safari playback engine. The alternative path drives a Playwright
+Chrome instead, which its docstring puts at ~500 MB.
+
+That setting is worth understanding before you enable it: it permits script
+execution through Apple Events in **every** Safari tab, not just
+music.apple.com — your mail, your bank, whatever else is open. It is off by
+default and buried behind the developer menu for that reason. Upstream is
+upfront about needing it, which is to its credit; the point here is only that
+adding a song to your library is what triggers the ask, and on this fork it
+does not.
+
+(Checked against upstream's `main` on 29 August 2026, not inferred from its
+README.)
+
 **Catalog search is tokenless here** via Apple's public iTunes Search API, and it
 returns an explicit flag — so `clean_only` is *verified* rather than assumed.
 
@@ -155,6 +176,7 @@ The dimension this fork exists for. "Can it, in principle, do the thing" — not
 | Needs the **Accessibility API** (system-wide synthetic input; not assistive tech) | no | **yes**, for some paths | no | **never** |
 | Drives a **browser** (Playwright/Chrome) | no | yes | no | no |
 | Reads your **Safari cookies** | no | yes (opt-in sign-in) | no | no |
+| Needs **"Allow JavaScript from Apple Events"** (script execution in every Safari tab) | no | **yes**, for the token harvest and the Safari engine | no | **never** |
 | Hands URLs to the OS (`open`) | no | yes | no | no |
 | Stores credentials by default | no | yes | yes | **no** |
 | Escapes input into AppleScript | **no** — see below | yes | n/a (REST) | yes |
