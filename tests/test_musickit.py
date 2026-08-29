@@ -1350,17 +1350,32 @@ class TestTheHelperShipsInsideTheWheel:
         monkeypatch.setenv(mk._ENV_OVERRIDE, "/tmp/some/other/helper")
         assert mk._candidates()[0] == Path("/tmp/some/other/helper")
 
-    def test_pyproject_ships_the_helper_beside_the_module(self):
-        """The wheel must place the .app where _candidates() looks. These two
-        are coupled only by this test — nothing else fails if they drift."""
+    def test_the_build_hook_ships_the_helper_beside_the_module(self):
+        """The wheel must place the .app where _candidates() looks.
+
+        The force-include lives in the build hook rather than pyproject.toml: a
+        statically declared one fails the whole build when the file is absent,
+        and the .app is a gitignored build artifact, so every CI run and every
+        fresh clone could not install the package at all. These two are coupled
+        only by this test — nothing else fails if they drift.
+        """
         import applemusic_mcp.musickit as mk
 
-        cfg = Path(__file__).resolve().parents[1] / "pyproject.toml"
-        text = cfg.read_text(encoding="utf-8")
-        assert "force-include" in text, "the wheel no longer ships the helper"
+        hook = Path(__file__).resolve().parents[1] / "scripts" / "wheel_tag.py"
+        text = hook.read_text(encoding="utf-8")
+        assert "force_include" in text, "the wheel no longer ships the helper"
         assert f"applemusic_mcp/{mk.HELPER_APP}" in text, (
             f"the wheel ships the helper somewhere other than beside the module; "
             f"_candidates() looks for applemusic_mcp/{mk.HELPER_APP}"
+        )
+
+    def test_the_helper_include_is_conditional(self):
+        """It must not be unconditional again: that is what broke CI."""
+        hook = Path(__file__).resolve().parents[1] / "scripts" / "wheel_tag.py"
+        text = hook.read_text(encoding="utf-8")
+        assert "is_dir()" in text and "return" in text, (
+            "the build hook must skip the force-include when the helper has not "
+            "been built, or a clean checkout cannot install the package"
         )
 
     def test_the_wheel_is_not_tagged_pure_python(self):
