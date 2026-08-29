@@ -5,7 +5,12 @@
 **Let Claude play your music. Download, drag, double-click — that's the install.**
 
 <p align="center">
-  <img src="docs/images/installer-welcome.png" alt="The first-run setup window: Control Apple Music with AI" width="460">
+  <img src="docs/images/playlist-conversation.png" width="720"
+       alt="Claude asked to build a birthday playlist of top songs from August 10th over five years, appropriate for a seven-year-old. It creates the playlist in Apple Music, starts it playing, and lists the 17 tracks it chose — skipping the explicit versions.">
+</p>
+
+<p align="center">
+  <sub><i>One request. A real playlist, playing, with the explicit versions left out.</i></sub>
 </p>
 
 <p align="center">
@@ -164,6 +169,11 @@ through UI automation and therefore the Accessibility permission; here the same
 thing runs on MusicKit instead.
 
 ## Install
+
+<p align="center">
+  <img src="docs/images/installer-welcome.png" alt="The first-run setup window: Control Apple Music with AI" width="460">
+</p>
+
 
 **Requires:** macOS 12+, the Music app signed into your Apple Music account.
 Nothing else — no Python, no Homebrew, no command line.
