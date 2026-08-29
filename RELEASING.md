@@ -212,6 +212,19 @@ assert ok
 
 ### Publishing it
 
+`make release-assets EXTRA=--upload` attaches the wheel to the **GitHub
+Release**. It does **not** publish to PyPI, and cannot: there is no trusted
+publisher for the project, so `pip install secure-applemusic-mcp-for-osx` still
+finds nothing. Until that exists, the release asset is the only way to install
+it, and the script says so when it finishes.
+
+Note there is no stable-name wheel asset the way there is for the apps. A
+wheel's filename encodes its version and pip parses the version from it, so a
+copy renamed to drop the version would not install.
+
+To finish the PyPI half:
+
+
 ### If a wrapper package ever ships
 
 Superseded — see "The PyPI wheel" above. The wheel carries the real signed

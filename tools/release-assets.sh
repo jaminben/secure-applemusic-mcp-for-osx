@@ -122,12 +122,24 @@ ls -1 "${OUT}"/${APP_NAME}-*.zip "${OUT}"/*.whl "${OUT}"/SHA256SUMS.txt 2>/dev/n
 if [[ "$UPLOAD" -eq 1 ]]; then
   echo
   echo "==> Uploading to v${VERSION}"
-  gh release upload "v${VERSION}" \
-    "${OUT}"/${APP_NAME}-*.zip "${OUT}"/*.zip.sha256 "${OUT}/SHA256SUMS.txt" \
+  # The wheel goes up too. It is the only way to install it until the PyPI
+  # trusted publisher exists — `pip install <that release URL>` works today,
+  # and the checksums cover it either way.
+  UPLOADS=("${OUT}"/${APP_NAME}-*.zip "${OUT}"/*.zip.sha256 "${OUT}/SHA256SUMS.txt")
+  if compgen -G "${OUT}/*.whl" >/dev/null; then UPLOADS+=("${OUT}"/*.whl); fi
+  gh release upload "v${VERSION}" "${UPLOADS[@]}" \
     --repo jaminben/secure-applemusic-mcp-for-osx --clobber
   gh api "repos/jaminben/secure-applemusic-mcp-for-osx/releases/tags/v${VERSION}" \
     --jq '"    v\(.tag_name|ltrimstr("v")): \([.assets[].name]|join(", "))"'
 else
   echo
   echo "Next: tools/release-assets.sh --sign \"…\" --upload   (or upload by hand)"
+fi
+
+if [[ "$SKIP_WHEEL" -eq 0 ]]; then
+  echo
+  echo "NOTE: the wheel is attached to the GitHub Release but NOT published to"
+  echo "      PyPI — there is no trusted publisher for the project yet, so"
+  echo "      \`pip install secure-applemusic-mcp-for-osx\` still finds nothing."
+  echo "      See \"The PyPI wheel\" in RELEASING.md."
 fi
