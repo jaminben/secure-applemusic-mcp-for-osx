@@ -1,0 +1,46 @@
+{
+  "identifier": "jaminben-secure-applemusic-mcp-for-osx",
+  "name": "Unofficial Apple Music for macOS",
+  "version": "0.3.1",
+  "description": "Ask for a playlist. Get a real one, playing in Apple Music — no account, nothing stored.",
+  "author": "jaminben",
+  "authorUrl": "https://github.com/jaminben",
+  "homepage": "https://jaminben.github.io/secure-applemusic-mcp-for-osx/",
+  "icon": "https://raw.githubusercontent.com/jaminben/secure-applemusic-mcp-for-osx/main/docs/images/icon-512.png",
+  "category": "media",
+  "tags": [
+    "apple-music",
+    "music",
+    "macos",
+    "playlist",
+    "musickit",
+    "playback",
+    "claude"
+  ],
+  "tools": [
+    {
+      "name": "playback",
+      "description": "Play, pause, skip, seek, shuffle and repeat in the Music app, and report what is playing."
+    },
+    {
+      "name": "library",
+      "description": "Search and browse your own library, add music to it, rate tracks, and export or snapshot it."
+    },
+    {
+      "name": "playlist",
+      "description": "Create, rename and delete playlists and folders, and add or remove tracks — including tracks you do not own yet."
+    },
+    {
+      "name": "catalog",
+      "description": "Search the Apple Music catalog, look up songs, albums and artists, and resolve tracks by ISRC."
+    },
+    {
+      "name": "discover",
+      "description": "Personalised recommendations, heavy rotation, charts, similar artists and top songs."
+    },
+    {
+      "name": "config",
+      "description": "Preferences, cache, and the one-time Apple Music permission prompt."
+    }
+  ]
+}

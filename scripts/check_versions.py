@@ -64,9 +64,17 @@ def _surfaces(expected: str) -> list[tuple[str, str | None]]:
     has_section = re.search(rf"^## \[{re.escape(expected)}\]", _read("CHANGELOG.md"), re.M)
     out.append(("CHANGELOG.md section heading", expected if has_section else None))
 
+    # The LobeHub marketplace manifest. Publishing there is a manual `lhm plugin
+    # publish`, so this file drifts even more easily than the rest — nothing in
+    # the release path touches it.
+    import json
+
+    lhm = ROOT / "lhm.plugin.json"
+    if lhm.exists():
+        out.append(("lhm.plugin.json version", json.loads(_read("lhm.plugin.json")).get("version")))
+
     # Both version fields in the registry manifest. They are separate keys and
     # nothing but this check couples them.
-    import json
 
     manifest = json.loads(_read("server.json"))
     out.append(("server.json version", manifest.get("version")))

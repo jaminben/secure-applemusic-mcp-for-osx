@@ -97,7 +97,30 @@ one publish seeds two directories.
 | punkpeye/awesome-mcp-servers | pull request | PR #13115 open |
 | mcpservers.org | **web form** at <https://mcpservers.org/submit> | needs a contact email; free listing with a paid upsell |
 | wong2/awesome-mcp-servers | fork + PR | their repo refuses outside PRs; branch ready, open by hand |
-| LobeHub | community store | not yet investigated |
+| LobeHub | `lhm` CLI, manifest committed | needs `lhm login` + `lhm github connect` first — browser OIDC |
+
+### LobeHub
+
+Not a form and not auto-indexed: a CLI that verifies you have push access to the
+repo, with `lhm.plugin.json` at the repo root as the owner-declared source of
+truth. That manifest is committed and validated — `scripts/check_versions.py`
+now treats its version as an eighth surface, because nothing in the release path
+touches it and it would otherwise drift silently.
+
+Two of the steps need a browser (OAuth2 PKCE), so they cannot be scripted here:
+
+```bash
+npx -y @lobehub/market-cli login          # browser OIDC
+npx -y @lobehub/market-cli github connect # proves push access to the repo
+npx -y @lobehub/market-cli plugin publish \
+  https://github.com/jaminben/secure-applemusic-mcp-for-osx
+```
+
+There is no manual review — publish succeeds immediately and LobeHub then
+enriches the listing from the repo asynchronously. The manifest wins over
+anything their crawler infers, so the description and tools shown will be the
+ones committed here. Later versions go out with `lhm plugin update` after
+bumping the manifest.
 
 ### mcpservers.org form
 
