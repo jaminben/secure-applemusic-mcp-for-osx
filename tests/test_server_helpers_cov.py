@@ -2020,17 +2020,65 @@ class TestFindMatchingCatalogAlbumNoArtist:
 
 
 class TestSearchExceptionPaths:
-    """server.py:1803-1804, 1830-1831, 1913-1914 — except branches hit when get_headers raises."""
+    """The `except` branches hit when get_headers raises.
 
-    def test_search_catalog_songs_exception(self, mock_config_dir):
-        # No tokens → get_headers() raises → except Exception caught at 1803-1804
-        result = server._search_catalog_songs("test")
-        assert result == []
+    Note what these no longer assert: "no token" used to mean these returned
+    [], which every caller reads as "not in the catalog" — a false negative on
+    a machine that can search the catalog for free. The tokenless rail is now
+    taken BEFORE get_headers is reached, so the exception paths are only
+    reachable with a token configured.
+    """
 
-    def test_search_catalog_albums_exception(self, mock_config_dir):
-        # No tokens → get_headers() raises → except Exception caught at 1830-1831
-        result = server._search_catalog_albums("test")
-        assert result == []
+    def test_catalog_song_search_uses_the_public_rail_without_a_token(
+        self, mock_config_dir, monkeypatch
+    ):
+        monkeypatch.setattr(
+            server,
+            "_catalog_search_itunes",
+            lambda q, n: [{"id": "1440783617", "name": "Strobe", "artist": "deadmau5"}],
+        )
+        rows = server._search_catalog_songs("strobe")
+        # Shaped like Apple's so the matching above it is unchanged.
+        assert rows == [
+            {
+                "id": "1440783617",
+                "type": "songs",
+                "attributes": {
+                    "name": "Strobe",
+                    "artistName": "deadmau5",
+                    "albumName": "",
+                    "url": "",
+                },
+            }
+        ]
+
+    def test_catalog_song_search_exception_still_empty_with_a_token(
+        self, mock_config_dir, monkeypatch
+    ):
+        monkeypatch.setattr(server, "_has_developer_token", lambda: True)
+        monkeypatch.setattr(server, "get_headers", lambda: (_ for _ in ()).throw(OSError("boom")))
+        assert server._search_catalog_songs("test") == []
+
+    def test_catalog_album_search_uses_the_public_rail_without_a_token(
+        self, mock_config_dir, monkeypatch
+    ):
+        monkeypatch.setattr(
+            server,
+            "_itunes_find_album",
+            lambda q, a="": {"id": "222", "name": "Abbey Road", "artist": "The Beatles"},
+        )
+        rows = server._search_catalog_albums("abbey road")
+        assert rows == [
+            {
+                "id": "222",
+                "type": "albums",
+                "attributes": {"name": "Abbey Road", "artistName": "The Beatles"},
+            }
+        ]
+
+    def test_catalog_album_search_unknown_album_is_empty(self, mock_config_dir, monkeypatch):
+        monkeypatch.setattr(server, "_itunes_find_album", lambda q, a="": {})
+        assert server._search_catalog_albums("nope") == []
 
     def test_search_library_songs_exception(self, mock_config_dir):
         # No tokens → get_headers() raises → except Exception caught at 1913-1914

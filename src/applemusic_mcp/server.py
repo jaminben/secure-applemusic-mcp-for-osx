@@ -2113,6 +2113,25 @@ def _search_catalog_songs(query: str, limit: int = 5) -> list[dict]:
         ``rate_limit.note_status`` so callers can say "rate limited" instead of
         the false "not found" an empty list would otherwise imply (#42).
     """
+    # Without a token this used to fall into the bare `except` below and return
+    # [], which every caller reads as "not in the catalog" — a false negative on
+    # a machine that can search the catalog perfectly well for free. Shape the
+    # public rows like Apple's so the matching above them is unchanged.
+    if not _has_developer_token():
+        return [
+            {
+                "id": row["id"],
+                "type": "songs",
+                "attributes": {
+                    "name": row.get("name", ""),
+                    "artistName": row.get("artist", ""),
+                    "albumName": row.get("album", ""),
+                    "url": row.get("url", ""),
+                },
+            }
+            for row in _catalog_search_itunes(query, min(limit, 25))
+            if row.get("id")
+        ]
     try:
         headers = get_headers()
         response = requests.get(
@@ -2141,6 +2160,26 @@ def _search_catalog_albums(query: str, limit: int = 5) -> list[dict]:
         List of album dicts with 'id', 'attributes' (name, artistName, etc.)
         Empty list on error.
     """
+    # Same false negative as _search_catalog_songs: with no token this fell into
+    # the bare `except` and returned [], which reads as "no such album". The
+    # public search answers this for free, so `library(action='add', album=...)`
+    # no longer depends on a credential either.
+    if not _has_developer_token():
+        found = _itunes_find_album(query)
+        return (
+            [
+                {
+                    "id": found["id"],
+                    "type": "albums",
+                    "attributes": {
+                        "name": found.get("name", ""),
+                        "artistName": found.get("artist", ""),
+                    },
+                }
+            ]
+            if found.get("id")
+            else []
+        )
     try:
         headers = get_headers()
         response = requests.get(
@@ -2761,31 +2800,53 @@ def _can_use_musickit_rail() -> bool:
 
 
 def _musickit_setup_hint() -> str:
-    """The one actionable sentence for a host with no usable write rail.
+    """The one actionable sentence for a host that could not do a catalog write.
 
     Every branch is in-app or in System Settings; none sends anyone to a shell.
     The text this replaced pointed at ``applemusic-mcp login --dev``, which names
     a binary this build does not install (the console script is
     ``secure-applemusic-mcp``) and a rail the MusicKit helper made unnecessary.
+
+    Structure matters here, not just wording. The first version looked up the
+    authorization status in a dict and let anything unlisted fall to a default
+    of "this build ships no MusicKit helper" — so an AUTHORIZED helper, and any
+    status the helper might grow later, produced a message flatly contradicted
+    by ``config(action='status')`` two lines above it. Reported from the field.
+    "No helper" is now reachable only when there is genuinely no helper.
     """
-    status = musickit.authorization_status() if musickit.is_available() else "unavailable"
-    return {
-        "notDetermined": (
+    if not musickit.is_available():
+        return (
+            "This build ships no MusicKit helper, so catalog adds need the signed "
+            "app bundle — install it from the notarized download."
+        )
+    status = musickit.authorization_status()
+    if status == "authorized":
+        # The rail is fine and something else refused. Saying "set it up" here
+        # would send someone to fix what is not broken.
+        return (
+            "Apple Music access is already granted, so this isn't a setup problem "
+            "— please report what you were doing when it failed."
+        )
+    if status == "notDetermined":
+        return (
             "Run config(action='signin') — it shows the Apple Music permission "
             "prompt once, stores nothing, and needs no developer account."
-        ),
-        "denied": (
+        )
+    if status == "denied":
+        return (
             "Apple Music access is denied for this app. Turn it back on under "
             "System Settings → Privacy & Security → Media & Apple Music, then ask again."
-        ),
-        "restricted": (
+        )
+    if status == "restricted":
+        return (
             "Apple Music access is restricted on this Mac (Screen Time or an MDM "
             "profile), so catalog adds can't be authorized here."
-        ),
-    }.get(
-        status,
-        "This build ships no MusicKit helper, so catalog adds need the signed app "
-        "bundle — install it from the notarized download.",
+        )
+    # Present but in a state this build does not recognise. Name it rather than
+    # guessing — a wrong guess is what caused this function to be rewritten.
+    return (
+        f"The MusicKit helper is installed but reported an unexpected state "
+        f"({status!r}). config(action='status') shows the current rail."
     )
 
 
@@ -5770,12 +5831,14 @@ def _library_add(
     if not track and not album:
         return "Error: Provide track or album parameter"
 
-    # Catalog add-to-library runs over the unified API (dev token generated OR
-    # harvested, plus a captured media-user-token). The fragile UI automation
-    # that broke across macOS/Music.app versions (#37) has been removed — there
-    # is no UI fallback. If the API path isn't available, tell the user how to
-    # enable it.
-    if not _can_use_library_api():
+    # Two rails, same as everywhere else. This site was missed when the others
+    # were converted: its MESSAGE was updated to point at config(action='signin')
+    # but the GATE still asked only about tokens, so a MusicKit-only machine got
+    # a refusal — and, because the hint had no "authorized" case, one that
+    # claimed the build had no helper. Reported from the field; the playlist
+    # route worked while the direct library add did not, which is precisely the
+    # mismatch a per-site gate produces.
+    if not _can_use_library_api() and not _can_use_musickit_rail():
         if _forced_tokenless():
             return f"Error: Adding to your library is disabled: {_FORCED_TOKENLESS_MSG}"
         return f"Error: Adding to your library isn't set up yet. {_musickit_setup_hint()}"
@@ -5788,7 +5851,13 @@ def _library_add(
             return
         attrs = song.get("attributes", {})
         catalog_id = song.get("id")
-        success, msg = _add_to_library_api([catalog_id], "songs")
+        # _add_songs_to_library, not _add_to_library_api: it prefers the signed
+        # MusicKit rail and falls back to the token one, so this works on a host
+        # with either. Calling the token rail directly is what made this
+        # function need a credential the rest of the server had stopped needing.
+        success, msg = _add_songs_to_library(
+            [catalog_id], known=[(attrs.get("name", name), attrs.get("artistName", ""))]
+        )
         if success:
             result_name = attrs.get("name", name)
             result_artist = attrs.get("artistName", "Unknown")
@@ -5807,7 +5876,7 @@ def _library_add(
             return
         attrs = album.get("attributes", {})
         catalog_id = album.get("id")
-        success, msg = _add_to_library_api([catalog_id], "albums")
+        success, msg = _add_album_to_library(catalog_id)
         if success:
             result_name = attrs.get("name", name)
             result_artist = attrs.get("artistName", "Unknown")
@@ -5827,7 +5896,7 @@ def _library_add(
                 continue
 
             if r.input_type == InputType.CATALOG_ID:
-                success, msg = _add_to_library_api([r.value], "songs")
+                success, msg = _add_songs_to_library([r.value])
                 if success:
                     added.append(f"Track ID {r.value}")
                 else:
@@ -5850,7 +5919,7 @@ def _library_add(
                 # Direct catalog ID — add over the API (same as the track
                 # catalog-ID path). The old tokenless-UI fallback was removed,
                 # so there's no UI branch here anymore.
-                success, msg = _add_to_library_api([r.value], "albums")
+                success, msg = _add_album_to_library(r.value)
                 if success:
                     added.append(f"Album ID {r.value}")
                 else:

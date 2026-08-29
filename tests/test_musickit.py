@@ -1142,3 +1142,108 @@ class TestUnrate:
 
         monkeypatch.setattr(musickit, "_run", boom)
         assert musickit.unrate_song("12a")[0] is False
+
+
+# ---------------------------------------------------------------------------
+# Field report: `config auth-status` said catalog adds were ready while the
+# direct library-add path answered "this build ships no MusicKit helper".
+#
+# Two bugs, both introduced by the conversion rather than surviving it:
+#   * _library_add's MESSAGE was updated to point at config(action='signin')
+#     while its GATE still asked only about tokens, so a MusicKit-only host was
+#     refused — the one converted site that got prose without routing.
+#   * _musickit_setup_hint had no "authorized" case, so the dict lookup fell to
+#     the default and told the user their build had no helper while an
+#     authorized one sat right there.
+# ---------------------------------------------------------------------------
+
+
+class TestTheHintNeverDeniesAHelperItCanSee:
+    def test_authorized_is_not_reported_as_a_missing_build(self, monkeypatch):
+        monkeypatch.setattr(server.musickit, "is_available", lambda: True)
+        monkeypatch.setattr(server.musickit, "authorization_status", lambda: "authorized")
+        hint = server._musickit_setup_hint()
+        assert "ships no MusicKit helper" not in hint
+        assert "already granted" in hint
+
+    @pytest.mark.parametrize(
+        "status", ["authorized", "notDetermined", "denied", "restricted", "unknown"]
+    )
+    def test_a_present_helper_is_never_called_absent(self, monkeypatch, status):
+        """Whatever the state, if the binary is on disk the hint must not tell
+        the user to go install it."""
+        monkeypatch.setattr(server.musickit, "is_available", lambda: True)
+        monkeypatch.setattr(server.musickit, "authorization_status", lambda: status)
+        assert "ships no MusicKit helper" not in server._musickit_setup_hint()
+
+    def test_a_genuinely_absent_helper_still_says_so(self, monkeypatch):
+        monkeypatch.setattr(server.musickit, "is_available", lambda: False)
+        assert "ships no MusicKit helper" in server._musickit_setup_hint()
+
+
+class TestDirectLibraryAddMatchesThePlaylistRoute:
+    """The two routes disagreeing is the symptom that exposed this: adding via
+    the playlist worked while the direct library add refused."""
+
+    def _musickit_only(self, monkeypatch):
+        monkeypatch.setattr(server, "_can_use_library_api", lambda: False)
+        monkeypatch.setattr(server, "_can_use_musickit_rail", lambda: True)
+        monkeypatch.setattr(server, "_has_developer_token", lambda: False)
+        monkeypatch.setattr(server.audit_log, "log_action", lambda *a, **k: None)
+
+        def never():
+            raise AssertionError("no token exists — nothing may ask for headers")
+
+        monkeypatch.setattr(server, "get_headers", never)
+
+    def test_a_musickit_only_host_is_not_refused(self, monkeypatch):
+        self._musickit_only(monkeypatch)
+        monkeypatch.setattr(
+            server,
+            "_catalog_search_itunes",
+            lambda q, n: [{"id": "1440783617", "name": "Strobe", "artist": "deadmau5"}],
+        )
+        added = []
+        monkeypatch.setattr(
+            server,
+            "_add_songs_to_library",
+            lambda ids, known=None: (added.append(ids), (True, "ok"))[1],
+        )
+        out = server._library_add(track="Strobe", artist="deadmau5")
+        assert "isn't set up yet" not in out
+        assert added == [["1440783617"]]
+
+    def test_by_catalog_id_too(self, monkeypatch):
+        self._musickit_only(monkeypatch)
+        added = []
+        monkeypatch.setattr(
+            server,
+            "_add_songs_to_library",
+            lambda ids, known=None: (added.append(ids), (True, "ok"))[1],
+        )
+        server._library_add(track="1440783617")
+        assert added == [["1440783617"]]
+
+    def test_albums_go_through_the_album_rail(self, monkeypatch):
+        """cmdAdd hardcodes ids[songs], so an album must not be sent as a song."""
+        self._musickit_only(monkeypatch)
+        seen = []
+        monkeypatch.setattr(
+            server, "_add_album_to_library", lambda cid: (seen.append(cid), (True, "ok"))[1]
+        )
+        monkeypatch.setattr(
+            server,
+            "_add_songs_to_library",
+            lambda *a, **k: (_ for _ in ()).throw(
+                AssertionError("an album must not use the songs rail")
+            ),
+        )
+        server._library_add(album="1065973699")
+        assert seen == ["1065973699"]
+
+    def test_neither_rail_still_refuses(self, monkeypatch):
+        monkeypatch.setattr(server, "_can_use_library_api", lambda: False)
+        monkeypatch.setattr(server.musickit, "is_available", lambda: False)
+        out = server._library_add(track="Strobe", artist="deadmau5")
+        assert "isn't set up yet" in out
+        assert "applemusic-mcp" not in out
