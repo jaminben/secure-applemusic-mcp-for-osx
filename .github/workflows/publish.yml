@@ -54,7 +54,16 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          tag="${GITHUB_REF_NAME}"
+          # On a tag push GITHUB_REF_NAME is the tag. On workflow_dispatch it is
+          # the BRANCH — so resolving the release from it looked for one called
+          # "main" and found nothing. Fall back to the newest release, which is
+          # what "publish the thing we just cut" means in that case.
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)"
+            echo "dispatched from ${GITHUB_REF_NAME}; using latest release ${tag}"
+          fi
           # On a tag push this runs before the assets are uploaded — they are
           # built locally and attached afterwards. That is not a failure; it
           # means "run this again once the wheel is up", which is what
