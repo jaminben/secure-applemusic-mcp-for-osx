@@ -94,7 +94,25 @@ one publish seeds two directories.
 | mcp.so | submit form, or their GitHub issues | |
 | Smithery | `smithery mcp add <name>` validates first | |
 | PulseMCP | mirrors the registry | |
-| punkpeye/awesome-mcp-servers | pull request | |
+| punkpeye/awesome-mcp-servers | pull request | PR #13115 open |
+| mcpservers.org | **web form** at <https://mcpservers.org/submit> | needs a contact email; free listing with a paid upsell |
+| wong2/awesome-mcp-servers | fork + PR | their repo refuses outside PRs; branch ready, open by hand |
+| LobeHub | community store | not yet investigated |
+
+### mcpservers.org form
+
+Five fields, and it wants a contact email, so this one has to be submitted by
+hand. Paste:
+
+- **Server Name:** Unofficial Apple Music for macOS
+- **Short Description:** Ask for a playlist. Get a real one, playing in Apple
+  Music — no account, nothing stored.
+- **Link:** https://github.com/jaminben/secure-applemusic-mcp-for-osx
+- **Category:** whichever of media / entertainment / productivity the dropdown
+  offers; there is no Apple Music entry on the site to match against.
+- **Contact Email:** yours
+
+Decline the paid upgrade unless you want it — the free listing is the point.
 
 ### awesome-mcp-servers entry
 
