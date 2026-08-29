@@ -1247,3 +1247,31 @@ class TestDirectLibraryAddMatchesThePlaylistRoute:
         out = server._library_add(track="Strobe", artist="deadmau5")
         assert "isn't set up yet" in out
         assert "applemusic-mcp" not in out
+
+
+class TestStatusDoesNotContradictItself:
+    """Found by reading a real status output: "Catalog add: OK (MusicKit — no
+    credential stored)" and "Adding catalog tracks needs sign-in" appeared four
+    lines apart in the SAME response, because the summary line gated on tokens
+    only. Fourth site with this bug, and the most visible one — status is what a
+    confused user reads first."""
+
+    def test_musickit_only_host_is_not_told_to_sign_in(self, monkeypatch):
+        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
+        monkeypatch.setattr(server, "_can_use_library_api", lambda: False)
+        monkeypatch.setattr(server, "_can_use_musickit_rail", lambda: True)
+        monkeypatch.setattr(server.musickit, "is_available", lambda: True)
+        monkeypatch.setattr(server.musickit, "authorization_status", lambda: "authorized")
+        out = server._auth_action("status")
+        assert "Catalog add: OK" in out
+        assert "needs sign-in" not in out
+
+    def test_a_host_with_neither_rail_is_still_told(self, monkeypatch):
+        # _write_rail returns "none" off macOS, so the native branch carrying
+        # this line is only reached with AppleScript available.
+        monkeypatch.setattr(server, "APPLESCRIPT_AVAILABLE", True)
+        monkeypatch.setattr(server, "_can_use_library_api", lambda: False)
+        monkeypatch.setattr(server, "_can_use_musickit_rail", lambda: False)
+        monkeypatch.setattr(server.musickit, "is_available", lambda: False)
+        out = server._auth_action("status")
+        assert "needs sign-in" in out

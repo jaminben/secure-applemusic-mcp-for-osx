@@ -8883,12 +8883,16 @@ def _auth_action(action: str = "status", confirm: bool = False) -> str:
             )
         elif rail == "native":
             # macOS: playlist & library edits and ratings run locally through
-            # Music.app, independent of the web session. Catalog add still needs API.
+            # Music.app, independent of any web session.
             nxt = (
                 "✅ Ready — on macOS, playlist & library edits and ratings run locally "
                 "through Music.app."
             )
-            if not _can_use_library_api():
+            # Both rails, not just tokens. Gating on _can_use_library_api() alone
+            # appended "needs sign-in" four lines under "Catalog add: OK (MusicKit)"
+            # in the SAME status output — the fourth site to make this mistake, and
+            # the most visible, since status is what a confused user reads first.
+            if not _can_use_library_api() and not _can_use_musickit_rail():
                 nxt += " Adding catalog tracks needs sign-in: config(action='signin')."
             elif mut and mut != "ok":
                 nxt += " (Web player session looks degraded; playback/queue may need re-auth.)"
