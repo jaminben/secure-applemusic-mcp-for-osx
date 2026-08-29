@@ -129,7 +129,25 @@ if [[ "$SKIP_WHEEL" -eq 0 ]]; then
   ./tools/notarize-helper.sh --profile "$PROFILE" >/dev/null
   rm -f "${OUT}"/*.whl
   uv build --wheel >/dev/null
-  echo "    $(basename "$(ls "${OUT}"/*.whl)")"
+  WHEEL="$(ls "${OUT}"/*.whl)"
+
+  # The helper is force-included by scripts/wheel_tag.py only when it has been
+  # built, so that a fresh clone and CI can still install the package. The cost
+  # of that flexibility is that a wheel CAN be built without it — and such a
+  # wheel installs happily and silently has no MusicKit rail. Never ship one.
+  if ! unzip -l "$WHEEL" | grep -q "AMCPMusicKit.app/Contents/MacOS/AMCPMusicKit"; then
+    echo "error: the wheel does not contain the MusicKit helper." >&2
+    echo "       It would install as a build with no catalog adds. Run" >&2
+    echo "       swift/amcp-musickit/build.sh --sign ... and rebuild." >&2
+    exit 1
+  fi
+  case "$WHEEL" in
+    *macosx*) : ;;
+    *) echo "error: $(basename "$WHEEL") is not platform-tagged; pip would" >&2
+       echo "       install it on Linux. The helper was missing at build time." >&2
+       exit 1 ;;
+  esac
+  echo "    $(basename "$WHEEL") (helper present, macOS-tagged)"
 fi
 
 echo "==> Checksums"
