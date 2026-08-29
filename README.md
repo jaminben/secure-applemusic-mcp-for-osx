@@ -246,19 +246,9 @@ MusicKit helper the app does, so this is a full install, not a reduced one.
 pipx install secure-applemusic-mcp-for-osx     # or: uv tool install …
 ```
 
-> **Not on PyPI yet.** Until it is, the wheel is attached to each release —
-> take the `.whl` from the
-> [latest release](https://github.com/jaminben/secure-applemusic-mcp-for-osx/releases/latest)
-> and install it directly:
->
-> ```bash
-> pipx install ./secure_applemusic_mcp_for_osx-<version>-py3-none-macosx_14_0_universal2.whl
-> ```
->
-> There is no version-independent URL for it the way there is for the app: a
-> wheel's filename carries its version, and pip reads the version from the
-> filename, so a stable-named copy would not install. Checksums are in
-> `SHA256SUMS.txt`.
+> The wheel is also attached to every
+> [release](https://github.com/jaminben/secure-applemusic-mcp-for-osx/releases/latest)
+> with checksums, if you would rather install a file you can verify first.
 
 There is no first-run window on this path, so two steps are yours:
 

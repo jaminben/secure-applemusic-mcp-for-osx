@@ -150,15 +150,17 @@ the `Publish to PyPI` job failed on v0.1.0, v0.1.1, v0.2.0 and v0.2.1 with
 ran at all. Nobody noticed, because the tag and the GitHub Release are created
 by a *different* workflow that was succeeding.
 
-`publish.yml` currently has one job: publish `server.json` to the MCP Registry.
-The `packages` array is gone and the download URL travels in `_meta` under
-`io.modelcontextprotocol.registry/publisher-provided`.
+`publish.yml` has two jobs: publish `server.json` to the MCP Registry, and
+upload the wheel to PyPI. `server.json` carries both — a `packages` entry with
+`registryType: "pypi"`, so clients get an installable package, and the app
+download in `_meta` under
+`io.modelcontextprotocol.registry/publisher-provided`, since the app is the
+primary channel and no package type describes it.
 
-**Both of those want revisiting now the wheel is real.** Once the PyPI trusted
-publisher exists, restore a build+publish job and add a `packages` entry with
-`registryType: "pypi"` pointing at the wheel — that gives the registry an
-installable package, which is also the leading suspicion for why Glama and
-PulseMCP have not rendered the listing.
+The registry validates the PyPI package by looking for
+`mcp-name: io.github.jaminben/secure-applemusic-mcp-for-osx` in the package
+README, which reaches PyPI through `readme = "README.md"` in `pyproject.toml`.
+Remove that marker from README line 3 and the next registry publish fails.
 
 **The download link is version-independent on purpose.** Everything — the README
 button, `server.json`, every directory listing — points at:

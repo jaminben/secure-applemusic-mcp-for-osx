@@ -2,7 +2,7 @@
 # no venv activated. Override for a specific interpreter:  PY="python3.12" make test
 PY ?= uv run python
 
-.PHONY: help test test-all preflight preflight-ui invariants swift app apps wheel notarize release publish-release clean-dist dev dev-stop reset
+.PHONY: help test test-all preflight preflight-ui invariants swift app release-assets wheel notarize release publish-release clean-dist dev dev-stop reset
 
 # Needed to name the release zip the way the README tells people to expect it.
 VERSION := $(shell sed -nE 's/^version = "(.*)"/\1/p' pyproject.toml | head -1)
@@ -23,7 +23,7 @@ help:
 	@echo "make app          - build the standalone UnofficialAppleMusicMCP.app"
 	@echo "make notarize     - submit the built app to Apple, staple the ticket, re-zip"
 	@echo "make reset        - wipe this Mac back to a first-run machine (backs up creds)"
-	@echo "make publish-release - attach the notarized .app to its GitHub Release"
+	@echo "                      (publish-release is retired — release-assets does it)"
 	@echo "make release-assets - BOTH arch apps + the wheel: build, notarize, staple, zip,"
 	@echo "                      checksum. EXTRA=--upload attaches them to the tag."
 	@echo "make wheel        - just the PyPI wheel (notarizes its bundled helper first)"
@@ -101,13 +101,6 @@ wheel: swift
 	./tools/notarize-helper.sh
 	uv build --wheel
 
-
-apps: swift
-	./tools/build-app.sh --arch arm64  --zip $(if $(SIGN_ID),--sign "$(SIGN_ID)",)
-	./tools/build-app.sh --arch x86_64 --zip $(if $(SIGN_ID),--sign "$(SIGN_ID)",)
-
-# The PyPI wheel carries the signed helper, which needs its OWN notarization
-# ticket — the app bundle's does not travel with it. Staple before building.
 clean-dist:
 	rm -rf dist
 
@@ -117,6 +110,10 @@ clean-dist:
 #
 # Stapling REPLACES the bundle on disk, so anything checksummed before this point
 # describes a file nobody will ever download.
+# Ad-hoc, for a one-off app you built with `make app`. The release path does
+# NOT use this: release-assets.sh notarizes each architecture where it staged
+# it, so after a release there is no dist/UnofficialAppleMusicMCP.app for this
+# to find.
 notarize:
 	./tools/notarize.sh
 
@@ -132,8 +129,13 @@ reset:
 # This cannot live in release.yml -- that runs on ubuntu-latest, which cannot
 # build a .app, sign it with a Developer ID held in a Mac keychain, or
 # notarize. CI makes the Release; only a Mac can fill it.
+# Retired. It uploaded ONE architecture and no wheel, and expected an app at
+# dist/UnofficialAppleMusicMCP.app that release-assets.sh no longer leaves
+# there — so running it after a real release produced an incomplete one.
 publish-release:
-	./scripts/publish-release.sh
+	@echo "publish-release is retired: it shipped one architecture and no wheel."
+	@echo "Use:  make release-assets SIGN_ID=\"...\" EXTRA=--upload"
+	@exit 1
 
 # Everything a release needs, in the order that fails cheapest first.
 # The full ritual: gates, then every artifact. Delegates the artifact half to
