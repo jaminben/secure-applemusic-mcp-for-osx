@@ -6,6 +6,56 @@ fork point, see [CHANGELOG-upstream.md](CHANGELOG-upstream.md).
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-08-28
+
+### Changed
+
+- **"What is this signed in to?" now answers "nothing".** That is the true
+  answer and the point of the project, and it was something you had to infer.
+  The reply opened with two lines of token bookkeeping about credentials you do
+  not have and do not need, then a rail report, a mode, an engine list and a
+  writes line — every line accurate, the whole thing answering a different
+  question. When there is genuinely no credential and the signed helper works,
+  it now says so and stops. The full breakdown still runs for every other
+  configuration, where someone is debugging and wants it.
+
+### Fixed
+
+- **Status contradicted itself four lines apart.** A real response reported
+  `Catalog add: OK (MusicKit — no credential stored)` and, four lines below,
+  `Adding catalog tracks needs sign-in`. The summary line gated on developer
+  tokens alone, so every user of the packaged app was told to sign in for
+  something the line above reports as working. Fourth site with that bug, and
+  the worst placed — status is what someone reads when already confused.
+
+### Distribution
+
+- **The registry entry describes the app, not a PyPI package.** `server.json`
+  advertised a `uvx` install, which produces a build with no MusicKit rail: the
+  signed helper lives inside the `.app`, and a wheel does not carry it. That
+  would have made the weakest build the default install for anyone arriving
+  from a directory. The `packages` array is gone; the download, checksums,
+  requirements and privacy posture travel in `_meta` instead, and `publish.yml`
+  no longer waits on a PyPI job that had never once succeeded. A wrapper package
+  that downloads or embeds the signed app remains a sensible future release and
+  is written up in RELEASING.md.
+- Adds `title`, `websiteUrl` and `icons`, and cuts the description to fit the
+  registry's 100-character cap — the old one was 167, so the publish would have
+  been rejected on validation even after PyPI was fixed.
+
+### Documentation
+
+- A real conversation is now the README hero: one request for a child-appropriate
+  birthday playlist, and the result playing in Apple Music with the explicit
+  versions skipped. The installer window moves to the Install section.
+- `COMPARISON.md` had this fork needing a token to add to your library, which
+  stopped being true at 0.2.0. Corrected, and the credential cost of each
+  project's library add is now a headline row.
+- `docs/LISTING-COPY.md`: one source for directory submission copy.
+- GitHub repo description, topics and homepage were unset or inherited from
+  upstream — the description claimed Windows and Linux support this fork does
+  not have.
+
 ## [0.2.1] - 2026-08-28
 
 ### Fixed
