@@ -325,6 +325,10 @@ fi
 SIZE="$(du -sh "$APP" | cut -f1)"
 echo "==> Built ${APP} (${SIZE})"
 
+# NOTE: this zip is made BEFORE notarization, because notarization is a separate
+# step that has not run yet. It is fine for local testing and WRONG to ship:
+# every download from it trips Gatekeeper. tools/release-assets.sh deliberately
+# does not pass --zip; it zips from the stapled bundle instead.
 if [[ "$MAKE_ZIP" -eq 1 ]]; then
   ZIP="${OUT_DIR}/${APP_NAME}-${VERSION}-macos-${ARCH}.zip"
   rm -f "$ZIP"

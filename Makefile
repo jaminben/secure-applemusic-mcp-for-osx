@@ -24,7 +24,10 @@ help:
 	@echo "make notarize     - submit the built app to Apple, staple the ticket, re-zip"
 	@echo "make reset        - wipe this Mac back to a first-run machine (backs up creds)"
 	@echo "make publish-release - attach the notarized .app to its GitHub Release"
-	@echo "make release      - invariants + tests + wheel/sdist + signed, NOTARIZED .app + checksums"
+	@echo "make release-assets - BOTH arch apps + the wheel: build, notarize, staple, zip,"
+	@echo "                      checksum. EXTRA=--upload attaches them to the tag."
+	@echo "make wheel        - just the PyPI wheel (notarizes its bundled helper first)"
+	@echo "make release      - invariants + tests + every release artifact + checksums"
 	@echo ""
 	@echo "  SIGN_ID=\"My Cert\" make app     # sign the bundle (recommended: TCC keys on it)"
 
@@ -80,16 +83,31 @@ app: swift
 # CPython and uv publishes no universal2 build, so a "universal" bundle would
 # mean carrying two Pythons. Two arch-specific apps are smaller and honest.
 # The nested Swift helpers ARE universal, so they work in either.
+
+# EVERY release artifact, in the one order that produces working ones: build
+# each architecture, notarize it, staple it, and only THEN zip — plus the wheel,
+# whose bundled helper needs its own ticket. Ends by proving each zip survives
+# Gatekeeper with the quarantine bit set, which is the check that catches a zip
+# made before stapling. EXTRA=--upload attaches them to the tag.
+#
+# There is no universal .app: the bundle vendors a per-architecture CPython and
+# uv publishes no universal2 build. The nested Swift helpers ARE universal.
+release-assets:
+	./tools/release-assets.sh $(if $(SIGN_ID),--sign "$(SIGN_ID)",) $(EXTRA)
+
+# Just the wheel. Its bundled helper needs its OWN notarization ticket — the
+# app bundle's does not travel with it — so staple before building.
+wheel: swift
+	./tools/notarize-helper.sh
+	uv build --wheel
+
+
 apps: swift
 	./tools/build-app.sh --arch arm64  --zip $(if $(SIGN_ID),--sign "$(SIGN_ID)",)
 	./tools/build-app.sh --arch x86_64 --zip $(if $(SIGN_ID),--sign "$(SIGN_ID)",)
 
 # The PyPI wheel carries the signed helper, which needs its OWN notarization
 # ticket — the app bundle's does not travel with it. Staple before building.
-wheel: swift
-	./tools/notarize-helper.sh
-	uv build --wheel
-
 clean-dist:
 	rm -rf dist
 
@@ -118,40 +136,18 @@ publish-release:
 	./scripts/publish-release.sh
 
 # Everything a release needs, in the order that fails cheapest first.
+# The full ritual: gates, then every artifact. Delegates the artifact half to
+# tools/release-assets.sh, where the ordering traps are encoded — this target
+# used to build ONE architecture, zip it before notarizing (so the zip tripped
+# Gatekeeper on download), and never produced the stable-name asset that the
+# README, the landing page and every directory listing resolve through.
 release: clean-dist invariants test swift
 	$(PY) -m pytest -q --no-cov -m slow tests/test_ipc.py
-	uv build
-	./tools/build-app.sh --zip $(if $(SIGN_ID),--sign "$(SIGN_ID)",)
-	@if [ -n "$(SIGN_ID)" ]; then \
-	  ./tools/notarize.sh; \
-	  mv -f dist/UnofficialAppleMusicMCP.zip dist/$(RELEASE_ZIP); \
-	  ( cd dist && shasum -a 256 $(RELEASE_ZIP) > $(RELEASE_ZIP).sha256 ); \
-	  echo "==> notarized, stapled, and repackaged as $(RELEASE_ZIP)"; \
-	else \
-	  echo; \
-	  echo "!! UNSIGNED BUILD - NOT NOTARIZED."; \
-	  echo "   Gatekeeper will refuse this on any Mac that downloads it."; \
-	  echo "   Re-run as:  SIGN_ID=\"Developer ID Application: ...\" make release"; \
-	  echo; \
-	fi
-	cd dist && shasum -a 256 *.whl *.tar.gz *.zip > SHA256SUMS.txt
-	@echo
-	@echo "Artifacts in dist/ (verify SHA256SUMS.txt before publishing):"
-	@ls -lh dist/ | tail -n +2
+	./tools/release-assets.sh $(if $(SIGN_ID),--sign "$(SIGN_ID)",) $(EXTRA)
 	@echo
 	@echo "NOTE: publishing is gated on the upstream disclosure window — see DISCLOSURE.md"
 
 
-# Development loop. The installed app vendors its own copy of the code, so
-# testing a change there costs a rebuild + reinstall + launchd restart. This
-# runs the same helper straight from the working tree under its own bundle
-# identity and socket, and the server module is imported inside the forked
-# child — so an edit is live on the NEXT call, with no restart:
-#
-#     make dev
-#     tools/mcp-call --dev playback action=now_playing
-#
-# Restart only after editing helper.py / ipc.py / shim.py, which the parent holds.
 dev:
 	./tools/dev-helper.sh start $(if $(SIGN_ID),--sign "$(SIGN_ID)",)
 

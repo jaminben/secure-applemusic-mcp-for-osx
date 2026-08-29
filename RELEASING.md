@@ -109,9 +109,18 @@ tests **skipped** (a locked screen skips everything — that is not validation).
    add/lookup flow).
 4. Merge to `main`. `release.yml` tags and creates the GitHub Release; the tag
    then fires `publish.yml`, which publishes `server.json` to the MCP Registry.
-5. Build, notarize and **upload the release assets** — the tag does not do this,
-   and the stable-name zip is what every external link resolves to. See
-   "Distribution: the app, not a package" below.
+5. Build and upload the release assets — the tag does not do this:
+
+   ```bash
+   make release-assets SIGN_ID="Developer ID Application: You (TEAMID)" EXTRA=--upload
+   ```
+
+   One command builds both architectures, notarizes and staples each, zips from
+   the *stapled* bundle, builds the wheel with its own notarized helper, writes
+   checksums, and attaches everything to the tag. It refuses to finish if a zip
+   is rejected by Gatekeeper with the quarantine bit set — the check that
+   catches a zip made before stapling. Drop `EXTRA=--upload` to inspect
+   `dist/` first.
 
 ## If you can't run the live gate
 
@@ -217,20 +226,47 @@ if Smithery matters, since it takes a hosted URL or an `.mcpb` and nothing else.
 
 ### Release assets
 
-Every release must carry **four** files, all built from the *stapled* bundle —
-`tools/build-app.sh --zip` produces its zip BEFORE notarization, so re-zip from
-`dist/UnofficialAppleMusicMCP.app` after `tools/notarize.sh` or you ship a
-download that trips Gatekeeper:
+`make release-assets` produces all of these. Listed so you can tell at a glance
+whether a release is complete:
 
-- `UnofficialAppleMusicMCP-<version>-macos-arm64.zip`
-- `UnofficialAppleMusicMCP-macos-arm64.zip` — the stable name every link uses
-- `UnofficialAppleMusicMCP-<version>-macos-arm64.zip.sha256`
-- `SHA256SUMS.txt`
+- `UnofficialAppleMusicMCP-<version>-macos-arm64.zip` and `-x86_64.zip`
+- `UnofficialAppleMusicMCP-macos-arm64.zip` and `-macos-x86_64.zip` — **the
+  stable names**, which is what the README, the landing page and every
+  directory listing resolve through `releases/latest/download/…`. Skip them and
+  all those links keep serving the previous version, silently.
+- a `.sha256` per versioned zip, and `SHA256SUMS.txt`
+- the wheel
 
-Verify the download the way a user gets it, since the quarantine bit is only set
-on a real download:
+**Do not hand-roll this.** Three ordering traps are now encoded in the script,
+each of which produced artifacts that looked fine and failed on a stranger's
+Mac:
 
-```bash
-xattr -w com.apple.quarantine "0083;00000000;Safari;" /tmp/copy-of.app
-spctl -a -vvv -t exec /tmp/copy-of.app   # want: accepted / Notarized Developer ID
-```
+1. `build-app.sh --zip` zips BEFORE notarization, so its zip trips Gatekeeper.
+   `release-assets.sh` never passes `--zip`; it zips from the stapled bundle.
+2. Both architectures build to the same `dist/UnofficialAppleMusicMCP.app`, so
+   building one after the other leaves you with one app and two zips. Each arch
+   is staged in its own directory first.
+3. `xcrun stapler staple` needs an ABSOLUTE path — a relative one fails with
+   error 73 and a misleading "could not remove existing ticket" — and macOS App
+   Management blocks in-place writes into a signed `.app`, so the ticket has to
+   be stapled to a copy and swapped back.
+
+The script ends by extracting each zip, setting the quarantine bit, and asking
+Gatekeeper — the same thing a user's Mac does on a real download, and the check
+that catches trap 1. It fails the release rather than shipping a rejected zip,
+and fails if it cannot even set the bit, since an unquarantined copy always
+passes and would be a green light proving nothing.
+
+### There is no universal .app
+
+The bundle vendors a per-architecture CPython and uv publishes no universal2
+build, so a "universal" app would carry two Pythons. Two arch-specific apps are
+smaller and honest. The nested Swift helpers **are** universal, so either app
+works on either machine.
+
+One upstream constraint worth knowing: `mcp` requires `pyjwt[crypto]`, which
+pulls `cryptography`, and cryptography stopped publishing Intel macOS wheels at
+version 49. Both the Intel app build and Intel `pip install` therefore pin
+`cryptography<49` — the app via a constraint in `build-app.sh`, the wheel via a
+marker in `pyproject.toml`. Without those, an Intel install compiles Rust from
+source and fails.
