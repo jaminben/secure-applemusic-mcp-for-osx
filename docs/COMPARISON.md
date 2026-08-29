@@ -14,6 +14,7 @@ Star counts and last-push dates: 22 August 2026.
 | How it reaches Music | AppleScript | AppleScript + web API + browser | Apple Music REST API | AppleScript only |
 | Platforms | macOS | macOS, Windows, Linux | any | macOS |
 | **Apple Developer account** | not needed | not needed | **required** (.p8 + Team/Key ID) | not needed (optional: raises the rate limit) |
+| **To add music to your library, it needs** | can't add | a browser token it harvests and stores | can't add | **one consent prompt — nothing stored** |
 | Install | clone + uv | pip / uvx | clone + setup wizard | **download, drag, double-click** |
 
 ## What each one is for
