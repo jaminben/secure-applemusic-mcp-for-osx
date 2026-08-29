@@ -1,27 +1,53 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.jaminben/secure-applemusic-mcp-for-osx",
-  "description": "Hardened macOS-only Apple Music MCP server: playlists, library, catalog and playback through Music.app. No Accessibility, no browser automation, no stored credentials.",
+  "title": "Unofficial Apple Music for macOS",
+  "description": "Apple Music on macOS — play, search, build playlists. Download the app; no keys, no terminal.",
+  "version": "0.2.1",
+  "websiteUrl": "https://github.com/jaminben/secure-applemusic-mcp-for-osx#readme",
   "repository": {
     "url": "https://github.com/jaminben/secure-applemusic-mcp-for-osx",
     "source": "github"
   },
-  "version": "0.2.1",
-  "packages": [
+  "icons": [
     {
-      "registryType": "pypi",
-      "identifier": "secure-applemusic-mcp-for-osx",
-      "version": "0.2.1",
-      "transport": {
-        "type": "stdio"
-      },
-      "runtimeHint": "uvx",
-      "packageArguments": [
-        {
-          "type": "positional",
-          "value": "serve"
-        }
-      ]
+      "src": "https://raw.githubusercontent.com/jaminben/secure-applemusic-mcp-for-osx/main/docs/images/icon-512.png",
+      "mimeType": "image/png",
+      "sizes": ["512x512"]
+    },
+    {
+      "src": "https://raw.githubusercontent.com/jaminben/secure-applemusic-mcp-for-osx/main/docs/images/icon-128.png",
+      "mimeType": "image/png",
+      "sizes": ["128x128"]
     }
-  ]
+  ],
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "distribution": {
+        "kind": "macos-app",
+        "note": "Distributed as a notarized macOS app, not a package. Download, drag to Applications, double-click. The first-run window installs the background helper and writes the MCP client config.",
+        "download": "https://github.com/jaminben/secure-applemusic-mcp-for-osx/releases/latest/download/UnofficialAppleMusicMCP-macos-arm64.zip",
+        "releases": "https://github.com/jaminben/secure-applemusic-mcp-for-osx/releases/latest",
+        "checksums": "https://github.com/jaminben/secure-applemusic-mcp-for-osx/releases/latest/download/SHA256SUMS.txt"
+      },
+      "requirements": {
+        "os": "macOS 14 or later",
+        "arch": "Apple Silicon (arm64)",
+        "needs": "The Music app, signed into Apple Music. A subscription is required for catalog playback and adds.",
+        "account": "No Apple Developer account, no API key, and no token are required."
+      },
+      "capabilities": [
+        "Play, pause, skip and queue tracks in the Music app",
+        "Search your library and the Apple Music catalog",
+        "Create playlists and add tracks, including tracks you do not own yet",
+        "Read and set ratings, and browse recently played",
+        "Export your library and take snapshots of it"
+      ],
+      "privacy": {
+        "credentials": "None stored. Apple's MusicKit signs each request from the app's own code-signing identity plus a one-time consent prompt.",
+        "permissions": "Automation access to the Music app, and Apple Music access. No Accessibility, no browser automation, no synthetic clicks.",
+        "network": "Apple's public catalog endpoints and Apple Music's own API. No third-party service, no telemetry."
+      }
+    }
+  }
 }

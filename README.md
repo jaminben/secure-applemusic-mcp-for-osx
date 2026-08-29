@@ -317,6 +317,57 @@ git log --oneline fork-base..upstream/main -- src/applemusic_mcp/applescript.py
 The capability invariants are the safety net for a cherry-pick that would drag a
 removed capability back in.
 
+## Questions people actually ask
+
+**Do I need an Apple Developer account, an API key, or a `.p8` file?**
+No. None of them. Apple's MusicKit signs each request from the app's own
+code-signing identity plus a one-time permission prompt, so there is no
+credential to create, paste, or store. An optional developer token exists only
+to raise Apple's rate limit for bulk work like a large playlist import.
+
+**Does it work on Windows or Linux?**
+No. This fork is macOS-only, because it drives the Music app over Apple Events.
+If you need Windows or Linux, use
+[upstream](https://github.com/epheterson/applemusic-mcp) instead.
+
+**Which Macs does it run on?**
+macOS 14 (Sonoma) or later, on Apple Silicon. The download is an arm64 build.
+
+**Do I need an Apple Music subscription?**
+For your own library, playlists and local playback, no. For playing or adding
+tracks from the Apple Music catalog, yes — that is Apple's restriction, not
+this server's.
+
+**Which MCP clients does it work with?**
+Claude Desktop, Claude Code, Cursor, Windsurf, Codex and VS Code. The first-run
+window detects which of them you have and writes the config for you.
+
+**Is anything stored on my machine, or sent anywhere?**
+No credential is stored — there is none to store. The app talks to Apple's
+public catalog endpoints and Apple Music's own API, and to nothing else. No
+telemetry, no third-party service, no account with this project.
+
+**What permissions will macOS ask for?**
+Two: Automation access to the Music app, and Apple Music access. It does not
+ask for Accessibility, does not drive a browser, and does not send synthetic
+clicks — which is the main thing separating it from the other servers in the
+table below.
+
+**How do I install it?**
+Download the zip, drag the app to Applications, double-click it once. The
+first-run window installs the background helper and writes your client config.
+There is no terminal step.
+
+**How do I update it?**
+Download the latest zip and replace the app, then restart your MCP client. The
+[download link](https://github.com/jaminben/secure-applemusic-mcp-for-osx/releases/latest/download/UnofficialAppleMusicMCP-macos-arm64.zip)
+always points at the newest release.
+
+**Is this made by Apple?**
+No. It is an unofficial, independent project and is not affiliated with,
+endorsed by, or supported by Apple. "Apple Music" and "MusicKit" are Apple's
+trademarks.
+
 ## Comparison with other Apple Music MCP servers
 
 Full write-up with sources in [docs/COMPARISON.md](docs/COMPARISON.md). The

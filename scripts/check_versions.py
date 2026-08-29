@@ -8,11 +8,11 @@ bump method:
     itself runs, which can happen after you commit — upstream shipped 0.18.0 with
     the lockfile still naming 0.17.0.
 
-  * ``server.json``, the MCP registry manifest, carries the version TWICE — once
-    at the top level and once inside the pypi package entry. The registry
-    validates the package version against PyPI and rejects a mismatch, so a
-    half-bumped manifest fails the publish AFTER the tag and the upload have
-    already happened.
+  * ``server.json``, the MCP registry manifest, carries the version and nothing
+    else automates it — it once sat at ``1.0.0`` while the package shipped
+    0.16.0. It used to carry the version twice, in a ``packages`` entry as well;
+    that entry is gone now that distribution is the notarized app rather than a
+    PyPI package, so there is one field to keep in step instead of two.
 
 Both are cosmetic right up until they aren't, and neither is visible in a diff you
 weren't already looking at. So: check them mechanically, in the pre-release gate

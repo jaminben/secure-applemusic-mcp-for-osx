@@ -100,15 +100,18 @@ tests **skipped** (a locked screen skips everything — that is not validation).
 1. Bump the version everywhere. There are **seven** surfaces, not three:
    `pyproject.toml`, `src/applemusic_mcp/__init__.py`, the
    `secure-applemusic-mcp-for-osx` stanza in `uv.lock`, the `version:`
-   frontmatter in `SKILL.md`, both version fields in `server.json`, and a
+   frontmatter in `SKILL.md`, the `version` in `server.json`, and a
    `## [x.y.z]` heading in `CHANGELOG.md`. Don't count them by hand — run
    `python scripts/check_versions.py`, which is the same check `release.yml`
    runs before it will tag.
 2. Add a `CHANGELOG.md` entry under the new version.
 3. Update `SKILL.md` if any user-facing behavior changed (errors, setup,
    add/lookup flow).
-4. Merge to `main`. The release + PyPI publish fire automatically. Watch the
-   `publish` run — see the section below, because it has never yet succeeded.
+4. Merge to `main`. `release.yml` tags and creates the GitHub Release; the tag
+   then fires `publish.yml`, which publishes `server.json` to the MCP Registry.
+5. Build, notarize and **upload the release assets** — the tag does not do this,
+   and the stable-name zip is what every external link resolves to. See
+   "Distribution: the app, not a package" below.
 
 ## If you can't run the live gate
 
@@ -117,51 +120,78 @@ runtime behavior can skip the live gate (note that in the PR), but anything that
 touches `applescript.py` or the add/resolve/playback flow in `server.py` must
 pass `make preflight` first.
 
-## PyPI publishing is not set up yet
+## Distribution: the app, not a package
 
-**As of v0.2.0 the package has never been uploaded to PyPI.** All three
-`publish` runs — v0.1.0, v0.1.1, v0.2.0 — failed identically, and
-`https://pypi.org/pypi/secure-applemusic-mcp-for-osx/json` still returns 404.
-The tag and the GitHub Release are created fine; only the upload fails:
+**This project does not publish to PyPI, and that is deliberate.**
+
+The signed MusicKit helper lives inside the `.app` bundle. `musickit._candidates()`
+looks for it in a `.app` parent of `sys.executable` or in a source checkout's
+`swift/` directory — a wheel has neither. So a `pip`/`uvx` install produces a
+build with **no MusicKit rail**: no catalog adds, no ratings on catalog songs,
+no editing an Apple-Music-origin playlist. Publishing that under this name would
+have made the weakest version of the product the default install for everyone
+who found it through a directory, because the aggregators mirror whatever the
+registry advertises.
+
+It was also never working. The PyPI trusted publisher was never configured, so
+the `Publish to PyPI` job failed on v0.1.0, v0.1.1, v0.2.0 and v0.2.1 with
+`invalid-publisher`, and the registry job sat behind `needs: publish` and never
+ran at all. Nobody noticed, because the tag and the GitHub Release are created
+by a *different* workflow that was succeeding.
+
+So `publish.yml` now has one job: publish `server.json` to the MCP Registry. The
+`packages` array is gone, and the download URL travels in `_meta` under
+`io.modelcontextprotocol.registry/publisher-provided` instead.
+
+**The download link is version-independent on purpose.** Everything — the README
+button, `server.json`, every directory listing — points at:
 
 ```
-Trusted publishing exchange failure:
-  * `invalid-publisher`: valid token, but no corresponding publisher
+https://github.com/jaminben/secure-applemusic-mcp-for-osx/releases/latest/download/UnofficialAppleMusicMCP-macos-arm64.zip
 ```
 
-That is a PyPI-side configuration gap, not a workflow bug. Nothing in this
-repo can fix it — a maintainer has to add the publisher on PyPI once.
+`releases/latest/download/<stable-name>` always resolves to the newest release,
+so no listing anywhere needs editing when you ship. That only holds if every
+release uploads the **unversioned** asset name alongside the versioned one — see
+the asset step below. Skip it and every external link silently keeps serving the
+previous version.
 
-**The one-time fix.** Because the project does not exist on PyPI yet, this must
-be a *pending* publisher (PyPI's flow for a name that has never been uploaded);
-a regular trusted publisher cannot be added to a project that isn't there. At
-<https://pypi.org/manage/account/publishing/>, add:
+### If a wrapper package ever ships
 
-| Field | Value |
-|---|---|
-| PyPI project name | `secure-applemusic-mcp-for-osx` |
-| Owner | `jaminben` |
-| Repository | `secure-applemusic-mcp-for-osx` |
-| Workflow name | `publish.yml` |
-| Environment | `pypi` |
+A PyPI package that *downloads or embeds* the signed app, rather than pretending
+to be it, would be a real distribution channel. That is a future release, not a
+missing step. It would need:
 
-These are the exact claims the failing run presents; the workflow does not need
-to change to match them.
+1. A pending publisher on PyPI (pending, because the project has never been
+   uploaded — a regular trusted publisher cannot attach to a project that does
+   not exist): project `secure-applemusic-mcp-for-osx`, owner `jaminben`, repo
+   `secure-applemusic-mcp-for-osx`, workflow `publish.yml`, environment `pypi`.
+2. A `build` + `publish` job restored in `publish.yml`.
+3. A `packages` entry in `server.json` with `registryType: "pypi"`. The
+   ownership check looks for `mcp-name: io.github.jaminben/secure-applemusic-mcp-for-osx`
+   in the package README — already present at README line 3, so that part is done.
 
-**Then re-publish without re-tagging.** `publish.yml` has `workflow_dispatch`,
-so a failed upload does not burn the version:
+`registryType: "mcpb"` is the other option the registry supports for
+GitHub-release artifacts, but MCPB is a specific bundle format that clients
+install programmatically. Listing a macOS `.app` zip under it would make clients
+fail on install, so it is not a shortcut.
+
+### Release assets
+
+Every release must carry **four** files, all built from the *stapled* bundle —
+`tools/build-app.sh --zip` produces its zip BEFORE notarization, so re-zip from
+`dist/UnofficialAppleMusicMCP.app` after `tools/notarize.sh` or you ship a
+download that trips Gatekeeper:
+
+- `UnofficialAppleMusicMCP-<version>-macos-arm64.zip`
+- `UnofficialAppleMusicMCP-macos-arm64.zip` — the stable name every link uses
+- `UnofficialAppleMusicMCP-<version>-macos-arm64.zip.sha256`
+- `SHA256SUMS.txt`
+
+Verify the download the way a user gets it, since the quarantine bit is only set
+on a real download:
 
 ```bash
-gh workflow run publish.yml --repo jaminben/secure-applemusic-mcp-for-osx
+xattr -w com.apple.quarantine "0083;00000000;Safari;" /tmp/copy-of.app
+spctl -a -vvv -t exec /tmp/copy-of.app   # want: accepted / Notarized Developer ID
 ```
-
-It rebuilds from `main` and uploads whatever version is there. This works
-because PyPI never received a file — a version is only burned once an upload
-*succeeds*, since PyPI refuses to replace an existing artifact. So a failed
-publish is recoverable; a *successful* publish of a bad build is not.
-
-**Order matters and is deliberate.** The registry step runs after PyPI and is
-skipped when PyPI fails, so the MCP registry never advertises a version PyPI
-does not have. What it does not protect: by the time `publish` runs, the tag
-and the GitHub Release already exist. That asymmetry is why the local
-`make preflight` gate is the one that matters — see the top of this file.

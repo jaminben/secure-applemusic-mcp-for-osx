@@ -14,66 +14,23 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
-    name: Build sdist + wheel
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3.2.4
-        with:
-          enable-cache: true
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Build distributions
-        run: uv build
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: dist
-          path: dist/
-
-  publish:
-    name: Publish to PyPI
-    needs: build
-    runs-on: ubuntu-latest
-    # Trusted Publishing — no API token needed in repo secrets.
-    # Configure once at https://pypi.org/manage/project/secure-applemusic-mcp-for-osx/settings/publishing/
-    # with publisher: GitHub, owner: jaminben, repo: secure-applemusic-mcp-for-osx,
-    # workflow: publish.yml, environment: pypi
-    environment:
-      name: pypi
-      url: https://pypi.org/project/secure-applemusic-mcp-for-osx/
-    permissions:
-      id-token: write
-    steps:
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-
-      - name: Publish to PyPI
-        # release/v1 is PyPA's maintained security-patch channel for this
-        # first-party OIDC action — see pinning policy at top of file.
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          # Without this, a re-dispatch after an already-successful upload
-          # fails here with "file already exists" and skips the registry job
-          # below — leaving no way to retry a registry publish that failed
-          # for a transient reason (the registry returns 429/5xx as
-          # "retry later") short of burning a version bump.
-          skip-existing: true
+  # There is no PyPI job. This server is distributed as a notarized macOS app,
+  # not a package: the signed MusicKit helper lives inside the .app bundle, and
+  # `musickit._candidates()` finds it only there or in a source checkout. A
+  # wheel therefore ships a build with NO MusicKit rail — no catalog adds — so
+  # publishing one under this name would advertise the weakest version of the
+  # product as the default install, to every directory that mirrors the
+  # registry. It was also never actually working: the PyPI trusted publisher
+  # has never been configured, so this job failed on v0.1.0, v0.1.1, v0.2.0 and
+  # v0.2.1 while the registry job sat behind `needs: publish` and never ran.
+  #
+  # If a wrapper package ever ships — one that downloads or embeds the signed
+  # app rather than pretending to be it — restore a build+publish job here and
+  # add a `packages` entry to server.json. Until then the registry entry
+  # carries the download URL in `_meta` instead. See RELEASING.md.
 
   registry:
     name: Publish to MCP Registry
-    # After PyPI: the registry entry advertises a pypi package at this version,
-    # so it must not point at a version that failed to publish.
-    needs: publish
     runs-on: ubuntu-latest
     permissions:
       # OIDC proves the job runs in this repo, which is what authorizes the
@@ -108,25 +65,6 @@ jobs:
         # by now the tag, the GitHub Release, and PyPI have all happened. The
         # gate is the same script run pre-tag in release.yml.
         run: python3 scripts/check_versions.py
-
-      - name: Wait for PyPI to serve the new version
-        # The registry validates the entry by fetching
-        # pypi.org/pypi/<pkg>/<version>/json and treats a 404 as a failure.
-        # PyPI's JSON API trails the upload by seconds, so poll instead of
-        # racing it.
-        run: |
-          set -euo pipefail
-          ver=$(python3 -c "import json;print(json.load(open('server.json'))['version'])")
-          for i in $(seq 1 30); do
-            if curl -fsS -o /dev/null "https://pypi.org/pypi/secure-applemusic-mcp-for-osx/${ver}/json"; then
-              echo "PyPI is serving ${ver}"
-              exit 0
-            fi
-            echo "attempt ${i}: PyPI has no ${ver} yet"
-            sleep 10
-          done
-          echo "PyPI never served ${ver}" >&2
-          exit 1
 
       - name: Publish to MCP Registry
         # The registry answers 429/5xx as "likely transient, retry later", so
