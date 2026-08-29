@@ -5,7 +5,7 @@
 **Let Claude play your music. Download, drag, double-click — that's the install.**
 
 <p align="center">
-  <img src="docs/images/playlist-conversation.png" width="720"
+  <img src="https://raw.githubusercontent.com/jaminben/secure-applemusic-mcp-for-osx/main/docs/images/playlist-conversation.png" width="720"
        alt="Claude asked to build a birthday playlist of top songs from August 10th over five years, appropriate for a seven-year-old. It creates the playlist in Apple Music, starts it playing, and lists the 17 tracks it chose — skipping the explicit versions.">
 </p>
 
@@ -179,7 +179,7 @@ thing runs on MusicKit instead.
 ## Install
 
 <p align="center">
-  <img src="docs/images/installer-welcome.png" alt="The first-run setup window: Control Apple Music with AI" width="460">
+  <img src="https://raw.githubusercontent.com/jaminben/secure-applemusic-mcp-for-osx/main/docs/images/installer-welcome.png" alt="The first-run setup window: Control Apple Music with AI" width="460">
 </p>
 
 

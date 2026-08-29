@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "secure-applemusic-mcp-for-osx"
 version = "0.3.0"
-description = "Hardened macOS-only MCP server for Apple Music: no Accessibility, no browser automation, no stored credentials by default"
+description = "Control Apple Music on macOS with Claude: play, search, build playlists, add music to your library. No account, no API key, nothing stored."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
@@ -13,19 +13,31 @@ authors = [
     { name = "Eric Pheterson" },  # original author of applemusic-mcp
     { name = "jaminben" },
 ]
-keywords = ["mcp", "apple-music", "musickit", "playlist", "claude"]
+keywords = [
+    "mcp", "model-context-protocol", "mcp-server",
+    "apple-music", "applemusic", "musickit", "itunes",
+    "macos", "music", "playlist", "playlists",
+    "claude", "anthropic", "ai", "llm", "llm-tools", "agent",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
+    "Environment :: MacOS X",
+    # End users matter as much as developers here: the whole point of the fork
+    # is that a non-developer can install it.
+    "Intended Audience :: End Users/Desktop",
     "Intended Audience :: Developers",
+    "Natural Language :: English",
     "License :: OSI Approved :: MIT License",
     "Operating System :: MacOS",
+    "Operating System :: MacOS :: MacOS X",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Multimedia :: Sound/Audio",
+    "Topic :: Multimedia :: Sound/Audio :: Players",
 ]
 
 dependencies = [
@@ -78,7 +90,13 @@ dev = [
 secure-applemusic-mcp = "applemusic_mcp.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/jaminben/secure-applemusic-mcp-for-osx"
+# PyPI renders these as sidebar links, and they are the only navigation the
+# page has. "Homepage" points at the landing page rather than the repo, because
+# someone arriving from a PyPI search wants to know what it does before they
+# want to read the source — the source is one row down.
+Homepage = "https://jaminben.github.io/secure-applemusic-mcp-for-osx/"
+Download = "https://github.com/jaminben/secure-applemusic-mcp-for-osx/releases/latest"
+Changelog = "https://github.com/jaminben/secure-applemusic-mcp-for-osx/blob/main/CHANGELOG.md"
 Repository = "https://github.com/jaminben/secure-applemusic-mcp-for-osx"
 Issues = "https://github.com/jaminben/secure-applemusic-mcp-for-osx/issues"
 "Upstream project" = "https://github.com/epheterson/applemusic-mcp"
