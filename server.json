@@ -3,7 +3,7 @@
   "name": "io.github.jaminben/secure-applemusic-mcp-for-osx",
   "title": "Unofficial Apple Music for macOS",
   "description": "Ask for a playlist. Get a real one, playing in Apple Music \u2014 no account, nothing stored.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "websiteUrl": "https://github.com/jaminben/secure-applemusic-mcp-for-osx#readme",
   "repository": {
     "url": "https://github.com/jaminben/secure-applemusic-mcp-for-osx",
@@ -13,7 +13,7 @@
     {
       "registryType": "pypi",
       "identifier": "secure-applemusic-mcp-for-osx",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "transport": {
         "type": "stdio"
       },

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "secure-applemusic-mcp-for-osx"
-version = "0.3.0"
+version = "0.3.1"
 description = "Control Apple Music on macOS with Claude: play, search, build playlists, add music to your library. No account, no API key, nothing stored."
 readme = "README.md"
 license = "MIT"

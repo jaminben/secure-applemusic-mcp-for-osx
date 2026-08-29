@@ -6,6 +6,34 @@ fork point, see [CHANGELOG-upstream.md](CHANGELOG-upstream.md).
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-08-29
+
+### Changed
+
+- **The registry entry now advertises the PyPI package.** 0.3.0 published the
+  wheel but its `server.json` predated the `packages` block, so the registry
+  described a download-only server. Registry versions are immutable, so this
+  needed a release to correct.
+- **Smaller bundle: no Tcl/Tk, no pip.** A security pass over everywhere this
+  shells out found the app shipping an entire embedded Tcl interpreter (~4.3 MB)
+  plus `pip`, `idle3`, `2to3` and `pydoc3` — none of which anything calls, since
+  the first-run window is the signed Swift wizard and the launcher uses
+  `-m applemusic_mcp`. Neither was a vulnerability; both were capable
+  living-off-the-land components sitting inside a bundle that holds the
+  Automation-to-Music and Apple Music grants. 85 MB → 79 MB.
+
+### Fixed
+
+- **The PyPI page had no hero image.** PyPI serves the README standalone and
+  strips `<img>` tags with a relative `src`, so the screenshot rendered as
+  nothing. Image URLs are absolute now, which works on both GitHub and PyPI.
+- **The PyPI summary — the line shown in search results — led with three
+  negatives**, never mentioned Claude, and ended in "by default", which stopped
+  being true when the credential rails were removed.
+- Package metadata gains `Intended Audience :: End Users/Desktop`. The whole
+  premise is that a non-developer can install it, and the classifiers said
+  Developers only. Keywords 5 → 17; `Download` and `Changelog` sidebar links.
+
 ## [0.3.0] - 2026-08-28
 
 ### Added
