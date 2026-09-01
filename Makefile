@@ -2,7 +2,7 @@
 # no venv activated. Override for a specific interpreter:  PY="python3.12" make test
 PY ?= uv run python
 
-.PHONY: help test test-all preflight preflight-ui invariants swift app release-assets wheel notarize release publish-release clean-dist dev dev-stop reset
+.PHONY: help test test-all preflight preflight-ui invariants swift app release-assets wheel notarize release publish-release clean-dist dev dev-stop reset stats stats-show
 
 # Needed to name the release zip the way the README tells people to expect it.
 VERSION := $(shell sed -nE 's/^version = "(.*)"/\1/p' pyproject.toml | head -1)
@@ -23,6 +23,8 @@ help:
 	@echo "make app          - build the standalone UnofficialAppleMusicMCP.app"
 	@echo "make notarize     - submit the built app to Apple, staple the ticket, re-zip"
 	@echo "make reset        - wipe this Mac back to a first-run machine (backs up creds)"
+	@echo "make stats        - snapshot download/traffic numbers to stats/downloads.csv"
+	@echo "make stats-show   - print the download trend from that CSV"
 	@echo "                      (publish-release is retired — release-assets does it)"
 	@echo "make release-assets - BOTH arch apps + the wheel: build, notarize, staple, zip,"
 	@echo "                      checksum. EXTRA=--upload attaches them to the tag."
@@ -155,3 +157,11 @@ dev:
 
 dev-stop:
 	./tools/dev-helper.sh stop
+
+# Snapshot public download/traffic numbers. GitHub's traffic API keeps only 14
+# days, so anything not captured within a fortnight is gone for good.
+stats:
+	$(PY) scripts/collect_stats.py
+
+stats-show:
+	$(PY) scripts/collect_stats.py --show
