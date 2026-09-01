@@ -476,21 +476,21 @@ def _musickit_page() -> "Optional[dict]":
         "id": "musickit",
         "title": "Play anything on Apple Music",
         "body": (
-            "If you subscribe to Apple Music, this opens up the whole catalog — "
+            "If you subscribe to Apple Music, this opens up the whole catalog, "
             "not just what's already in your library. Ask for a song by name, "
             "or for something you've never heard.\n\n"
             "It needs your permission to use Apple Music."
         ),
         "examples": [
-            "What was the best song of 2024 I've probably never heard?",
-            "Play the album that defined 90s hip-hop",
-            "Something like Khruangbin, but faster",
+            "Make me a playlist of hits from the day I was born",
+            "I've worn out Rumours. What should I play next?",
+            "Something like Sade, but with more bass",
         ],
         "footer": (
             "Anything it adds for you goes into a playlist called "
             "\u201cAdded by Music MCP\u201d, so it's easy to find. It can't buy "
             "anything or change your subscription.\n\n"
-            "Optional — everything else works without it."
+            "Optional. Everything else works without it."
         ),
         "next": "Continue",
     }

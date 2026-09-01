@@ -74,7 +74,7 @@ release uploads the unversioned asset name — see RELEASING.md.
 |---|---|
 | Transport | stdio |
 | Tools | 6 — `playback`, `library`, `playlist`, `catalog`, `discover`, `config` |
-| Platform | macOS 14+, Apple Silicon |
+| Platform | macOS 12+; macOS 14+ for catalog playback and library adds. Apple Silicon or Intel |
 | Requires | The Music app, signed into Apple Music. A subscription for catalog playback and adds. |
 | Auth | None |
 | Licence | See `LICENSE` |

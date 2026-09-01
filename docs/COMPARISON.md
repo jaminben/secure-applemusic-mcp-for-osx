@@ -4,7 +4,7 @@ There are several. This is an honest read of the three most-starred, plus this
 fork — written by the author of the fork, so weigh it accordingly. Where a claim
 is checkable, the check is named.
 
-Star counts and last-push dates: 22 August 2026. The credential and permission
+Last-push dates: 22 August 2026. Star counts: 29 August 2026. The credential and permission
 claims about all three were re-checked against their current `main` sources on
 29 August 2026 — which is when the Cifero74 row was corrected: it has no
 add-to-library tool, but `add_tracks_to_playlist` accepts catalog tracks, and
@@ -12,7 +12,7 @@ that route lands them in the library.
 
 | | [kennethreitz/mcp-applemusic](https://github.com/kennethreitz/mcp-applemusic) | [epheterson/applemusic-mcp](https://github.com/epheterson/applemusic-mcp) | [Cifero74/mcp-apple-music](https://github.com/Cifero74/mcp-apple-music) | **this fork** |
 |---|---|---|---|---|
-| ★ | 90 | 86 | 38 | — |
+| ★ | 91 | 88 | 38 | — |
 | Last push | Sep 2025 | Aug 2026 | May 2026 | Aug 2026 |
 | Size | ~165 lines | ~18k lines | mid-size | ~10k lines |
 | How it reaches Music | AppleScript | AppleScript + web API + browser | Apple Music REST API | AppleScript only |
