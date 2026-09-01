@@ -53,7 +53,7 @@
         "download_intel": "https://github.com/jaminben/secure-applemusic-mcp-for-osx/releases/latest/download/UnofficialAppleMusicMCP-macos-x86_64.zip"
       },
       "requirements": {
-        "os": "macOS 14 or later",
+        "os": "macOS 12 or later; macOS 14 or later for catalog playback and library adds",
         "arch": "Apple Silicon or Intel (both are published)",
         "needs": "The Music app, signed into Apple Music. A subscription is required for catalog playback and adds.",
         "account": "No Apple Developer account, no API key, and no token are required."
