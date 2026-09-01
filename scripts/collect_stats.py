@@ -14,14 +14,21 @@ wide CSV would need a new column each time and a backfill of empty cells for
 every prior row.
 
 THE IMPORTANT RULE: a source that cannot be reached records NOTHING. It never
-records 0. pypistats rate-limits aggressively (HTTP 429) and pepy.tech's API
-needs a key, so unavailable sources are the normal case, not the exception —
-and a 0 written for a failed fetch is indistinguishable, a month later, from a
-real collapse in downloads. Absent rows are honest; zero rows are a lie you
-cannot detect afterwards.
+records 0. pypistats rate-limits aggressively (HTTP 429) and stays limited for
+hours, and the MCP Registry refuses connections outright for minutes at a time,
+so unavailable sources are the normal case, not the exception — and a 0 written
+for a failed fetch is indistinguishable, a month later, from a real collapse in
+downloads. Absent rows are honest; zero rows are a lie you cannot detect
+afterwards.
 
-Re-running on a day that already has rows replaces that day's rows rather than
-appending duplicates, so it is safe to run repeatedly.
+Because pypistats is unreliable enough to leave whole days blank, pepy.tech is
+scraped as a second, independent PyPI source. The two are never merged: pepy
+counts mirror traffic and pypistats does not, so they disagree by roughly 5x.
+
+Re-running replaces only the (date, source) pairs it actually collected. It must
+not drop a whole date: a later run that hit a rate limit would then delete the
+numbers an earlier successful run recorded, turning a transient failure into
+permanent loss in the one file whose data cannot be recovered later.
 
 Usage:
     python3 scripts/collect_stats.py            # collect and append
@@ -34,6 +41,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import subprocess
 import sys
 import urllib.error
@@ -158,6 +166,38 @@ def collect_pypi(rows: list, note) -> None:
         rows.append(("pypi", "latest_version", meta["info"]["version"]))
 
 
+def collect_pepy(rows: list, note) -> None:
+    """All-time PyPI downloads, scraped from pepy.tech's page title.
+
+    pypistats is the better source but rate-limits hard and stays limited, which
+    left whole days with no PyPI figure at all. pepy's API needs a key; its page
+    does not, and is server-rendered, so the total is sitting in the <title>:
+
+        <title>secure-applemusic-mcp-for-osx · 378 downloads</title>
+
+    That is a scrape and will break the day they change the title. It records
+    nothing when the pattern misses, same as any other unreachable source.
+
+    Kept as its own source because pepy counts mirror traffic and pypistats does
+    not -- 378 against 79 for overlapping windows. Never average the two.
+    """
+    req = urllib.request.Request(
+        "https://pepy.tech/projects/%s" % PACKAGE,
+        headers={"User-Agent": "Mozilla/5.0 (Macintosh)"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            html = resp.read().decode("utf-8", "replace")
+    except Exception as exc:  # noqa: BLE001
+        note("pepy", Unavailable(type(exc).__name__))
+        return
+    match = re.search(r"<title>[^<]*?([\d,]+)\s+downloads", html)
+    if not match:
+        note("pepy", Unavailable("page title no longer carries the total"))
+        return
+    rows.append(("pepy", "total", int(match.group(1).replace(",", ""))))
+
+
 def collect_registry(rows: list, note) -> None:
     """What the MCP Registry currently serves. Flaky — it refuses connections
     for minutes at a time — so this is best-effort like everything else."""
@@ -204,8 +244,9 @@ def show_trend() -> int:
     by_date: dict[str, dict[str, str]] = defaultdict(dict)
     for rec in records:
         by_date[rec["date"]]["%s.%s" % (rec["source"], rec["metric"])] = rec["value"]
-    headline = ["github.zips_total", "github.wheels_total", "pypi.last_day",
-                "pypi.last_month", "github.stars", "github.clones_14d"]
+    headline = ["github.zips_total", "github.wheels_total", "pepy.total",
+                "pypi.last_day", "pypi.last_month", "github.stars",
+                "github.clones_14d"]
     width = max(len(h) for h in headline) + 2
     dates = sorted(by_date)[-10:]
     print("%-*s %s" % (width, "metric", "  ".join("%8s" % d[5:] for d in dates)))
@@ -235,6 +276,7 @@ def main() -> int:
 
     collect_github(collected, note)
     collect_pypi(collected, note)
+    collect_pepy(collected, note)
     collect_registry(collected, note)
 
     if not collected:
@@ -266,6 +308,7 @@ def main() -> int:
     print("%s — %d metrics%s" % (today, len(new_rows), " (dry run)" if args.dry_run else ""))
     for label, key in (("GitHub app zips", ("github", "zips_total")),
                        ("GitHub wheels  ", ("github", "wheels_total")),
+                       ("PyPI all-time ", ("pepy", "total")),
                        ("PyPI last day  ", ("pypi", "last_day")),
                        ("PyPI last month", ("pypi", "last_month")),
                        ("Stars          ", ("github", "stars"))):
