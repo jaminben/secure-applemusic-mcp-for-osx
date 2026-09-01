@@ -252,7 +252,14 @@ def main() -> int:
         for row in new_rows:
             print("  %(date)s  %(source)-9s %(metric)-46s %(value)s" % row)
     else:
-        kept = [r for r in read_existing() if r["date"] != today]
+        # Replace only the (date, source) pairs this run actually collected.
+        # Dropping every row for today would mean a later run that hit a 429
+        # DELETES the numbers an earlier successful run recorded -- turning a
+        # transient rate-limit into permanent data loss. It also preserves rows
+        # added by hand, such as the reconstructed 2026-08-30 snapshot.
+        fresh = {src for src, _, _ in collected}
+        kept = [r for r in read_existing()
+                if not (r["date"] == today and r["source"] in fresh)]
         write_all(kept + new_rows)
 
     headline = {(s, m): v for s, m, v in collected}

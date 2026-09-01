@@ -24,8 +24,20 @@ never expire but are only ever exposed as a running total, so "how did 0.3.1 do
 in its first week" is unanswerable unless something wrote it down at the time.
 
 `stats/downloads.csv` is long format — `date,source,metric,value` — because the
-metric set grows with every release. Re-running on the same day replaces that
-day's rows, so it is safe to run repeatedly.
+metric set grows with every release. Re-running replaces only the `(date,
+source)` pairs it actually collected, so a later run that hits a rate limit
+cannot delete what an earlier successful run recorded, and hand-added rows
+survive.
+
+Two rows did not come from the collector and are worth knowing about:
+
+- **2026-08-30** was reconstructed from a session transcript after the fact,
+  dated by bracketing commits `df90a00` (08-29 23:14) and `ff2efe8`
+  (08-30 22:31). Its per-asset counts sum to its recorded total, which is the
+  check that says the reconstruction is internally consistent.
+- **`source=pepy`** is a page scrape, not an API read. pepy counts mirror
+  traffic and pypistats does not, which is why they disagree by roughly 5x.
+  They are kept as separate sources so the two are never averaged together.
 
 ### The one rule that matters
 
