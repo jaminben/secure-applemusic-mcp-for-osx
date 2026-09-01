@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import plistlib
+import shutil
 import subprocess
 import sys
 import time
@@ -41,6 +42,9 @@ CLAUDE_CONFIG = (
 )
 LAUNCH_AGENT = Path.home() / "Library" / "LaunchAgents" / f"{BUNDLE_ID}.plist"
 LOG_DIR = Path.home() / "Library" / "Logs" / BUNDLE_ID
+# Where a bundle is allowed to live if we are going to record its absolute
+# path in a LaunchAgent and in client configs. See ``is_stable_location``.
+INSTALL_DIRS = (Path("/Applications"), Path.home() / "Applications")
 SERVER_KEY = "unofficial-apple-music"
 
 
@@ -727,6 +731,61 @@ def is_translocated(path: "Optional[Path]" = None) -> bool:
     return "/AppTranslocation/" in p
 
 
+def is_stable_location(path: "Optional[Path]" = None) -> bool:
+    """Will this bundle still be at this path tomorrow?
+
+    Setup records an *absolute* path in two places that outlive it: the
+    LaunchAgent plist and every client config it writes. So the bundle has to
+    be somewhere the user put it deliberately. A bundle run from a Downloads
+    folder, a disk image, or a `dist/` build directory is one `make` or one
+    tidy-up away from vanishing, and what it leaves behind is a client
+    spawning a command that no longer exists.
+
+    This is the same failure as translocation, just slower: there the copy
+    disappears on quit, here it disappears on the next rebuild.
+    """
+    p = (path or app_bundle_path()).resolve()
+    return any(p.parent == d.resolve() for d in INSTALL_DIRS if d.exists())
+
+
+def install_copy(source: "Optional[Path]" = None) -> "Optional[Path]":
+    """Copy the bundle into /Applications, falling back to ~/Applications.
+
+    Returns the installed path, or None if the copy could not be made. Uses
+    ``shutil`` rather than ``ditto`` so the list of executables this app can
+    launch stays at two. That loses extended attributes, which is harmless
+    here and mildly useful: the copy sheds ``com.apple.quarantine``. Modern
+    bundle signatures live in the Mach-O and in _CodeSignature/, both ordinary
+    file contents, so the copy verifies exactly as the original does.
+    """
+    src = (source or app_bundle_path()).resolve()
+    if src.suffix != ".app":
+        return None
+    for target_dir in INSTALL_DIRS:
+        dest = target_dir / src.name
+        if dest.resolve() == src:
+            return src
+        # Stage beside the target and swap, rather than deleting first: a copy
+        # that runs out of disk halfway must not take a working install with
+        # it. Only once the new bundle is complete does the old one go.
+        staged = dest.with_name(dest.name + ".installing")
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            if staged.exists():
+                shutil.rmtree(staged)
+            shutil.copytree(src, staged, symlinks=True)
+            if dest.exists():
+                shutil.rmtree(dest)
+            staged.rename(dest)
+        except OSError as exc:  # unwritable /Applications, full disk
+            _log(f"could not install to {target_dir}: {exc}")
+            shutil.rmtree(staged, ignore_errors=True)
+            continue
+        _log(f"installed a copy at {dest}")
+        return dest
+    return None
+
+
 def _log_environment() -> None:
     """The facts a bug report needs and a user cannot be asked to gather."""
     bundle = app_bundle_path()
@@ -737,8 +796,8 @@ def _log_environment() -> None:
             "WARNING: running translocated (a randomized read-only copy). "
             "Quit, drag the app to /Applications, and open it from there."
         )
-    elif not str(bundle).startswith("/Applications/"):
-        _log(f"note: not running from /Applications (at {bundle.parent})")
+    elif not is_stable_location(bundle):
+        _log(f"WARNING: running from an unstable location ({bundle.parent})")
     try:
         quarantine = subprocess.run(
             ["xattr", "-p", "com.apple.quarantine", str(bundle)],
@@ -757,6 +816,36 @@ def main() -> int:
         return 1
 
     _log_environment()
+
+    # Refuse to record a path that a rebuild or a tidy-up can invalidate.
+    # Offered rather than enforced: someone testing a build should be able to
+    # say no, and the log above records which path was registered either way.
+    bundle = app_bundle_path()
+    if bundle.suffix == ".app" and not is_translocated(bundle) and not is_stable_location(bundle):
+        choice = _dialog(
+            f"This copy is running from:\n\n{_tilde(bundle.parent)}\n\n"
+            "Setup writes that path into your LaunchAgent and into each AI "
+            "app's config. Anywhere outside your Applications folder, a "
+            "rebuild or a clear-out can move it, and those apps are then "
+            "pointed at something that is no longer there.\n\n"
+            "Install a copy in Applications and set that one up instead?",
+            buttons=("Set Up This Copy", "Install to Applications"),
+            default=2,
+        )
+        if choice == "Install to Applications":
+            installed = install_copy(bundle)
+            if installed is None:
+                _dialog(
+                    "Could not copy the app into Applications. Move it there "
+                    "yourself and open it again.",
+                    buttons=("Quit",),
+                )
+                return 1
+            # Everything downstream resolves the bundle through this seam, so
+            # the LaunchAgent and every client entry now name the installed
+            # copy rather than whichever one you double-clicked.
+            os.environ["APPLEMUSIC_APP_BUNDLE"] = str(installed)
+            _log(f"registering the installed copy: {installed}")
 
     code = _run_with_window()
     if code is not None:

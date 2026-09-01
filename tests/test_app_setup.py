@@ -655,3 +655,155 @@ def test_a_step_never_reached_leaves_no_line(monkeypatch, tmp_path):
 def test_wizard_logs_cancellation_and_fallback(monkeypatch, tmp_path):
     assert "cancelled by user" in _wizard_log(monkeypatch, tmp_path, lambda plan, h: False)
     assert "falling back to dialogs" in _wizard_log(monkeypatch, tmp_path, lambda plan, h: None)
+
+
+# --- unstable install locations ----------------------------------------------
+#
+# Setup writes an absolute path into the LaunchAgent and into every client
+# config. A bundle in `dist/` or `~/Downloads` is one rebuild away from moving,
+# and what it leaves behind is a client spawning a command that is not there.
+
+
+def test_is_stable_location_accepts_only_the_applications_folders(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        app_setup, "INSTALL_DIRS", (tmp_path / "Applications", tmp_path / "home-apps")
+    )
+    (tmp_path / "Applications").mkdir()
+    (tmp_path / "home-apps").mkdir()
+
+    for good in ("Applications", "home-apps"):
+        assert app_setup.is_stable_location(tmp_path / good / "UnofficialAppleMusicMCP.app")
+
+    for bad in ("dist", "Downloads", "dist/stage-arm64"):
+        p = tmp_path / bad / "UnofficialAppleMusicMCP.app"
+        assert not app_setup.is_stable_location(p), f"{bad} must not count as installed"
+
+
+def test_install_copy_lands_in_the_first_writable_dir(tmp_path, monkeypatch):
+    unwritable = tmp_path / "no-such-root" / "Applications"
+    target = tmp_path / "home-apps"
+    monkeypatch.setattr(app_setup, "INSTALL_DIRS", (unwritable, target))
+    monkeypatch.setattr(app_setup, "_log", lambda *a, **k: None)
+
+    src = tmp_path / "dist" / "UnofficialAppleMusicMCP.app"
+    (src / "Contents" / "MacOS").mkdir(parents=True)
+    (src / "Contents" / "MacOS" / "UnofficialAppleMusicMCP").write_text("#!/bin/sh\n")
+
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root can write anywhere, so the fallback cannot be exercised")
+    unwritable.parent.mkdir()
+    unwritable.parent.chmod(0o500)
+    try:
+        dest = app_setup.install_copy(src)
+    finally:
+        unwritable.parent.chmod(0o700)
+
+    assert dest == target / "UnofficialAppleMusicMCP.app"
+    assert (dest / "Contents" / "MacOS" / "UnofficialAppleMusicMCP").exists()
+    assert src.exists(), "the original must be left alone"
+
+
+def test_install_copy_is_idempotent(tmp_path, monkeypatch):
+    target = tmp_path / "Applications"
+    target.mkdir()
+    monkeypatch.setattr(app_setup, "INSTALL_DIRS", (target,))
+    monkeypatch.setattr(app_setup, "_log", lambda *a, **k: None)
+
+    app = target / "UnofficialAppleMusicMCP.app"
+    (app / "Contents").mkdir(parents=True)
+    # Already installed: return it rather than deleting and re-copying itself.
+    assert app_setup.install_copy(app) == app
+    assert (app / "Contents").exists()
+
+
+def test_install_copy_refuses_a_non_bundle(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_setup, "INSTALL_DIRS", (tmp_path / "Applications",))
+    plain = tmp_path / "checkout"
+    plain.mkdir()
+    assert app_setup.install_copy(plain) is None
+
+
+def test_main_offers_to_install_and_registers_the_copy(tmp_path, monkeypatch):
+    """The whole point: what gets written down is the stable path, not this one."""
+    target = tmp_path / "Applications"
+    target.mkdir()
+    monkeypatch.setattr(app_setup, "INSTALL_DIRS", (target,))
+    monkeypatch.setattr(app_setup, "_log", lambda *a, **k: None)
+    monkeypatch.setattr(app_setup, "_log_environment", lambda: None)
+
+    src = tmp_path / "dist" / "UnofficialAppleMusicMCP.app"
+    (src / "Contents" / "MacOS").mkdir(parents=True)
+    monkeypatch.setattr(app_setup, "app_bundle_path", lambda: src)
+    monkeypatch.delenv("APPLEMUSIC_APP_BUNDLE", raising=False)
+
+    asked = []
+    monkeypatch.setattr(
+        app_setup, "_dialog",
+        lambda text, **kw: (asked.append(text), "Install to Applications")[1],
+    )
+    monkeypatch.setattr(app_setup, "_run_with_window", lambda: 0)
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    assert app_setup.main() == 0
+    assert asked, "the user must be asked before anything is copied"
+    assert str(tmp_path / "dist") in asked[0], "the dialog must name the offending path"
+    assert os.environ["APPLEMUSIC_APP_BUNDLE"] == str(target / "UnofficialAppleMusicMCP.app")
+
+
+def test_main_leaves_a_bundle_in_applications_alone(tmp_path, monkeypatch):
+    target = tmp_path / "Applications"
+    target.mkdir()
+    monkeypatch.setattr(app_setup, "INSTALL_DIRS", (target,))
+    monkeypatch.setattr(app_setup, "_log_environment", lambda: None)
+
+    app = target / "UnofficialAppleMusicMCP.app"
+    app.mkdir()
+    monkeypatch.setattr(app_setup, "app_bundle_path", lambda: app)
+
+    def refuse(*a, **k):
+        raise AssertionError("an installed bundle must not be questioned")
+
+    monkeypatch.setattr(app_setup, "_dialog", refuse)
+    monkeypatch.setattr(app_setup, "_run_with_window", lambda: 0)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert app_setup.main() == 0
+
+
+def test_main_does_not_double_warn_when_translocated(tmp_path, monkeypatch):
+    """Translocation has its own path through the log; don't ask twice."""
+    monkeypatch.setattr(app_setup, "INSTALL_DIRS", (tmp_path / "Applications",))
+    monkeypatch.setattr(app_setup, "_log_environment", lambda: None)
+    app = tmp_path / "AppTranslocation" / "abc" / "d" / "UnofficialAppleMusicMCP.app"
+    app.mkdir(parents=True)
+    monkeypatch.setattr(app_setup, "app_bundle_path", lambda: app)
+
+    def refuse(*a, **k):
+        raise AssertionError("translocated bundles are handled by the log, not a dialog")
+
+    monkeypatch.setattr(app_setup, "_dialog", refuse)
+    monkeypatch.setattr(app_setup, "_run_with_window", lambda: 0)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert app_setup.main() == 0
+
+
+def test_install_copy_keeps_the_old_app_when_the_copy_fails(tmp_path, monkeypatch):
+    """A half-finished copy must not take a working install down with it."""
+    target = tmp_path / "Applications"
+    target.mkdir()
+    monkeypatch.setattr(app_setup, "INSTALL_DIRS", (target,))
+    monkeypatch.setattr(app_setup, "_log", lambda *a, **k: None)
+
+    existing = target / "UnofficialAppleMusicMCP.app"
+    (existing / "Contents").mkdir(parents=True)
+    (existing / "Contents" / "keep-me").write_text("the working install")
+
+    src = tmp_path / "dist" / "UnofficialAppleMusicMCP.app"
+    (src / "Contents").mkdir(parents=True)
+
+    def boom(*a, **k):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(app_setup.shutil, "copytree", boom)
+    assert app_setup.install_copy(src) is None
+    assert (existing / "Contents" / "keep-me").read_text() == "the working install"
+    assert not list(target.glob("*.installing")), "the staging dir must be cleaned up"
