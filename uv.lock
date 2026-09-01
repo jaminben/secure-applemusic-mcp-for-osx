@@ -1174,9 +1174,8 @@ name = "secure-applemusic-mcp-for-osx"
 version = "0.3.1"
 source = { editable = "." }
 dependencies = [
-    { name = "cryptography" },
+    { name = "cryptography", marker = "platform_machine == 'x86_64'" },
     { name = "mcp" },
-    { name = "pyjwt", extra = ["crypto"] },
     { name = "requests" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
 ]
@@ -1191,13 +1190,18 @@ dev = [
     { name = "responses" },
     { name = "ruff" },
 ]
+dev-token = [
+    { name = "cryptography" },
+    { name = "pyjwt", extra = ["crypto"] },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "black", marker = "extra == 'dev'", specifier = ">=23.0.0" },
-    { name = "cryptography", specifier = ">=41.0.0" },
+    { name = "cryptography", marker = "platform_machine == 'x86_64'", specifier = "<49" },
+    { name = "cryptography", marker = "extra == 'dev-token'", specifier = ">=41.0.0" },
     { name = "mcp", specifier = ">=1.0.0,<3" },
-    { name = "pyjwt", extras = ["crypto"], specifier = ">=2.8.0" },
+    { name = "pyjwt", extras = ["crypto"], marker = "extra == 'dev-token'", specifier = ">=2.8.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.1.0" },
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.0.0" },
@@ -1207,7 +1211,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0.1" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["dev-token", "dev"]
 
 [[package]]
 name = "sse-starlette"
