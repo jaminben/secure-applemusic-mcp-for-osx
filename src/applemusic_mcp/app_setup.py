@@ -69,11 +69,13 @@ def _dialog(text: str, title: str = "Unofficial Apple Music MCP", buttons=("OK",
     to ask for.
     """
     # _as_applescript_string, NOT json.dumps: the default ensure_ascii=True
-    # emits "✓", which is a SYNTAX ERROR in AppleScript, not a mangled
-    # character. osascript then exits non-zero, _dialog returns "", and
-    # _confirm reads that as "Skip" -- so a single em dash in a prompt silently
-    # turns a consent step into a declined one. Every prompt below contains
-    # one, and the summary always contains a check mark.
+    # escapes "✓" to \u2713, which AppleScript does not understand -- a SYNTAX
+    # ERROR, not a mangled character. osascript then exits non-zero, _dialog
+    # returns "", and _confirm reads that as "Skip", so one non-ASCII character
+    # in a prompt silently turns a consent step into a declined one.
+    # The prompts themselves are plain ASCII now, but do not conclude from that
+    # that this is unnecessary: every line of every step summary still begins
+    # with a check mark, a cross or a bullet.
     btn_list = ", ".join(f"{_as_applescript_string(b)}" for b in buttons)
     script = (
         f"display dialog {_as_applescript_string(text)} "
@@ -264,7 +266,7 @@ def configure_detected_clients() -> list[str]:
     """
     found = clients.detected()
     if not found:
-        return ["• No MCP clients detected — add the server by hand (see the README)"]
+        return ["• No MCP clients detected. Add the server by hand (see the README)"]
 
     labels = [c.label for c in found]
     caveats = "\n".join(f"  {c.label}: {c.caveat}" for c in found if c.caveat)
@@ -326,12 +328,12 @@ def _offer_restart(configured: list) -> list[str]:
         if not clients.quit_client(client):
             # Never escalate to a kill: an app that ignores SIGTERM has a
             # reason, and it is not worth the user's unsaved work.
-            out.append(f"✗ {client.label} did not quit — restart it yourself")
+            out.append(f"✗ {client.label} did not quit. Restart it yourself")
             continue
         out.append(
             f"✓ {client.label} restarted"
             if clients.relaunch(client)
-            else f"• {client.label} quit — reopen it to pick up the server"
+            else f"• {client.label} quit. Reopen it to pick up the server"
         )
     return out
 
@@ -410,7 +412,7 @@ _INTRO = (
 )
 
 _STEP_HELPER = (
-    "Step 1 of 3 — background helper\n\n"
+    "Step 1 of 3: background helper\n\n"
     "Installs a LaunchAgent at:\n"
     "  ~/Library/LaunchAgents/{bundle}.plist\n\n"
     "It starts this app in the background at login. The helper is what actually "
@@ -421,7 +423,7 @@ _STEP_HELPER = (
 )
 
 _STEP_CLIENTS = (
-    "Step 2 of 3 — MCP clients\n\n"
+    "Step 2 of 3: MCP clients\n\n"
     "Next you'll see the MCP clients found on this Mac, and you choose which "
     "ones get an '{key}' entry.\n\n"
     "For each one you pick: your existing servers and settings are kept, and a "
@@ -430,11 +432,11 @@ _STEP_CLIENTS = (
 )
 
 _STEP_PERMISSION = (
-    "Step 3 of 3 — permission to control Music\n\n"
+    "Step 3 of 3: permission to control Music\n\n"
     "macOS will now show its own dialog:\n"
     '  "Unofficial Apple Music MCP wants to control Music"\n\n'
-    "Click OK there to allow it. Asking now — rather than in the middle of a "
-    "conversation — is what makes the permission land on this app, so you can "
+    "Click OK there to allow it. Asking now, rather than in the middle of a "
+    "conversation, is what makes the permission land on this app, so you can "
     "review or revoke it in System Settings → Privacy & Security → Automation.\n\n"
     "This never asks for Accessibility."
 )
@@ -457,7 +459,7 @@ def _client_options() -> list[dict]:
         if client.caveat:
             option["note"] = client.caveat
         elif clients.is_running(client):
-            option["note"] = "Open now — will be restarted"
+            option["note"] = "Open now (will be restarted)"
         options.append(option)
     return options
 
@@ -524,7 +526,7 @@ def _build_plan() -> dict:
                 "id": "splash",
                 "title": "Control Apple Music with AI",
                 "body": (
-                    "Ask your AI assistant to put music on — in your own words."
+                    "Ask your AI assistant to put music on, in your own words."
                 ),
                 "examples": [
                     "Play something upbeat for a run",
@@ -651,7 +653,7 @@ def _run_step(page: str, selected: list) -> "tuple[bool, list[str]]":
             install_launch_agent()
             if load_agent():
                 return True, ["✓ Background helper installed and running"]
-            return False, [f"✗ Helper failed to start — see {LOG_DIR / 'helper.log'}"]
+            return False, [f"✗ Helper failed to start. See {LOG_DIR / 'helper.log'}"]
 
         if page == "clients":
             lines, configured = [], []
@@ -864,9 +866,9 @@ def main() -> int:
         if load_agent():
             steps.append("✓ Background helper installed and running")
         else:
-            steps.append(f"✗ Helper failed to start — see {LOG_DIR / 'helper.log'}")
+            steps.append(f"✗ Helper failed to start. See {LOG_DIR / 'helper.log'}")
     else:
-        steps.append("• Helper skipped — run this app again to install it")
+        steps.append("• Helper skipped. Run this app again to install it")
 
     # 2. MCP clients
     if _confirm(_STEP_CLIENTS.format(key=SERVER_KEY), "Choose Clients"):
@@ -879,7 +881,7 @@ def main() -> int:
         ok, msg = prime_permission()
         steps.append(("✓ " if ok else "✗ ") + msg)
     else:
-        steps.append("• Permission not requested — macOS will ask on first use instead")
+        steps.append("• Permission not requested. macOS will ask on first use instead")
 
     body = "\n".join(steps)
     tail = ""
